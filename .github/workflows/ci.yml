@@ -21,7 +21,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+      - name: Install Bubblewrap sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor-profiles bubblewrap
+          sudo cp \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: uv sync --locked --all-groups
       - run: uv run pytest --cov --cov-report=term-missing
 
