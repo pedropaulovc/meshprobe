@@ -11,12 +11,15 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from meshprobe.evals.schemas import (
+    CorpusTier,
     EpisodeGroundTruth,
     EpisodeReport,
     EpisodeSpec,
     EvidenceKind,
     GateStatus,
     PassThresholds,
+    RuntimePin,
+    Sha256,
     StatePredicate,
     TaskFamily,
 )
@@ -32,7 +35,20 @@ class SliceMetrics(ReportModel):
     pass_rate: float = Field(ge=0, le=1)
 
 
+class QualificationProvenance(ReportModel):
+    tier: CorpusTier
+    corpus_version: str
+    corpus_manifest_sha256: Sha256
+    tier_manifest_sha256: Sha256
+    runtime: RuntimePin
+    thresholds: PassThresholds
+    adapter: str
+    adapter_identity_sha256: Sha256
+
+
 class QualificationReport(ReportModel):
+    schema_version: int = 1
+    provenance: QualificationProvenance
     overall: SliceMetrics
     full_stack: SliceMetrics
     by_operation: dict[str, SliceMetrics]
@@ -61,6 +77,7 @@ def aggregate_reports(
     episodes: Iterable[ScoredEpisode],
     *,
     thresholds: PassThresholds,
+    provenance: QualificationProvenance,
 ) -> QualificationReport:
     cases = tuple(episodes)
     if not cases:
@@ -94,6 +111,7 @@ def aggregate_reports(
         if metrics.pass_rate < thresholds.per_operation
     )
     return QualificationReport(
+        provenance=provenance,
         overall=overall,
         full_stack=full_stack,
         by_operation=by_operation,
@@ -120,6 +138,13 @@ def publish_report(path: Path, report: QualificationReport) -> None:
 def report_markdown(report: QualificationReport) -> str:
     lines = [
         "# MeshProbe qualification report",
+        "",
+        f"Tier: `{report.provenance.tier}`",
+        f"Corpus: `{report.provenance.corpus_version}`",
+        f"Tier manifest: `{report.provenance.tier_manifest_sha256}`",
+        f"Adapter: `{report.provenance.adapter}` (`{report.provenance.adapter_identity_sha256}`)",
+        f"Runtime: MeshProbe {report.provenance.runtime.meshprobe_version}, "
+        f"Blender {report.provenance.runtime.blender_version}",
         "",
         f"Overall: {report.overall.passed}/{report.overall.episodes} "
         f"({report.overall.pass_rate:.1%})",

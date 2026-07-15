@@ -10,16 +10,19 @@ from meshprobe.evals.generators import (
     publish_model,
 )
 from meshprobe.evals.reports import (
+    QualificationProvenance,
     ScoredEpisode,
     aggregate_reports,
     publish_report,
     report_markdown,
 )
 from meshprobe.evals.schemas import (
+    CorpusTier,
     EpisodeReport,
     GateResult,
     GateStatus,
     PassThresholds,
+    RuntimePin,
 )
 
 
@@ -45,6 +48,24 @@ def report_for(episode_id: str, *, passed: bool, template: GeneratedEpisode) -> 
     )
 
 
+def provenance(thresholds: PassThresholds) -> QualificationProvenance:
+    return QualificationProvenance(
+        tier=CorpusTier.SMOKE,
+        corpus_version="test-v1",
+        corpus_manifest_sha256="1" * 64,
+        tier_manifest_sha256="2" * 64,
+        runtime=RuntimePin(
+            meshprobe_version="0.1.0.dev0",
+            blender_version="5.2.0 LTS",
+            importer_sha256="3" * 64,
+            render_engines=("eevee", "cycles"),
+        ),
+        thresholds=thresholds,
+        adapter="tests.ReferenceAgent",
+        adapter_identity_sha256="4" * 64,
+    )
+
+
 def test_reports_split_every_required_dimension_and_enforce_thresholds(tmp_path: Path) -> None:
     model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
     generated = generate_episodes(model)
@@ -63,10 +84,8 @@ def test_reports_split_every_required_dimension_and_enforce_thresholds(tmp_path:
         ),
     )
 
-    report = aggregate_reports(
-        cases,
-        thresholds=PassThresholds(overall=0.5, full_stack=0.5, per_operation=0.5),
-    )
+    thresholds = PassThresholds(overall=0.5, full_stack=0.5, per_operation=0.5)
+    report = aggregate_reports(cases, thresholds=thresholds, provenance=provenance(thresholds))
 
     assert report.overall.pass_rate == 0.5
     assert report.full_stack.pass_rate == 0
@@ -76,6 +95,8 @@ def test_reports_split_every_required_dimension_and_enforce_thresholds(tmp_path:
     assert "raking_left" in report.by_illumination
     assert "procedural" in report.by_model_source
     assert report.failure_classes == {"answer": 1}
+    assert report.provenance.tier is CorpusTier.SMOKE
+    assert report.provenance.adapter_identity_sha256 == "4" * 64
     assert "full_stack" in report.threshold_failures
     assert "operation:render.image" in report.threshold_failures
 

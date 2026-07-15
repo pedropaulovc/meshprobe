@@ -14,6 +14,7 @@ from pathlib import Path
 from meshprobe.evals.factory import validate_corpus
 from meshprobe.evals.harness.runner import AgentAdapter, EvaluationSession, run_episode
 from meshprobe.evals.reports import (
+    QualificationProvenance,
     QualificationReport,
     ScoredEpisode,
     aggregate_reports,
@@ -107,7 +108,20 @@ def run_tier(
     cases = tuple(
         _load_scored_episode(corpus.root, runs_root, episode_id) for episode_id in tier.episodes
     )
-    report = aggregate_reports(cases, thresholds=tier.thresholds)
+    report = aggregate_reports(
+        cases,
+        thresholds=tier.thresholds,
+        provenance=QualificationProvenance(
+            tier=tier.tier,
+            corpus_version=tier.corpus_version,
+            corpus_manifest_sha256=tier.corpus_manifest_sha256,
+            tier_manifest_sha256=sha256_file(tier_path),
+            runtime=tier.runtime,
+            thresholds=tier.thresholds,
+            adapter=f"{type(adapter).__module__}.{type(adapter).__qualname__}",
+            adapter_identity_sha256=identity,
+        ),
+    )
     report_path = run_root / "qualification-report.json"
     publish_report(report_path, report)
     markdown = run_root / "qualification-report.md"
