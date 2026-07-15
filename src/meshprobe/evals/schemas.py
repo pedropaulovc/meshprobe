@@ -44,6 +44,19 @@ class TaskFamily(StrEnum):
     NEGATIVE_AMBIGUOUS = "negative_ambiguous"
 
 
+class EpisodeClass(StrEnum):
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    ADVERSARIAL = "adversarial"
+
+
+class Difficulty(StrEnum):
+    BASIC = "basic"
+    INTERMEDIATE = "intermediate"
+    HARD = "hard"
+    FULL_STACK = "full_stack"
+
+
 class AnswerStatus(StrEnum):
     ANSWERED = "answered"
     INDETERMINATE = "indeterminate"
@@ -145,6 +158,8 @@ class EpisodeSpec(EvalModel):
     model_file: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")]
     model_sha256: Sha256
     family: TaskFamily
+    episode_class: EpisodeClass
+    difficulty: Difficulty
     prompt: Annotated[str, StringConstraints(min_length=20, max_length=8_000)]
     answer_schema: dict[str, JsonValue]
     required_operations: tuple[Operation, ...] = Field(min_length=1)
@@ -249,6 +264,8 @@ class EpisodeReport(EvalModel):
     schema_version: Literal[1] = 1
     episode_id: OpaqueId
     family: TaskFamily
+    episode_class: EpisodeClass
+    difficulty: Difficulty
     gates: tuple[GateResult, ...]
     tool_calls: Annotated[int, Field(ge=0)]
     renders: Annotated[int, Field(ge=0)]
@@ -274,11 +291,18 @@ class CorpusManifest(EvalModel):
     corpus_version: str
     tier: CorpusTier
     generator_sha256: Sha256
+    generator_families: tuple[str, ...] = Field(min_length=1)
+    generator_seeds: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
+    model_sha256: dict[Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")], Sha256]
     episodes: tuple[OpaqueId, ...] = Field(min_length=1)
     episode_sha256: dict[OpaqueId, Sha256]
 
     @model_validator(mode="after")
     def validate_episode_hashes(self) -> Self:
+        if len(set(self.generator_families)) != len(self.generator_families):
+            raise ValueError("generator families must be unique")
+        if len(set(self.generator_seeds)) != len(self.generator_seeds):
+            raise ValueError("generator seeds must be unique")
         if len(set(self.episodes)) != len(self.episodes):
             raise ValueError("tier episodes must be unique")
         if set(self.episodes) != self.episode_sha256.keys():

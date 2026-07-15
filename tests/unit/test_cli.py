@@ -23,6 +23,35 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def test_eval_commands_generate_and_validate_a_corpus(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "generate",
+            str(tmp_path),
+            "--version",
+            "cli-v1",
+            "--family",
+            "hidden_clip",
+            "--seed-count",
+            "1",
+        ],
+    )
+    generated = json.loads(result.stdout)
+    assert result.exit_code == 0
+    assert generated["models"] == 1
+    assert generated["episodes"] == 4
+
+    validated_result = runner.invoke(
+        app,
+        ["eval", "validate", str(tmp_path / "cli-v1")],
+    )
+    validated = json.loads(validated_result.stdout)
+    assert validated_result.exit_code == 0
+    assert validated == generated
+
+
 def test_open_reports_missing_blender(tmp_path) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "assembly.glb"
     source.write_bytes(b"model")

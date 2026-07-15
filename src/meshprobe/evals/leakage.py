@@ -24,6 +24,10 @@ class LeakageError(ValueError):
 def validate_public_episode(spec: EpisodeSpec, truth: EpisodeGroundTruth) -> None:
     if spec.episode_id != truth.episode_id or spec.model_sha256 != truth.model_sha256:
         raise LeakageError("public episode and private ground truth do not identify the same case")
+    if spec.required_operations != truth.required_operations:
+        raise LeakageError(
+            "public episode and private ground truth disagree on required operations"
+        )
     payload = spec.model_dump(mode="json")
     leaked_keys = _find_keys(payload, _PRIVATE_KEYS)
     if leaked_keys:

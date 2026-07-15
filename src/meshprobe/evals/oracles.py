@@ -66,6 +66,8 @@ def score_episode(inputs: OracleInputs) -> EpisodeReport:
     return EpisodeReport(
         episode_id=inputs.spec.episode_id,
         family=inputs.spec.family,
+        episode_class=inputs.spec.episode_class,
+        difficulty=inputs.spec.difficulty,
         gates=gates,
         tool_calls=metrics.tool_calls,
         renders=metrics.renders,

@@ -16,6 +16,7 @@ from meshprobe.evals.schemas import (
     AnswerStatus,
     EpisodeSubmission,
     GateStatus,
+    Operation,
     TraceEvent,
     TraceStatus,
 )
@@ -336,3 +337,70 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
 
     assert next(gate for gate in report.gates if gate.gate == "state").status is GateStatus.PASS
     assert next(gate for gate in report.gates if gate.gate == "evidence").status is GateStatus.PASS
+
+
+def test_full_investigation_coverage_fails_when_any_operation_is_removed(
+    tmp_path: Path,
+) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
+    episode = generate_episodes(model)[3]
+    target = model.component_ids["idler"]
+    events: list[TraceEvent] = []
+    state = "0" * 64
+    for sequence, operation in enumerate(Operation, start=1):
+        arguments: object = {}
+        result: object = {}
+        before = state
+        after = state
+        if operation is Operation.SCENE_DESCRIBE:
+            result = {"session": {"state_sha256": state}}
+        if operation is Operation.COMPONENT_FIND:
+            result = [{"id": target}]
+        if operation is Operation.COMPONENT_INSPECT:
+            arguments = {"component_id": target}
+            result = {"id": target}
+        if operation in {
+            Operation.VIEW_SET,
+            Operation.VIEW_ORBIT,
+            Operation.ILLUMINATION_SET,
+            Operation.COMPONENT_DISPLAY,
+            Operation.COMPONENT_MARK,
+        }:
+            after = f"{sequence:x}" * 64
+            state = after
+        if operation is Operation.SESSION_RESET:
+            after = "0" * 64
+            state = after
+            result = {"state_sha256": state}
+        events.append(
+            accepted_event(
+                sequence,
+                operation,
+                arguments=arguments,
+                result=result,
+                before=before,
+                after=after,
+            )
+        )
+    snapshot = snapshot_source(model.path)
+    inputs = OracleInputs(
+        spec=episode.spec,
+        truth=episode.ground_truth,
+        submission=EpisodeSubmission(
+            episode_id=episode.spec.episode_id,
+            answer=episode.ground_truth.answer,
+        ),
+        trace=tuple(events),
+        source_before=snapshot,
+        source_after=snapshot,
+    )
+    baseline = score_episode(inputs)
+    assert (
+        next(gate for gate in baseline.gates if gate.gate == "coverage").status is GateStatus.PASS
+    )
+
+    for operation in Operation:
+        reduced = tuple(event for event in events if event.operation is not operation)
+        report = score_episode(replace(inputs, trace=reduced))
+        coverage = next(gate for gate in report.gates if gate.gate == "coverage")
+        assert coverage.status is GateStatus.FAIL, operation

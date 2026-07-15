@@ -23,7 +23,9 @@ from meshprobe.evals.geometry import (
 )
 from meshprobe.evals.schemas import (
     AnswerStatus,
+    Difficulty,
     EpisodeBudgets,
+    EpisodeClass,
     EpisodeGroundTruth,
     EpisodeSpec,
     EvidenceKind,
@@ -486,6 +488,14 @@ def _episode(
         status = AnswerStatus.INDETERMINATE
         answers = {}
         missing = ("arrow material",)
+    if index == 3 and model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN:
+        status = AnswerStatus.INDETERMINATE
+        answers = {}
+        conflicts = (model.component_ids["idler"], model.component_ids["distractor"])
+    if index == 3 and model.generated.family is GeneratorFamily.MISSING_MATERIAL:
+        status = AnswerStatus.INDETERMINATE
+        answers = {}
+        missing = ("arrow material",)
 
     prompt = _prompt(model, task_family, index)
     answer = StructuredAnswer(
@@ -499,6 +509,8 @@ def _episode(
         model_file=model.path.name,
         model_sha256=model.sha256,
         family=task_family,
+        episode_class=_episode_class(model, index),
+        difficulty=tuple(Difficulty)[index],
         prompt=prompt,
         answer_schema=_answer_schema(),
         required_operations=operations,
@@ -568,6 +580,17 @@ def _answer_schema() -> dict[str, JsonValue]:
             "missing_capabilities": {"type": "array", "items": {"type": "string"}},
         },
     }
+
+
+def _episode_class(model: PublishedModel, index: int) -> EpisodeClass:
+    if model.generated.family in {
+        GeneratorFamily.AMBIGUOUS_TWIN,
+        GeneratorFamily.MISSING_MATERIAL,
+    } and index in {1, 3}:
+        return EpisodeClass.NEGATIVE
+    if index == 0 or (index == 3 and model.generated.seed % 4 == 0):
+        return EpisodeClass.POSITIVE
+    return EpisodeClass.ADVERSARIAL
 
 
 def _discovery_operations() -> tuple[Operation, ...]:

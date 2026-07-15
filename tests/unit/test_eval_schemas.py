@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from meshprobe.evals.schemas import (
     AnswerStatus,
+    Difficulty,
+    EpisodeClass,
     EpisodeGroundTruth,
     EpisodeSpec,
     Operation,
@@ -20,6 +22,8 @@ def test_full_investigation_requires_every_public_operation() -> None:
             model_file="fixture.glb",
             model_sha256="a" * 64,
             family=TaskFamily.FULL_INVESTIGATION,
+            episode_class=EpisodeClass.POSITIVE,
+            difficulty=Difficulty.FULL_STACK,
             prompt="Inspect the complete assembly and submit all requested evidence.",
             answer_schema={"type": "object"},
             required_operations=(Operation.SCENE_OPEN, Operation.SCENE_DESCRIBE),

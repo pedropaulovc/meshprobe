@@ -18,7 +18,15 @@ from meshprobe.evals.generators import (
     publish_model,
 )
 from meshprobe.evals.leakage import validate_public_directory, validate_public_episode
-from meshprobe.evals.schemas import CorpusManifest, CorpusTier, TaskFamily
+from meshprobe.evals.schemas import (
+    CorpusManifest,
+    CorpusTier,
+    EpisodeClass,
+    EpisodeGroundTruth,
+    EpisodeSpec,
+    Operation,
+    TaskFamily,
+)
 from meshprobe.sources import sha256_file
 
 
@@ -47,12 +55,22 @@ def build_corpus(
     if len(set(selected_seeds)) != len(selected_seeds) or any(seed < 0 for seed in selected_seeds):
         raise ValueError("corpus seeds must be unique non-negative integers")
 
+    generator_sha256 = generator_source_sha256()
     destination = output_root.expanduser().resolve() / corpus_version
     if destination.exists():
-        return validate_corpus(destination)
+        existing = validate_corpus(destination)
+        if existing.manifest.generator_sha256 != generator_sha256:
+            raise RuntimeError(
+                "corpus version already exists with a different generator; choose a new version"
+            )
+        requested_families = tuple(family.value for family in selected_families)
+        if existing.manifest.generator_families != requested_families:
+            raise RuntimeError("corpus version already exists with different generator families")
+        if existing.manifest.generator_seeds != selected_seeds:
+            raise RuntimeError("corpus version already exists with different generator seeds")
+        return existing
     output_root.mkdir(parents=True, exist_ok=True)
     staging = output_root.resolve() / f".{corpus_version}.building"
-    generator_sha256 = generator_source_sha256()
     _prepare_staging(staging, generator_sha256)
     public = staging / "public"
     private = staging / "private"
@@ -79,6 +97,7 @@ def build_corpus(
     episode_paths = sorted(public_episodes.glob("*.json"))
     episode_ids = tuple(path.stem for path in episode_paths)
     episode_hashes = {path.stem: sha256_file(path) for path in episode_paths}
+    model_hashes = {path.name: sha256_file(path) for path in sorted(models.glob("*.glb"))}
     expected_models = len(selected_families) * len(selected_seeds)
     expected_episodes = expected_models * 4
     if (
@@ -86,10 +105,15 @@ def build_corpus(
         or len(episode_paths) != expected_episodes
     ):
         raise RuntimeError("procedural corpus publication count does not match its declared inputs")
+    if set(selected_families) == set(GeneratorFamily) and len(selected_seeds) >= 8:
+        _validate_operation_class_coverage(episode_paths)
     manifest = CorpusManifest(
         corpus_version=corpus_version,
         tier=CorpusTier.RELEASE,
         generator_sha256=generator_sha256,
+        generator_families=tuple(family.value for family in selected_families),
+        generator_seeds=selected_seeds,
+        model_sha256=model_hashes,
         episodes=episode_ids,
         episode_sha256=episode_hashes,
     )
@@ -106,6 +130,14 @@ def validate_corpus(root: Path) -> CorpusBuild:
     manifest = CorpusManifest.model_validate_json(
         (public / "manifest.json").read_text(encoding="utf-8")
     )
+    public_episode_ids = {path.stem for path in (public / "episodes").glob("*.json")}
+    private_episode_ids = {path.stem for path in (private / "ground_truth").glob("*.json")}
+    expected_episode_ids = set(manifest.episodes)
+    if public_episode_ids != expected_episode_ids:
+        raise RuntimeError("public episode files do not exactly match the manifest")
+    if private_episode_ids != expected_episode_ids:
+        raise RuntimeError("private ground-truth files do not exactly match the manifest")
+    model_hashes: dict[str, str] = {}
     for episode_id, expected_hash in manifest.episode_sha256.items():
         path = public / "episodes" / f"{episode_id}.json"
         if not path.is_file() or sha256_file(path) != expected_hash:
@@ -113,8 +145,26 @@ def validate_corpus(root: Path) -> CorpusBuild:
         truth_path = private / "ground_truth" / f"{episode_id}.json"
         if not truth_path.is_file():
             raise RuntimeError(f"published episode has no private ground truth: {episode_id}")
+        spec = EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        truth = EpisodeGroundTruth.model_validate_json(truth_path.read_text(encoding="utf-8"))
+        validate_public_episode(spec, truth)
+        if spec.required_operations != truth.required_operations:
+            raise RuntimeError(f"operation contract mismatch: {episode_id}")
+        model_path = public / "models" / spec.model_file
+        if spec.model_file not in model_hashes:
+            if not model_path.is_file():
+                raise RuntimeError(f"published episode model is missing: {spec.model_file}")
+            model_hashes[spec.model_file] = sha256_file(model_path)
+        if model_hashes[spec.model_file] != spec.model_sha256:
+            raise RuntimeError(f"published model hash mismatch: {spec.model_file}")
     validate_public_directory(public, private)
     model_count = len(tuple((public / "models").glob("*.glb")))
+    if model_hashes != manifest.model_sha256:
+        raise RuntimeError("model files and hashes do not exactly match the manifest")
+    if set(model_hashes) != {path.name for path in (public / "models").glob("*.glb")}:
+        raise RuntimeError("model files are not referenced exactly by published episodes")
+    if model_count == 512 and len(manifest.episodes) >= 2_048:
+        _validate_operation_class_coverage(sorted((public / "episodes").glob("*.json")))
     full_count = 0
     for path in (public / "episodes").glob("*.json"):
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -147,6 +197,22 @@ def generator_source_sha256() -> str:
         digest.update(b"\0")
         digest.update(bytes.fromhex(sha256_file(path)))
     return digest.hexdigest()
+
+
+def _validate_operation_class_coverage(episode_paths: list[Path]) -> None:
+    coverage: dict[Operation, set[EpisodeClass]] = {operation: set() for operation in Operation}
+    for path in episode_paths:
+        spec = EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        for operation in spec.required_operations:
+            coverage[operation].add(spec.episode_class)
+    expected = set(EpisodeClass)
+    missing = {
+        operation: sorted(str(item) for item in expected - classes)
+        for operation, classes in coverage.items()
+        if classes != expected
+    }
+    if missing:
+        raise RuntimeError(f"operation class coverage is incomplete: {missing}")
 
 
 def _prepare_staging(staging: Path, generator_sha256: str) -> None:

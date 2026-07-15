@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from meshprobe.evals.factory import build_corpus
+from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import (
     GeneratorFamily,
     build_model,
@@ -32,7 +32,60 @@ def test_factory_atomically_publishes_checkpointed_public_and_private_trees(
     assert not (build.root / "checkpoint.json").exists()
     assert len(tuple((build.root / "public" / "models").glob("*.glb"))) == 4
     assert len(tuple((build.root / "private" / "ground_truth").glob("*.json"))) == 16
-    assert build_corpus(tmp_path, corpus_version="test-v1") == build
+    assert (
+        build_corpus(
+            tmp_path,
+            corpus_version="test-v1",
+            families=(GeneratorFamily.HIDDEN_CLIP, GeneratorFamily.STAMPED_ARROW),
+            seeds=(0, 1),
+        )
+        == build
+    )
+
+
+def test_factory_rejects_existing_version_with_different_recipe(tmp_path: Path) -> None:
+    build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+
+    with pytest.raises(RuntimeError, match="different generator families"):
+        build_corpus(
+            tmp_path,
+            corpus_version="test-v1",
+            families=(GeneratorFamily.STAMPED_ARROW,),
+            seeds=(0,),
+        )
+
+
+def test_validation_rejects_tampered_model(tmp_path: Path) -> None:
+    build = build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    model_path = next((build.root / "public" / "models").glob("*.glb"))
+    model_path.write_bytes(model_path.read_bytes() + b"tampered")
+
+    with pytest.raises(RuntimeError, match="published model hash mismatch"):
+        validate_corpus(build.root)
+
+
+def test_validation_rejects_unmanifested_episode(tmp_path: Path) -> None:
+    build = build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    episodes = build.root / "public" / "episodes"
+    (episodes / "unmanifested.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="do not exactly match"):
+        validate_corpus(build.root)
 
 
 def test_public_episode_rejects_private_component_id_leak(tmp_path: Path) -> None:

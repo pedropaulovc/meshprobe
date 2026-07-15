@@ -11,7 +11,7 @@ from meshprobe.evals.generators import (
     generate_episodes,
     publish_model,
 )
-from meshprobe.evals.schemas import Operation, TaskFamily
+from meshprobe.evals.schemas import EpisodeClass, Operation, TaskFamily
 from meshprobe.evals.variants import verify_relation
 
 
@@ -69,3 +69,17 @@ def test_private_component_ids_do_not_appear_in_public_prompt(tmp_path: Path) ->
         assert all(
             component_id not in episode.spec.prompt for component_id in model.component_ids.values()
         )
+
+
+def test_every_operation_has_positive_negative_and_adversarial_episodes(
+    tmp_path: Path,
+) -> None:
+    coverage = {operation: set() for operation in Operation}
+    for family in GeneratorFamily:
+        for seed in (0, 1):
+            model = publish_model(build_model(family, seed), tmp_path)
+            for episode in generate_episodes(model):
+                for operation in episode.spec.required_operations:
+                    coverage[operation].add(episode.spec.episode_class)
+
+    assert all(classes == set(EpisodeClass) for classes in coverage.values())
