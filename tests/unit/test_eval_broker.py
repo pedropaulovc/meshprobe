@@ -42,12 +42,18 @@ class FakeEvaluationService:
         elif operation == "render.image":
             assert isinstance(command, RenderImageCommand)
             output_path = command.output_path
+            color_path = Path(output_path)
+            color_path.parent.mkdir(parents=True, exist_ok=True)
+            color_path.write_bytes(b"c" * 12)
+            component_path = Path(evaluator_output_dir) / "components.png"
+            component_path.parent.mkdir(parents=True, exist_ok=True)
+            component_path.write_bytes(b"m" * 8)
             result = {
                 "state_sha256": "2" * 64,
                 "color": {"path": output_path, "bytes": 12},
                 "evaluator": {
                     "component_ids": {
-                        "path": f"{evaluator_output_dir}/components.png",
+                        "path": str(component_path),
                         "bytes": 8,
                     }
                 },
@@ -57,12 +63,17 @@ class FakeEvaluationService:
         return CommandResponse(request_id=request_id, op=operation, result=result)
 
 
-def broker(tmp_path: Path, *, budgets: EpisodeBudgets | None = None) -> EvaluationBroker:
+def broker(
+    tmp_path: Path,
+    *,
+    budgets: EpisodeBudgets | None = None,
+    service: FakeEvaluationService | None = None,
+) -> EvaluationBroker:
     model = tmp_path / "input" / "model.glb"
     model.parent.mkdir()
     model.write_bytes(b"model")
     return EvaluationBroker(
-        service=FakeEvaluationService(),
+        service=service or FakeEvaluationService(),
         model_path=model,
         artifact_root=tmp_path / "agent" / "artifacts",
         evaluator_root=tmp_path / "evaluator" / "passes",
@@ -118,6 +129,7 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     assert active.metrics.renders == 1
     assert active.metrics.total_pixels == 4_096
     assert active.metrics.output_bytes == 20
+    assert artifact_path.read_bytes() == b"c" * 12
     trace = (tmp_path / "evaluator" / "trace.jsonl").read_text(encoding="utf-8")
     assert len(trace.splitlines()) == 4
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
@@ -159,3 +171,85 @@ def test_broker_rejects_wrong_model_output_escape_duplicates_and_budgets(tmp_pat
     assert exhausted.error is not None and exhausted.error.code == "budget.tool_calls"
     assert all(event.status is TraceStatus.REJECTED for event in active.events)
     assert len(active.public_errors) == 4
+
+
+def test_broker_reserves_output_bytes_before_calling_renderer(tmp_path: Path) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(
+            tool_calls=2,
+            renders=1,
+            total_pixels=4_096,
+            output_bytes=1,
+        ),
+    )
+
+    rejected = active.execute(
+        RenderImageCommand(
+            request_id="too-large",
+            op="render.image",
+            output_path="evidence.png",
+            width=64,
+            height=64,
+            samples=1,
+        )
+    )
+
+    assert rejected.error is not None
+    assert rejected.error.code == "budget.output_bytes"
+    assert service.commands == []
+    assert active.metrics.output_bytes == 0
+    assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
+
+
+class OversizeEvaluationService(FakeEvaluationService):
+    def execute_for_evaluation(
+        self,
+        command: Command,
+        *,
+        evaluator_output_dir: str,
+    ) -> CommandResponse:
+        assert isinstance(command, RenderImageCommand)
+        output_path = Path(command.output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"x" * (5 * 1024**2))
+        return CommandResponse(
+            request_id=command.request_id,
+            op=command.op,
+            result={
+                "state_sha256": "2" * 64,
+                "color": {"path": str(output_path), "bytes": output_path.stat().st_size},
+            },
+        )
+
+
+def test_broker_discards_output_that_exceeds_reserved_bound(tmp_path: Path) -> None:
+    active = broker(
+        tmp_path,
+        service=OversizeEvaluationService(),
+        budgets=EpisodeBudgets(
+            tool_calls=2,
+            renders=1,
+            total_pixels=4_096,
+            output_bytes=10 * 1024**2,
+        ),
+    )
+
+    rejected = active.execute(
+        RenderImageCommand(
+            request_id="unexpected-size",
+            op="render.image",
+            output_path="evidence.png",
+            width=64,
+            height=64,
+            samples=1,
+        )
+    )
+
+    assert rejected.error is not None
+    assert rejected.error.code == "budget.output_bytes"
+    assert active.metrics.output_bytes == 0
+    assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
+    assert not any((tmp_path / "agent" / "artifacts").rglob("*.png"))

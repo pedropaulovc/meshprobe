@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -132,19 +134,37 @@ class EvaluationBroker:
         private_result: JsonValue = None
         error_code: str | None = None
         status = TraceStatus.ACCEPTED
+        staging_root: Path | None = None
+        request_token = hashlib.sha256(command.request_id.encode()).hexdigest()[:16]
+        private_dir = self._evaluator_root / f"{sequence:04d}-{request_token}"
         try:
             self._reserve_request(command)
-            translated, render_count, pixel_count = self._translate_and_reserve(command)
-            private_dir = self._evaluator_root / f"{sequence:04d}-{command.request_id}"
+            translated, render_count, pixel_count, byte_reservation, staging_root = (
+                self._translate_and_reserve(command, sequence)
+            )
             response = self._service.execute_for_evaluation(
                 translated,
                 evaluator_output_dir=str(private_dir),
             )
             private_result = response.result
+            produced_bytes = _directory_bytes(private_dir) + _directory_bytes(staging_root)
+            if produced_bytes > byte_reservation:
+                self._discard_request_outputs(staging_root, private_dir)
+                raise _RejectedCommand(
+                    "budget.output_bytes",
+                    "tool output exceeded its pre-reserved byte bound",
+                )
+            if staging_root is not None:
+                self._publish_staged_artifacts(staging_root)
+                private_result = _rewrite_path_root(
+                    private_result,
+                    staging_root,
+                    self._artifact_root,
+                )
             self._state_sha256 = _state_hash(private_result) or state_before
             self._renders += render_count
             self._total_pixels += pixel_count
-            self._output_bytes += _artifact_bytes(private_result)
+            self._output_bytes += produced_bytes
             public_result = _public_result(
                 private_result,
                 self._artifact_root,
@@ -153,14 +173,17 @@ class EvaluationBroker:
             public_response = response.model_copy(update={"result": public_result})
             reply = BrokerReply(ok=True, response=public_response)
         except _RejectedCommand as error:
+            self._discard_request_outputs(staging_root, private_dir)
             status = TraceStatus.REJECTED
             error_code = error.code
             reply = self._error_reply(error.code, str(error))
         except (BlenderWorkerError, OSError, ValueError) as error:
+            self._discard_request_outputs(staging_root, private_dir)
             status = TraceStatus.REJECTED
             error_code = f"tool.{type(error).__name__}"
             reply = self._error_reply(error_code, str(error))
         except Exception as error:
+            self._discard_request_outputs(staging_root, private_dir)
             status = TraceStatus.CRASHED
             error_code = f"tool.{type(error).__name__}"
             reply = self._error_reply(error_code, "tool execution crashed")
@@ -190,31 +213,48 @@ class EvaluationBroker:
         if time.monotonic() - self._started > self._budgets.wall_seconds:
             raise _RejectedCommand("budget.wall_seconds", "episode wall-time budget exhausted")
 
-    def _translate_and_reserve(self, command: Command) -> tuple[Command, int, int]:
+    def _translate_and_reserve(
+        self,
+        command: Command,
+        sequence: int,
+    ) -> tuple[Command, int, int, int, Path | None]:
         if isinstance(command, SceneOpenCommand):
             if command.source_path != self.visible_model_path:
                 raise _RejectedCommand(
                     "broker.model_path",
                     f"scene.open must use assigned model {self.visible_model_path}",
                 )
-            return command.model_copy(update={"source_path": str(self._model_path)}), 0, 0
+            return command.model_copy(update={"source_path": str(self._model_path)}), 0, 0, 0, None
         if isinstance(command, RenderImageCommand):
             render_count = 1
             pixels = command.width * command.height
-            translated_image = command.model_copy(
-                update={"output_path": str(self._artifact_path(command.output_path))}
+            output_path = self._artifact_path(command.output_path)
+            staging_root, staging_output = self._staging_output(
+                output_path,
+                sequence,
+                command.request_id,
             )
-            self._check_render_budget(render_count, pixels)
-            return translated_image, render_count, pixels
+            translated_image = command.model_copy(update={"output_path": str(staging_output)})
+            byte_reservation = _render_output_reservation(pixels)
+            self._check_render_budget(render_count, pixels, byte_reservation)
+            return translated_image, render_count, pixels, byte_reservation, staging_root
         if isinstance(command, RenderContactSheetCommand):
             render_count = 9
             pixels = render_count * command.panel_width * command.panel_height
-            translated_sheet = command.model_copy(
-                update={"output_path": str(self._artifact_path(command.output_path))}
+            output_path = self._artifact_path(command.output_path)
+            staging_root, staging_output = self._staging_output(
+                output_path,
+                sequence,
+                command.request_id,
             )
-            self._check_render_budget(render_count, pixels)
-            return translated_sheet, render_count, pixels
-        return command, 0, 0
+            translated_sheet = command.model_copy(update={"output_path": str(staging_output)})
+            byte_reservation = _contact_sheet_output_reservation(
+                command.panel_width,
+                command.panel_height,
+            )
+            self._check_render_budget(render_count, pixels, byte_reservation)
+            return translated_sheet, render_count, pixels, byte_reservation, staging_root
+        return command, 0, 0, 0, None
 
     def _artifact_path(self, visible_path: str) -> Path:
         relative = PurePosixPath(visible_path)
@@ -226,14 +266,55 @@ class EvaluationBroker:
         resolved = (self._artifact_root / Path(*relative.parts)).resolve()
         if not resolved.is_relative_to(self._artifact_root):
             raise _RejectedCommand("broker.output_path", "render output escapes artifact root")
-        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if resolved.exists():
+            raise _RejectedCommand("broker.output_exists", "render output already exists")
         return resolved
 
-    def _check_render_budget(self, render_count: int, pixels: int) -> None:
+    def _staging_output(
+        self,
+        output_path: Path,
+        sequence: int,
+        request_id: str,
+    ) -> tuple[Path, Path]:
+        request_digest = hashlib.sha256(request_id.encode()).hexdigest()[:16]
+        staging_root = (
+            self._artifact_root / ".meshprobe-staging" / (f"{sequence:04d}-{request_digest}")
+        )
+        if staging_root.exists():
+            raise _RejectedCommand("broker.staging_exists", "request staging directory exists")
+        relative = output_path.relative_to(self._artifact_root)
+        return staging_root, staging_root / relative
+
+    def _check_render_budget(self, render_count: int, pixels: int, output_bytes: int) -> None:
         if self._renders + render_count > self._budgets.renders:
             raise _RejectedCommand("budget.renders", "render budget exhausted")
         if self._total_pixels + pixels > self._budgets.total_pixels:
             raise _RejectedCommand("budget.total_pixels", "render pixel budget exhausted")
+        if self._output_bytes + output_bytes > self._budgets.output_bytes:
+            raise _RejectedCommand(
+                "budget.output_bytes",
+                "render output cannot fit within the remaining output-byte budget",
+            )
+
+    def _publish_staged_artifacts(self, staging_root: Path) -> None:
+        staged_files = tuple(path for path in staging_root.rglob("*") if path.is_file())
+        if not staged_files:
+            raise ValueError("render produced no staged artifacts")
+        destinations = tuple(
+            self._artifact_root / path.relative_to(staging_root) for path in staged_files
+        )
+        if any(path.exists() for path in destinations):
+            raise _RejectedCommand("broker.output_exists", "render artifact already exists")
+        for source, destination in zip(staged_files, destinations, strict=True):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+        shutil.rmtree(staging_root)
+
+    @staticmethod
+    def _discard_request_outputs(staging_root: Path | None, private_dir: Path) -> None:
+        if staging_root is not None:
+            shutil.rmtree(staging_root, ignore_errors=True)
+        shutil.rmtree(private_dir, ignore_errors=True)
 
     def _error_reply(self, code: str, message: str) -> BrokerReply:
         self._public_errors.append(message)
@@ -260,23 +341,43 @@ def _state_hash(value: JsonValue) -> str | None:
     return None
 
 
-def _artifact_bytes(value: JsonValue) -> int:
-    paths: set[str] = set()
+def _render_output_reservation(pixels: int) -> int:
+    # Color and two RGBA masks plus a float depth/normal EXR. The fixed allowance
+    # covers PNG/EXR headers and scanline tables at small resolutions.
+    return pixels * 48 + 4 * 1024**2
 
-    def visit(item: JsonValue) -> int:
-        if isinstance(item, list):
-            return sum(visit(nested) for nested in item)
-        if not isinstance(item, dict):
-            return 0
-        path = item.get("path")
-        byte_count = item.get("bytes")
-        total = 0
-        if isinstance(path, str) and isinstance(byte_count, int) and path not in paths:
-            paths.add(path)
-            total += byte_count
-        return total + sum(visit(nested) for nested in item.values())
 
-    return visit(value)
+def _contact_sheet_output_reservation(panel_width: int, panel_height: int) -> int:
+    panel_pixels = panel_width * panel_height
+    caption_height = max(48, panel_height // 10)
+    sheet_pixels = panel_width * 3 * (panel_height + caption_height) * 3
+    sheet_png_bound = sheet_pixels * 4 + 1024**2
+    return 9 * _render_output_reservation(panel_pixels) + sheet_png_bound
+
+
+def _directory_bytes(root: Path | None) -> int:
+    if root is None or not root.exists():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("render output must not contain symbolic links")
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
+def _rewrite_path_root(value: JsonValue, old_root: Path, new_root: Path) -> JsonValue:
+    if isinstance(value, list):
+        return [_rewrite_path_root(item, old_root, new_root) for item in value]
+    if isinstance(value, dict):
+        return {key: _rewrite_path_root(item, old_root, new_root) for key, item in value.items()}
+    if not isinstance(value, str):
+        return value
+    candidate = Path(value)
+    if not candidate.is_absolute() or not candidate.is_relative_to(old_root):
+        return value
+    return str(new_root / candidate.relative_to(old_root))
 
 
 def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) -> JsonValue:
