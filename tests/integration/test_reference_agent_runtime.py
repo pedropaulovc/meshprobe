@@ -58,8 +58,7 @@ def test_reference_agent_passes_transforms_and_rescaled_raking_evidence(
             and spec.difficulty is Difficulty.INTERMEDIATE
         )
         rescaled_raking_evidence = (
-            stamped_arrow_name in spec.prompt
-            and spec.family is TaskFamily.SURFACE_DETAIL
+            stamped_arrow_name in spec.prompt and spec.family is TaskFamily.SURFACE_DETAIL
         )
         if full_stack_base or transformed_intermediate or rescaled_raking_evidence:
             selected.append(episode_id)
