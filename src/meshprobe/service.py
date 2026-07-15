@@ -7,7 +7,12 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
 from meshprobe.controller import BlenderController
-from meshprobe.protocol import Command, SceneOpenCommand
+from meshprobe.protocol import (
+    Command,
+    RenderContactSheetCommand,
+    RenderImageCommand,
+    SceneOpenCommand,
+)
 
 
 class CommandResponse(BaseModel):
@@ -41,13 +46,46 @@ class MeshProbeService:
     def execute(self, command: Command) -> CommandResponse:
         """Execute one command and serialize its result through the public contract."""
 
-        if not self._started:
-            if not isinstance(command, SceneOpenCommand):
-                raise ValueError("scene.open must be the first command in a session")
-            self._controller.start()
-            self._started = True
+        self._ensure_started(command)
+        return self._response(command, self._controller.execute(command))
 
-        result = self._controller.execute(command)
+    def execute_for_evaluation(
+        self,
+        command: Command,
+        *,
+        evaluator_output_dir: str,
+    ) -> CommandResponse:
+        """Execute while keeping private render passes outside agent storage."""
+
+        self._ensure_started(command)
+        if isinstance(command, RenderImageCommand):
+            return self._response(
+                command,
+                self._controller.render_image(
+                    command,
+                    evaluator_output_dir=evaluator_output_dir,
+                ),
+            )
+        if isinstance(command, RenderContactSheetCommand):
+            return self._response(
+                command,
+                self._controller.render_contact_sheet(
+                    command,
+                    evaluator_output_dir=evaluator_output_dir,
+                ),
+            )
+        return self._response(command, self._controller.execute(command))
+
+    def _ensure_started(self, command: Command) -> None:
+        if self._started:
+            return
+        if not isinstance(command, SceneOpenCommand):
+            raise ValueError("scene.open must be the first command in a session")
+        self._controller.start()
+        self._started = True
+
+    @staticmethod
+    def _response(command: Command, result: object) -> CommandResponse:
         if hasattr(result, "model_dump"):
             result = result.model_dump(mode="json")
         serialized: JsonValue = TypeAdapter(JsonValue).validate_python(result)
