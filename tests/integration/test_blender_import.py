@@ -29,7 +29,6 @@ from meshprobe.models import (
     RenderEngine,
     RenderManifest,
     SessionSnapshot,
-    SessionSnapshot,
 )
 from meshprobe.protocol import (
     ComponentDisplayCommand,

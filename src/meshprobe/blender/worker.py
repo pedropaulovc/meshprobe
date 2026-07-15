@@ -15,8 +15,8 @@ import shlex
 import struct
 import sys
 import traceback
-from collections import Counter
 from array import array
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from statistics import median
