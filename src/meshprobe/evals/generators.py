@@ -77,6 +77,8 @@ PUBLIC_GENERATOR_FAMILIES = (
     GeneratorFamily.MISSING_MATERIAL,
     GeneratorFamily.AMBIGUOUS_TWIN,
 )
+
+
 class MetamorphicVariant(StrEnum):
     RENAME = "rename"
     RIGID_TRANSFORM = "rigid_transform"
