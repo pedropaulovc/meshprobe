@@ -433,6 +433,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     calls: list[object] = []
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
+
     def open_scene(path: Path) -> SimpleNamespace:
         calls.append(("open", path))
         return SimpleNamespace(source_sha256="source-hash")
@@ -693,11 +694,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
             )
             return snapshot.model_dump(mode="json")
         if operation == "component.occluders":
-            return {
-                "occluders": [
-                    {"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}
-                ]
-            }
+            return {"occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}]}
         if operation == "render.image":
             output = Path(cast(str, arguments["output_path"]))
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -727,8 +724,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert sheet.removed_occluder_ids == (blocker_id,)
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
-        panel.render.session.camera.projection.mode == "orthographic"
-        for panel in sheet.panels[3:]
+        panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
     assert output.is_file()
     assert session.snapshot() == expected_restored

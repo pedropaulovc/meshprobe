@@ -836,8 +836,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert [panel.index for panel in sheet.panels] == list(range(1, 10))
     assert len({panel.render.state_sha256 for panel in sheet.panels}) >= 8
     assert all(
-        panel.render.session.camera.projection.mode == "orthographic"
-        for panel in sheet.panels[3:]
+        panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
     assert Image.open(sheet.sheet.path).size == (384, 480)
     assert restored == initial
@@ -848,15 +847,9 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
-        ranking = controller.request(
-            "component.occluders", component_ids=[by_name["target"]]
-        )
-        controller.request(
-            "component.display", component_ids=[by_name["blocker"]], mode="hidden"
-        )
-        cleared = controller.request(
-            "component.occluders", component_ids=[by_name["target"]]
-        )
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+        controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+        cleared = controller.request("component.occluders", component_ids=[by_name["target"]])
 
     assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
     assert ranking["occluders"][0]["blocked_rays"] > 0

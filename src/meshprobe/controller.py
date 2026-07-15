@@ -322,9 +322,7 @@ class BlenderController:
                 self._render_contact_panel(command, panel_paths[2], 3, "Occluders removed")
             )
 
-            self.request(
-                "illumination.set", illumination={"preset": "flat_diagnostic"}
-            )
+            self.request("illumination.set", illumination={"preset": "flat_diagnostic"})
             self.request("component.display", component_ids=list(focus_ids), mode="isolated")
             focus_bounds = self._focus_bounds(focus_ids)
             focus_center, focus_span = self._bounds_center_span(focus_bounds)
