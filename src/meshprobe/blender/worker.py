@@ -1298,13 +1298,13 @@ def build_manifest(
     components: list[dict[str, Any]] = []
     all_world_points: list[Vector] = []
     missing_texture_count = 0
-    material_count = 0
+    components_with_materials = 0
     texture_count = 0
     for obj in objects:
         local_bounds, world_bounds = object_bounds(obj)
         all_world_points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
         materials, object_texture_count = material_summary(obj)
-        material_count += len(materials["names"])
+        components_with_materials += bool(materials["names"])
         texture_count += object_texture_count
         missing_texture_count += len(materials["missing_textures"])
         components.append(
@@ -1359,6 +1359,11 @@ def build_manifest(
     texture_capability = "absent"
     if texture_count:
         texture_capability = "partial" if missing_texture_count else "preserved"
+    material_capability = "absent"
+    if components_with_materials:
+        material_capability = (
+            "preserved" if components_with_materials == len(components) else "partial"
+        )
     return {
         "schema_version": 1,
         "source_sha256": source_sha256,
@@ -1371,7 +1376,7 @@ def build_manifest(
         "capabilities": {
             "hierarchy": "flattened" if hierarchy_flattened else "preserved",
             "component_names": "source" if names_preserved else "generated",
-            "materials": "absent" if material_count == 0 else "preserved",
+            "materials": material_capability,
             "textures": texture_capability,
         },
         "warnings": warnings,
