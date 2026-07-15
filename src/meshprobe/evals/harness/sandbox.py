@@ -366,6 +366,24 @@ def _sandbox_agent_command(
         if located_executable.parent.name == "bin" and (virtualenv_root / "pyvenv.cfg").is_file()
         else resolved_executable
     )
+    if executable == located_executable and not resolved_executable.is_relative_to("/usr"):
+        base_runtime = (
+            resolved_executable.parent.parent
+            if resolved_executable.parent.name == "bin"
+            else resolved_executable.parent
+        )
+        guest_runtimes = {base_runtime}
+        link_target = Path(os.readlink(located_executable))
+        if link_target.is_absolute():
+            guest_runtimes.add(
+                link_target.parent.parent
+                if link_target.parent.name == "bin"
+                else link_target.parent
+            )
+        mounts.extend(
+            (base_runtime, PurePosixPath(guest_runtime.as_posix()))
+            for guest_runtime in sorted(guest_runtimes)
+        )
     try:
         executable.relative_to("/usr")
     except ValueError:

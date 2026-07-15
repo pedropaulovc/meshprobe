@@ -196,6 +196,36 @@ def test_sandbox_resolves_symlinked_agent_executable(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_mounts_external_virtualenv_base_runtime(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    base_runtime = tmp_path / "hosted-python-3.13.12"
+    base_bin = base_runtime / "bin"
+    base_bin.mkdir(parents=True)
+    base_python = base_bin / "python3"
+    shutil.copy2("/usr/bin/python3", base_python)
+    runtime_alias = tmp_path / "hosted-python-3.13"
+    runtime_alias.symlink_to(base_runtime, target_is_directory=True)
+    runtime = tmp_path / "agent-venv"
+    executable_root = runtime / "bin"
+    executable_root.mkdir(parents=True)
+    (runtime / "pyvenv.cfg").write_text(
+        f"home = {base_bin}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    python = executable_root / "python"
+    python.symlink_to(runtime_alias / "bin" / "python3")
+
+    result = run_isolated(
+        (str(python), "-c", "print('external-base-runtime')"),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "external-base-runtime"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
 def test_sandbox_translates_absolute_virtualenv_shebang(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
     runtime = tmp_path / "agent-venv"
