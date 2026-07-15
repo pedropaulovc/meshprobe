@@ -57,6 +57,12 @@ class Difficulty(StrEnum):
     FULL_STACK = "full_stack"
 
 
+class ModelSource(StrEnum):
+    PROCEDURAL = "procedural"
+    CURATED = "curated"
+    PRIVATE = "private"
+
+
 class AnswerStatus(StrEnum):
     ANSWERED = "answered"
     INDETERMINATE = "indeterminate"
@@ -160,6 +166,7 @@ class EpisodeSpec(EvalModel):
     family: TaskFamily
     episode_class: EpisodeClass
     difficulty: Difficulty
+    model_source: ModelSource
     prompt: Annotated[str, StringConstraints(min_length=20, max_length=8_000)]
     answer_schema: dict[str, JsonValue]
     required_operations: tuple[Operation, ...] = Field(min_length=1)
@@ -307,4 +314,39 @@ class CorpusManifest(EvalModel):
             raise ValueError("tier episodes must be unique")
         if set(self.episodes) != self.episode_sha256.keys():
             raise ValueError("episode_sha256 must exactly cover tier episodes")
+        return self
+
+
+class RuntimePin(EvalModel):
+    meshprobe_version: str
+    protocol_version: Literal[1] = 1
+    blender_version: str
+    importer_sha256: Sha256
+    render_engines: tuple[str, ...] = Field(min_length=1)
+
+
+class PassThresholds(EvalModel):
+    overall: Annotated[float, Field(ge=0, le=1)]
+    full_stack: Annotated[float, Field(ge=0, le=1)]
+    per_operation: Annotated[float, Field(ge=0, le=1)]
+
+
+class TierManifest(EvalModel):
+    schema_version: Literal[1] = 1
+    tier: CorpusTier
+    corpus_version: str
+    corpus_manifest_sha256: Sha256
+    generator_sha256: Sha256
+    runtime: RuntimePin
+    thresholds: PassThresholds
+    episodes: tuple[OpaqueId, ...] = Field(min_length=1)
+    episode_sha256: dict[OpaqueId, Sha256]
+    model_sha256: dict[str, Sha256]
+
+    @model_validator(mode="after")
+    def validate_membership(self) -> Self:
+        if len(set(self.episodes)) != len(self.episodes):
+            raise ValueError("tier episodes must be unique")
+        if set(self.episodes) != self.episode_sha256.keys():
+            raise ValueError("tier episode hashes must exactly cover its episodes")
         return self
