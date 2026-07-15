@@ -21,6 +21,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install --yes bubblewrap
       - run: uv sync --locked --all-groups
       - run: uv run pytest --cov --cov-report=term-missing
 
