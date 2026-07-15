@@ -56,6 +56,7 @@ def provenance(thresholds: PassThresholds) -> QualificationProvenance:
         tier_manifest_sha256="2" * 64,
         runtime=RuntimePin(
             meshprobe_version="0.1.0.dev0",
+            meshprobe_sha256="b" * 64,
             blender_version="5.2.0 LTS",
             importer_sha256="3" * 64,
             render_engines=("eevee", "cycles"),

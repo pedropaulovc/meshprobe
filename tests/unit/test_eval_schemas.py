@@ -161,6 +161,7 @@ def test_corpus_and_tier_manifests_reject_duplicate_or_incomplete_membership() -
 
     runtime = RuntimePin(
         meshprobe_version="test",
+        meshprobe_sha256="b" * 64,
         blender_version="test",
         importer_sha256="d" * 64,
         render_engines=("eevee",),

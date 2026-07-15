@@ -330,6 +330,7 @@ class CorpusManifest(EvalModel):
 
 class RuntimePin(EvalModel):
     meshprobe_version: str
+    meshprobe_sha256: Sha256
     protocol_version: Literal[1] = 1
     blender_version: str
     importer_sha256: Sha256

@@ -111,6 +111,7 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
         generator_sha256=corpus.manifest.generator_sha256,
         runtime=RuntimePin(
             meshprobe_version="test",
+            meshprobe_sha256="b" * 64,
             blender_version="test",
             importer_sha256="a" * 64,
             render_engines=("eevee",),

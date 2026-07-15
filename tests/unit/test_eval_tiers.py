@@ -16,6 +16,7 @@ from meshprobe.evals.schemas import (
     RuntimePin,
 )
 from meshprobe.evals.tiers import (
+    _package_sha256,
     current_runtime_pin,
     pin_private_tier,
     pin_standard_tiers,
@@ -27,6 +28,7 @@ from meshprobe.evals.tiers import (
 def runtime_pin() -> RuntimePin:
     return RuntimePin(
         meshprobe_version="0.1.0.dev0",
+        meshprobe_sha256="b" * 64,
         blender_version="4.5.3 LTS",
         importer_sha256="a" * 64,
         render_engines=("eevee", "cycles"),
@@ -221,8 +223,25 @@ def test_current_runtime_pin_reads_exact_package_blender_and_importer(
     pin = current_runtime_pin("custom-blender")
 
     assert pin.meshprobe_version == "1.2.3"
+    assert len(pin.meshprobe_sha256) == 64
     assert pin.blender_version == "5.2.0 LTS"
     assert len(pin.importer_sha256) == 64
+
+
+def test_package_hash_is_path_independent_and_changes_with_python_source(tmp_path: Path) -> None:
+    first = tmp_path / "first" / "meshprobe"
+    second = tmp_path / "second" / "meshprobe"
+    for root in (first, second):
+        (root / "nested").mkdir(parents=True)
+        (root / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+        (root / "nested" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (root / "ignored.txt").write_text("not executable source\n", encoding="utf-8")
+
+    original = _package_sha256(first)
+    assert _package_sha256(second) == original
+
+    (second / "nested" / "module.py").write_text("VALUE = 3\n", encoding="utf-8")
+    assert _package_sha256(second) != original
 
 
 def test_current_runtime_pin_rejects_unexpected_version_output(

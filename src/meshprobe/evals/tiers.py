@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import subprocess
 from collections.abc import Iterable, Mapping
@@ -36,7 +37,7 @@ DEFAULT_THRESHOLDS = PassThresholds(
 
 
 def current_runtime_pin(blender: str = "blender") -> RuntimePin:
-    """Record exact package, importer, protocol, and Blender versions."""
+    """Record exact package, importer, protocol, and Blender identities."""
 
     completed = subprocess.run(
         (blender, "--version"),
@@ -48,13 +49,27 @@ def current_runtime_pin(blender: str = "blender") -> RuntimePin:
     first_line = completed.stdout.splitlines()[0].strip()
     if not first_line.startswith("Blender "):
         raise RuntimeError(f"unexpected Blender version output: {first_line}")
-    worker = Path(__file__).parents[1] / "blender" / "worker.py"
+    package_root = Path(__file__).parents[1]
+    worker = package_root / "blender" / "worker.py"
     return RuntimePin(
         meshprobe_version=importlib.metadata.version("meshprobe"),
+        meshprobe_sha256=_package_sha256(package_root),
         blender_version=first_line.removeprefix("Blender "),
         importer_sha256=sha256_file(worker),
         render_engines=("eevee", "cycles"),
     )
+
+
+def _package_sha256(package_root: Path) -> str:
+    """Hash every shipped Python module with checkout-independent path tags."""
+
+    entries = [
+        (path.relative_to(package_root).as_posix(), sha256_file(path))
+        for path in sorted(package_root.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    ]
+    encoded = json.dumps(entries, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def validate_runtime_pin(expected: RuntimePin, actual: RuntimePin | None = None) -> RuntimePin:
