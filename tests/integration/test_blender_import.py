@@ -23,6 +23,8 @@ from meshprobe.models import (
     AreaLight,
     Camera,
     ContactSheetManifest,
+    ContactSheetOrbit,
+    ContactSheetPanelSpec,
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
@@ -1008,8 +1010,148 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
-    assert Image.open(sheet.sheet.path).size == (384, 480)
+    assert all(panel.callouts for panel in sheet.panels)
+    assert all(panel.callouts[0].component_id == target for panel in sheet.panels)
+    assert sheet.occlusion.visible_fraction_after >= sheet.occlusion.visible_fraction_before
+    assert Image.open(sheet.sheet.path).size == (384, 528)
     assert restored == initial
+
+
+def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "custom-contact-sheet.png"
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        fixed_pose = manifest.imported_camera.pose
+        panels = (
+            ContactSheetPanelSpec(
+                caption="Perspective context",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=PerspectiveProjection(focal_length_mm=50),
+                ),
+            ),
+            ContactSheetPanelSpec(
+                caption="Left rake",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
+                display="isolated",
+            ),
+            ContactSheetPanelSpec(
+                caption="Right rake",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_RIGHT),
+                display="isolated",
+            ),
+            ContactSheetPanelSpec(
+                caption="Fixed pose wide",
+                camera=Camera(
+                    pose=fixed_pose,
+                    projection=PerspectiveProjection(focal_length_mm=35),
+                ),
+                experiment="fixed_pose_focal_study",
+            ),
+            ContactSheetPanelSpec(
+                caption="Fixed pose tele",
+                camera=Camera(
+                    pose=fixed_pose,
+                    projection=PerspectiveProjection(focal_length_mm=85),
+                ),
+                experiment="fixed_pose_focal_study",
+            ),
+            ContactSheetPanelSpec(
+                caption="Dolly wide",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=30,
+                    elevation_degrees=20,
+                    distance_mm=3_000,
+                    projection=PerspectiveProjection(focal_length_mm=35),
+                    reference_focal_length_mm=50,
+                    reference_distance_mm=3_000,
+                ),
+                experiment="dolly_zoom",
+            ),
+            ContactSheetPanelSpec(
+                caption="Dolly tele",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=30,
+                    elevation_degrees=20,
+                    distance_mm=3_000,
+                    projection=PerspectiveProjection(focal_length_mm=85),
+                    reference_focal_length_mm=50,
+                    reference_distance_mm=3_000,
+                ),
+                experiment="dolly_zoom",
+            ),
+            ContactSheetPanelSpec(
+                caption="Backlit silhouette",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=90,
+                    elevation_degrees=0,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.BACKLIT),
+            ),
+            ContactSheetPanelSpec(
+                caption="High key context",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=-45,
+                    elevation_degrees=30,
+                    distance_mm=4_000,
+                    projection=PerspectiveProjection(focal_length_mm=50),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.HIGH_KEY),
+            ),
+        )
+        sheet = controller.execute(
+            RenderContactSheetCommand(
+                request_id="custom-sheet",
+                op="render.contact_sheet",
+                recipe="custom_3x3",
+                panels=panels,
+                output_path=str(output),
+                focus_component_ids=(target,),
+                panel_width=128,
+                panel_height=128,
+                samples=1,
+            )
+        )
+
+    assert isinstance(sheet, ContactSheetManifest)
+    assert sheet.recipe == "custom_3x3"
+    assert sheet.occlusion is None
+    assert sheet.panels[1].render.session.camera.projection.mode == "orthographic"
+    assert sheet.panels[1].render.session.illumination.preset == "raking_left"
+    assert sheet.panels[2].render.session.illumination.preset == "raking_right"
+    assert sheet.panels[3].experiment == "fixed_pose_focal_study"
+    assert sheet.panels[4].experiment == "fixed_pose_focal_study"
+    assert sheet.panels[3].render.session.camera.pose == sheet.panels[4].render.session.camera.pose
+    assert sheet.panels[5].experiment == "dolly_zoom"
+    assert sheet.panels[6].experiment == "dolly_zoom"
+    assert sheet.panels[5].render.session.camera_diagnostics.target_depth_mm == pytest.approx(2_100)
+    assert sheet.panels[6].render.session.camera_diagnostics.target_depth_mm == pytest.approx(5_100)
+    assert "orthographic 2000mm" in sheet.panels[1].caption
+    assert "dolly_zoom" in sheet.panels[5].caption
+    assert Image.open(sheet.sheet.path).size == (384, 528)
 
 
 def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
@@ -1017,10 +1159,24 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
+        visibility_before = controller.request(
+            "component.visibility",
+            component_ids=[by_name["target"]],
+            width=128,
+            height=128,
+        )
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+        visibility_after = controller.request(
+            "component.visibility",
+            component_ids=[by_name["target"]],
+            width=128,
+            height=128,
+        )
         cleared = controller.request("component.occluders", component_ids=[by_name["target"]])
 
     assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
     assert ranking["occluders"][0]["blocked_rays"] > 0
+    assert visibility_before["visible_fraction"] < visibility_after["visible_fraction"]
+    assert visibility_after["visible_fraction"] == pytest.approx(1)
     assert cleared["occluders"] == []

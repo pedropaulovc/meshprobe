@@ -529,13 +529,89 @@ class ContactSheetPanel(ContractModel):
     index: Annotated[int, Field(ge=1)]
     caption: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     render: RenderManifest
+    callouts: tuple[ContactSheetCallout, ...] = ()
+    experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
+
+
+class ContactSheetCallout(ContractModel):
+    number: Annotated[int, Field(ge=1, le=99)]
+    component_id: Identifier
+    label: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    image_xy: tuple[
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+    ]
+
+
+class ContactSheetOrbit(ContractModel):
+    target: Literal["focus", "scene"] = "focus"
+    azimuth_degrees: FiniteFloat
+    elevation_degrees: FiniteFloat
+    roll_degrees: FiniteFloat = 0.0
+    distance_mm: PositiveFiniteFloat
+    projection: Projection
+    reference_focal_length_mm: PositiveFiniteFloat | None = None
+    reference_distance_mm: PositiveFiniteFloat | None = None
+
+
+class ContactSheetPanelSpec(ContractModel):
+    caption: Annotated[str, StringConstraints(min_length=1, max_length=160)]
+    camera: Camera | None = None
+    orbit: ContactSheetOrbit | None = None
+    illumination: Illumination | None = None
+    display: Literal["context", "isolated"] = "context"
+    mark: MarkMode = MarkMode.HIGHLIGHTED
+    experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
+
+    @model_validator(mode="after")
+    def validate_view_experiment(self) -> Self:
+        if (self.camera is None) == (self.orbit is None):
+            raise ValueError("custom panel must declare exactly one of camera or orbit")
+        if self.experiment == "fixed_pose_focal_study" and (
+            self.camera is None
+            or not isinstance(self.camera.projection, PerspectiveProjection)
+        ):
+            raise ValueError("fixed_pose_focal_study requires a perspective camera")
+        if self.experiment != "dolly_zoom":
+            return self
+        if self.orbit is None or not isinstance(self.orbit.projection, PerspectiveProjection):
+            raise ValueError("dolly_zoom requires a perspective orbit")
+        if (
+            self.orbit.reference_focal_length_mm is None
+            or self.orbit.reference_distance_mm is None
+        ):
+            raise ValueError("dolly_zoom requires reference focal length and distance")
+        return self
+
+
+class OccluderRemovalStep(ContractModel):
+    component_id: Identifier
+    ray_hit_count: Annotated[int, Field(ge=1)]
+    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+class OcclusionEvidence(ContractModel):
+    visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    removal_budget: Annotated[int, Field(ge=0, le=32)]
+    sample_count: Annotated[int, Field(ge=0)]
+    visible_fraction_before: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    steps: tuple[OccluderRemovalStep, ...] = ()
+    stop_reason: Literal[
+        "threshold_met_initial",
+        "threshold_met",
+        "budget_exhausted",
+        "no_blockers",
+        "focus_not_projected",
+    ]
 
 
 class ContactSheetManifest(ContractModel):
     schema_version: Literal[1] = 1
-    recipe: Literal["focused_3x3"]
+    recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()
+    occlusion: OcclusionEvidence | None = None
     sheet: ImageArtifact
     panels: tuple[ContactSheetPanel, ...] = Field(min_length=9, max_length=9)
 

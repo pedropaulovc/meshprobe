@@ -14,6 +14,7 @@ import os
 import shlex
 import struct
 import sys
+import tempfile
 import traceback
 from collections import Counter
 from copy import deepcopy
@@ -1273,6 +1274,65 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         scene.view_settings.gamma = original_gamma
 
 
+def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) -> int:
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        pixels = image.pixels[:]
+        count = 0
+        for offset in range(0, len(pixels), 4):
+            color = tuple(round(pixels[offset + channel] * 255) for channel in range(3))
+            if color in selected_colors:
+                count += 1
+        return count
+    finally:
+        bpy.data.images.remove(image)
+
+
+
+def component_visibility(command: dict[str, Any]) -> dict[str, Any]:
+    focus_ids = selected_component_ids(command)
+    width = int(command.get("width", 256))
+    height = int(command.get("height", 256))
+    if not 64 <= width <= 1_024 or not 64 <= height <= 1_024:
+        raise ValueError("component.visibility dimensions must be between 64 and 1024")
+    configure_render(
+        {
+            "engine": "eevee",
+            "width": width,
+            "height": height,
+            "samples": 1,
+        }
+    )
+    colors = component_pass_colors()
+    selected_colors = {colors[component_id] for component_id in focus_ids}
+    original_visibility = {
+        component_id: obj.hide_render for component_id, obj in COMPONENT_OBJECTS.items()
+    }
+    with tempfile.TemporaryDirectory(prefix="meshprobe-visibility-") as directory:
+        root = Path(directory)
+        context_path = root / "context.png"
+        isolated_path = root / "isolated.png"
+        try:
+            render_mask(context_path, colors)
+            visible_pixels = count_mask_pixels(context_path, selected_colors)
+            for component_id, obj in COMPONENT_OBJECTS.items():
+                obj.hide_render = component_id not in focus_ids
+            render_mask(isolated_path, colors)
+            isolated_pixels = count_mask_pixels(isolated_path, selected_colors)
+        finally:
+            for component_id, hidden in original_visibility.items():
+                COMPONENT_OBJECTS[component_id].hide_render = hidden
+    return {
+        "focus_component_ids": sorted(focus_ids),
+        "width": width,
+        "height": height,
+        "visible_pixels": visible_pixels,
+        "isolated_pixels": isolated_pixels,
+        "visible_fraction": visible_pixels / isolated_pixels if isolated_pixels else 0.0,
+        "projected": isolated_pixels > 0,
+    }
+
+
 def render_evaluator_passes(output_dir: Path, stem: str) -> dict[str, Any]:
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
@@ -1889,6 +1949,9 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
         return render_image(command)
     if operation == "scene.export_normalized":
         return export_normalized(command)
+    if operation == "component.visibility":
+        require_session()
+        return component_visibility(command)
     if operation == "component.occluders":
         require_session()
         return rank_occluders(command)

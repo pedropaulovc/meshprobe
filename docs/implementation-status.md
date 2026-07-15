@@ -24,8 +24,8 @@ exist. Counts and test names refer to the current branch.
 | Hide, show, isolate, ghost, select, highlight, and label | Complete | visual state and reset integration test |
 | Eevee/Cycles color renders and evaluator-only passes | Complete | color, EXR, component-ID, and highlighted pass tests |
 | Worker crash recovery and accepted-state replay | Complete | import and state replay integration tests |
-| Focused 3x3 contact sheet | Partial | nine panels and manifests exist; iterative visibility target, callout legend, and richer metrics remain |
-| Custom sheet recipes | Missing | Add per-panel camera, projection, focal length, illumination, and dolly-zoom recipes |
+| Focused 3x3 contact sheet | Complete | nine manifested panels, component-mask visibility, iterative blocker peeling, stop metrics, callouts, and legend |
+| Custom sheet recipes | Complete | per-panel absolute/orbit cameras, projection, focal length, illumination, fixed-pose studies, and dolly zoom |
 | Bounded request budgets | Partial | operation/render/pixel/output accounting exists; reserve output bytes before render |
 | Procedural and curated eval corpus | Complete | 672 public models and 2,528 public episodes; private manifest remains separately generated |
 | Deterministic semantic, state, evidence, safety, and budget gates | Partial | gates exist; require same-render state conjunctions and family-specific evidence combinations |

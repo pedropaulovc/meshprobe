@@ -13,20 +13,26 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
+    ContactSheetCallout,
     ContactSheetManifest,
     ContactSheetPanel,
+    ContactSheetPanelSpec,
     CustomIllumination,
     EnvironmentMap,
     Illumination,
+    IlluminationPreset,
     NormalizedGeometryArtifact,
+    OccluderRemovalStep,
+    OcclusionEvidence,
     OrthographicProjection,
     PerspectiveProjection,
+    PresetIllumination,
     Projection,
     RenderManifest,
     SceneManifest,
@@ -435,10 +441,19 @@ class BlenderController:
                 )
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("contact-sheet output must not overwrite a source asset")
+        if command.recipe == "custom_3x3":
+            return self._render_custom_contact_sheet(
+                command,
+                output,
+                panel_paths,
+                evaluator_root,
+                focus_ids,
+            )
 
         accepted_commands = list(self._accepted_commands)
         panels: list[ContactSheetPanel] = []
         removed_occluders: tuple[str, ...] = ()
+        occlusion: OcclusionEvidence | None = None
         try:
             self.request("session.reset")
             self.request("illumination.set", illumination={"preset": "neutral_studio"})
@@ -474,14 +489,8 @@ class BlenderController:
                 )
             )
 
-            ranking = self.request("component.occluders", component_ids=list(focus_ids))
-            removed_occluders = tuple(item["component_id"] for item in ranking.get("occluders", []))
-            if removed_occluders:
-                self.request(
-                    "component.display",
-                    component_ids=list(removed_occluders),
-                    mode="hidden",
-                )
+            occlusion = self._remove_occluders(command, focus_ids)
+            removed_occluders = tuple(step.component_id for step in occlusion.steps)
             panels.append(
                 self._render_contact_panel(
                     command,
@@ -534,15 +543,247 @@ class BlenderController:
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
-        captions = tuple((Path(panel.render.color.path), panel.caption) for panel in panels)
+        captions = tuple(
+            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+        )
         sheet = compose_contact_sheet(captions, output, command.panel_width, command.panel_height)
+        if occlusion is None:
+            raise BlenderWorkerError("contact-sheet occlusion analysis did not run")
         return ContactSheetManifest(
             recipe=command.recipe,
             focus_component_ids=focus_ids,
             removed_occluder_ids=removed_occluders,
+            occlusion=occlusion,
             sheet=sheet,
             panels=tuple(panels),
         )
+
+    def _render_custom_contact_sheet(
+        self,
+        command: RenderContactSheetCommand,
+        output: Path,
+        panel_paths: tuple[Path, ...],
+        evaluator_root: Path | None,
+        focus_ids: tuple[str, ...],
+    ) -> ContactSheetManifest:
+        if self._manifest is None or self._source_snapshot is None:
+            raise BlenderWorkerError("cannot render before a scene is open")
+        accepted_commands = list(self._accepted_commands)
+        panels: list[ContactSheetPanel] = []
+        aspect_ratio = command.panel_width / command.panel_height
+        try:
+            for index, (spec, panel_path) in enumerate(
+                zip(command.panels, panel_paths, strict=True),
+                start=1,
+            ):
+                self.request("session.reset")
+                illumination = spec.illumination or PresetIllumination(
+                    preset=IlluminationPreset.NEUTRAL_STUDIO
+                )
+                illumination = self._cache_environment_map(illumination)
+                self.request(
+                    "illumination.set",
+                    illumination=illumination.model_dump(mode="json"),
+                )
+                if spec.display == "isolated":
+                    self.request(
+                        "component.display",
+                        component_ids=list(focus_ids),
+                        mode="isolated",
+                    )
+                if spec.mark.value != "unmarked":
+                    self.request(
+                        "component.mark",
+                        component_ids=list(focus_ids),
+                        mode=spec.mark.value,
+                    )
+                if spec.camera is not None:
+                    self.request(
+                        "view.set",
+                        camera=spec.camera.model_dump(mode="json"),
+                        focus_component_ids=list(focus_ids),
+                        aspect_ratio=aspect_ratio,
+                    )
+                else:
+                    self._set_custom_orbit(spec, focus_ids, aspect_ratio)
+                panels.append(
+                    self._render_contact_panel(
+                        command,
+                        panel_path,
+                        index,
+                        self._custom_panel_caption(spec, illumination),
+                        evaluator_root,
+                        experiment=spec.experiment,
+                    )
+                )
+        finally:
+            self.request("session.reset")
+            for operation, arguments in accepted_commands:
+                self.request(operation, **arguments)
+
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
+        composed_panels = tuple(
+            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+        )
+        sheet = compose_contact_sheet(
+            composed_panels,
+            output,
+            command.panel_width,
+            command.panel_height,
+        )
+        return ContactSheetManifest(
+            recipe=command.recipe,
+            focus_component_ids=focus_ids,
+            sheet=sheet,
+            panels=tuple(panels),
+        )
+
+    def _set_custom_orbit(
+        self,
+        spec: ContactSheetPanelSpec,
+        focus_ids: tuple[str, ...],
+        aspect_ratio: float,
+    ) -> None:
+        if self._manifest is None or spec.orbit is None:
+            raise BlenderWorkerError("custom orbit is not available")
+        orbit = spec.orbit
+        bounds = (
+            self._focus_bounds(focus_ids)
+            if orbit.target == "focus"
+            else self._manifest.root_bounds
+        )
+        target, _ = self._bounds_center_span(bounds)
+        distance = orbit.distance_mm
+        if spec.experiment == "dolly_zoom":
+            projection = orbit.projection
+            if not isinstance(projection, PerspectiveProjection):
+                raise BlenderWorkerError("dolly_zoom requires perspective projection")
+            if (
+                orbit.reference_focal_length_mm is None
+                or orbit.reference_distance_mm is None
+            ):
+                raise BlenderWorkerError("dolly_zoom reference is incomplete")
+            distance = (
+                orbit.reference_distance_mm
+                * projection.focal_length_mm
+                / orbit.reference_focal_length_mm
+            )
+        self.request(
+            "view.orbit",
+            target_mm=list(target),
+            azimuth_degrees=orbit.azimuth_degrees,
+            elevation_degrees=orbit.elevation_degrees,
+            roll_degrees=orbit.roll_degrees,
+            distance_mm=distance,
+            projection=orbit.projection.model_dump(mode="json"),
+            focus_component_ids=list(focus_ids),
+            aspect_ratio=aspect_ratio,
+        )
+
+    @staticmethod
+    def _custom_panel_caption(
+        spec: ContactSheetPanelSpec,
+        illumination: Illumination,
+    ) -> str:
+        if spec.camera is not None:
+            projection = spec.camera.projection
+        elif spec.orbit is not None:
+            projection = spec.orbit.projection
+        else:
+            raise BlenderWorkerError("custom panel has no declared view")
+        projection_label = (
+            f"perspective {projection.focal_length_mm:g}mm"
+            if isinstance(projection, PerspectiveProjection)
+            else f"orthographic {projection.scale_mm:g}mm"
+        )
+        illumination_label = illumination.preset
+        properties = [projection_label, str(illumination_label)]
+        if spec.experiment != "declared":
+            properties.append(spec.experiment)
+        return f"{spec.caption} [{'; '.join(properties)}]"[:256]
+
+    def _remove_occluders(
+        self,
+        command: RenderContactSheetCommand,
+        focus_ids: tuple[str, ...],
+    ) -> OcclusionEvidence:
+        width, height = self._visibility_dimensions(command.panel_width, command.panel_height)
+
+        def measure() -> dict[str, Any]:
+            return self.request(
+                "component.visibility",
+                component_ids=list(focus_ids),
+                width=width,
+                height=height,
+            )
+
+        initial = measure()
+        before = float(initial["visible_fraction"])
+        after = before
+        steps: list[OccluderRemovalStep] = []
+        sample_count = 0
+        stop_reason: Literal[
+            "threshold_met_initial",
+            "threshold_met",
+            "budget_exhausted",
+            "no_blockers",
+            "focus_not_projected",
+        ]
+        if not initial.get("projected"):
+            stop_reason = "focus_not_projected"
+        elif before >= command.visibility_threshold:
+            stop_reason = "threshold_met_initial"
+        else:
+            stop_reason = "budget_exhausted"
+            for _ in range(command.occluder_budget):
+                ranking = self.request(
+                    "component.occluders",
+                    component_ids=list(focus_ids),
+                )
+                sample_count = max(sample_count, int(ranking.get("sample_count", 0)))
+                ranked = [
+                    item
+                    for item in ranking.get("occluders", [])
+                    if item["component_id"] not in {step.component_id for step in steps}
+                ]
+                if not ranked:
+                    stop_reason = "no_blockers"
+                    break
+                blocker = ranked[0]
+                component_id = str(blocker["component_id"])
+                self.request(
+                    "component.display",
+                    component_ids=[component_id],
+                    mode="hidden",
+                )
+                measured = measure()
+                after = float(measured["visible_fraction"])
+                steps.append(
+                    OccluderRemovalStep(
+                        component_id=component_id,
+                        ray_hit_count=int(blocker["blocked_rays"]),
+                        visible_fraction_after=after,
+                    )
+                )
+                if after >= command.visibility_threshold:
+                    stop_reason = "threshold_met"
+                    break
+        return OcclusionEvidence(
+            visibility_threshold=command.visibility_threshold,
+            removal_budget=command.occluder_budget,
+            sample_count=sample_count,
+            visible_fraction_before=before,
+            visible_fraction_after=after,
+            steps=tuple(steps),
+            stop_reason=stop_reason,
+        )
+
+    @staticmethod
+    def _visibility_dimensions(width: int, height: int) -> tuple[int, int]:
+        scale = min(1.0, 256 / max(width, height))
+        return max(64, round(width * scale)), max(64, round(height * scale))
 
     def _render_contact_panel(
         self,
@@ -551,6 +792,7 @@ class BlenderController:
         index: int,
         caption: str,
         evaluator_root: Path | None,
+        experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared",
     ) -> ContactSheetPanel:
         evaluator_dir = None
         if evaluator_root is not None:
@@ -566,7 +808,49 @@ class BlenderController:
         )
         render = RenderManifest.model_validate(result)
         self._verify_render_artifacts(render)
-        return ContactSheetPanel(index=index, caption=caption, render=render)
+        return ContactSheetPanel(
+            index=index,
+            caption=caption,
+            render=render,
+            callouts=self._contact_panel_callouts(render, command.focus_component_ids),
+            experiment=experiment,
+        )
+
+    def _contact_panel_callouts(
+        self,
+        render: RenderManifest,
+        focus_component_ids: tuple[str, ...],
+    ) -> tuple[ContactSheetCallout, ...]:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot build callouts before a scene is open")
+        labels = {
+            component.id: component.display_name for component in self._manifest.components
+        }
+        callouts: list[ContactSheetCallout] = []
+        for number, component_id in enumerate(dict.fromkeys(focus_component_ids), start=1):
+            bounds = render.session.camera_diagnostics.projected_bounds.get(component_id)
+            if (
+                bounds is None
+                or bounds.projection_status != "in_front"
+                or bounds.minimum_image_xy is None
+                or bounds.maximum_image_xy is None
+            ):
+                continue
+            center = (
+                (bounds.minimum_image_xy[0] + bounds.maximum_image_xy[0]) / 2,
+                (bounds.minimum_image_xy[1] + bounds.maximum_image_xy[1]) / 2,
+            )
+            if any(value < 0 or value > 1 for value in center):
+                continue
+            callouts.append(
+                ContactSheetCallout(
+                    number=number,
+                    component_id=component_id,
+                    label=labels[component_id][:64],
+                    image_xy=center,
+                )
+            )
+        return tuple(callouts)
 
     @staticmethod
     def _render_output_paths(

@@ -695,6 +695,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         ("component.mark", {"component_ids": [focus_id], "mode": "selected"})
     ]
     calls: list[str] = []
+    visibility_measurements = iter((0.2, 0.8))
 
     def request(operation: str, **arguments: object) -> dict[str, Any]:
         calls.append(operation)
@@ -732,7 +733,18 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
             )
             return snapshot.model_dump(mode="json")
         if operation == "component.occluders":
-            return {"occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}]}
+            return {
+                "sample_count": 6,
+                "occluders": [
+                    {"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}
+                ],
+            }
+        if operation == "component.visibility":
+            fraction = next(visibility_measurements)
+            return {
+                "visible_fraction": fraction,
+                "projected": True,
+            }
         if operation == "render.image":
             output = Path(cast(str, arguments["output_path"]))
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -760,6 +772,10 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
 
     assert sheet.focus_component_ids == (focus_id,)
     assert sheet.removed_occluder_ids == (blocker_id,)
+    assert sheet.occlusion.visible_fraction_before == 0.2
+    assert sheet.occlusion.visible_fraction_after == 0.8
+    assert sheet.occlusion.stop_reason == "threshold_met"
+    assert sheet.occlusion.steps[0].ray_hit_count == 3
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]

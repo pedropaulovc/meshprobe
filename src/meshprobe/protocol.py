@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from meshprobe.models import (
     Camera,
+    ContactSheetPanelSpec,
     DisplayMode,
     FiniteFloat,
     Illumination,
@@ -92,12 +93,32 @@ class RenderImageCommand(CommandModel):
 class RenderContactSheetCommand(CommandModel):
     op: Literal["render.contact_sheet"]
     output_path: str
-    recipe: Literal["focused_3x3"] = "focused_3x3"
+    recipe: Literal["focused_3x3", "custom_3x3"] = "focused_3x3"
     focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    panels: tuple[ContactSheetPanelSpec, ...] = Field(default=(), max_length=9)
     panel_width: Annotated[int, Field(ge=128, le=4_096)] = 768
     panel_height: Annotated[int, Field(ge=128, le=4_096)] = 768
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
     engine: RenderEngine = RenderEngine.EEVEE
+    visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.65
+    occluder_budget: Annotated[int, Field(ge=0, le=32)] = 3
+
+    @model_validator(mode="after")
+    def validate_recipe(self) -> Self:
+        if self.recipe == "focused_3x3":
+            if self.panels:
+                raise ValueError("focused_3x3 does not accept custom panels")
+            return self
+        if len(self.panels) != 9:
+            raise ValueError("custom_3x3 requires exactly nine panels")
+        fixed_pose_panels = [
+            panel for panel in self.panels if panel.experiment == "fixed_pose_focal_study"
+        ]
+        if len(fixed_pose_panels) > 1:
+            poses = {panel.camera.pose for panel in fixed_pose_panels if panel.camera is not None}
+            if len(poses) != 1:
+                raise ValueError("fixed_pose_focal_study panels must share one camera pose")
+        return self
 
 
 class SessionResetCommand(CommandModel):
