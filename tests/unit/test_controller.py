@@ -17,7 +17,12 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import MarkMode, SceneManifest
-from meshprobe.protocol import ComponentMarkCommand, SceneDescribeCommand, SessionResetCommand
+from meshprobe.protocol import (
+    ComponentMarkCommand,
+    SceneDescribeCommand,
+    SceneOpenCommand,
+    SessionResetCommand,
+)
 from meshprobe.session import InspectionSession, SessionSnapshot
 from meshprobe.sources import snapshot_source
 
@@ -305,6 +310,27 @@ def test_execute_returns_nonstate_result(monkeypatch) -> None:  # type: ignore[n
     assert result == {"operation": "scene.describe"}
 
 
+def test_execute_routes_scene_open_through_checked_import(
+    tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = BlenderController()
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    opened: list[Path] = []
+
+    def open_scene(path: str | Path) -> SceneManifest:
+        opened.append(Path(path))
+        return scene_manifest
+
+    monkeypatch.setattr(controller, "open_scene", open_scene)
+    result = controller.execute(
+        SceneOpenCommand(request_id="open", op="scene.open", source_path=str(source))
+    )
+
+    assert result is scene_manifest
+    assert opened == [source]
+
+
 def test_execute_recovers_once_after_crash(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     controller = BlenderController()
     snapshot = InspectionSession(scene_manifest).snapshot()
@@ -343,6 +369,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")
     controller._source_path = source
+    controller._source_sha256 = "source-hash"
     controller._accepted_commands = [
         ("component.mark", {"component_ids": ["one"], "mode": "selected"}),
         ("component.display", {"component_ids": ["one"], "mode": "hidden"}),
@@ -350,7 +377,11 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     calls: list[object] = []
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
-    monkeypatch.setattr(controller, "open_scene", lambda path: calls.append(("open", path)))
+    monkeypatch.setattr(
+        controller,
+        "open_scene",
+        lambda path: calls.append(("open", path)) or SimpleNamespace(source_sha256="source-hash"),
+    )
     monkeypatch.setattr(
         controller,
         "request",
@@ -373,3 +404,31 @@ def test_recover_session_requires_open_scene() -> None:
     controller = BlenderController()
     with pytest.raises(BlenderWorkerCrashed, match="before a scene is open"):
         controller._recover_session()
+
+
+def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    controller = BlenderController()
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller._source_path = source
+    controller._source_sha256 = "original-hash"
+    calls: list[str] = []
+    monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
+    monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(
+        controller,
+        "open_scene",
+        lambda path: SimpleNamespace(source_sha256="replacement-hash"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "request",
+        lambda operation, **arguments: pytest.fail("state must not replay"),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="changed since the session opened"):
+        controller._recover_session()
+
+    assert calls == ["close", "start", "close"]
+    assert controller._source_path is None
+    assert controller._source_sha256 is None

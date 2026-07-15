@@ -504,6 +504,21 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert isinstance(marked, SessionSnapshot)
         assert marked.components[target].mark is MarkMode.HIGHLIGHTED
+        marked_runtime = controller.request("session.runtime")["components"][target]
+        assert marked_runtime["materials"] == ["MeshProbeMark-highlighted"]
+
+        labeled = controller.execute(
+            ComponentMarkCommand(
+                request_id="label",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.LABELED,
+            )
+        )
+        assert isinstance(labeled, SessionSnapshot)
+        labeled_runtime = controller.request("session.runtime")["components"][target]
+        assert labeled_runtime["materials"] == ["MeshProbeMark-labeled"]
+        assert labeled_runtime["label"].startswith("MeshProbeLabel-")
 
         lit = controller.execute(
             IlluminationSetCommand(
@@ -588,3 +603,30 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
     assert recovered.components[target].display is DisplayMode.HIDDEN
     assert recovered.components[target].mark is MarkMode.SELECTED
     assert runtime["components"][target]["hide_render"]
+
+
+def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        before = controller.request("session.runtime")
+        with pytest.raises(BlenderWorkerError, match="at least one component"):
+            controller.request("component.display", component_ids=[], mode="isolated")
+        after = controller.request("session.runtime")
+
+    assert after["components"][target] == before["components"][target]
+
+
+def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    corrupt = tmp_path / "corrupt.glb"
+    corrupt.write_bytes(b"not a glb")
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        with pytest.raises(BlenderWorkerError):
+            controller.open_scene(corrupt)
+        with pytest.raises(BlenderWorkerError, match="no scene is open"):
+            controller.request("scene.describe")
+        assert controller._source_path is None
+        assert controller._source_sha256 is None

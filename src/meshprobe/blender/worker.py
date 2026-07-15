@@ -34,6 +34,7 @@ IMPORTED_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA: dict[str, Any] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
+MARK_OBJECTS: dict[str, bpy.types.Object] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -574,24 +575,85 @@ def restore_mesh(component_id: str) -> None:
         bpy.data.meshes.remove(replacement)
 
 
-def apply_ghost(component_id: str) -> None:
+def replacement_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
+    material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    material.diffuse_color = color
+    material.use_nodes = True
+    principled = material.node_tree.nodes.get("Principled BSDF")
+    if principled is not None:
+        principled.inputs["Base Color"].default_value = color
+        principled.inputs["Alpha"].default_value = color[3]
+    if color[3] < 1 and hasattr(material, "surface_render_method"):
+        material.surface_render_method = "DITHERED"
+    return material
+
+
+def replace_component_material(component_id: str, material: bpy.types.Material) -> None:
     obj = COMPONENT_OBJECTS[component_id]
     restore_mesh(component_id)
     obj.data = obj.data.copy()
     obj.data.materials.clear()
-    material = bpy.data.materials.get("MeshProbeGhost") or bpy.data.materials.new("MeshProbeGhost")
-    material.diffuse_color = (0.35, 0.65, 1.0, 0.2)
-    material.use_nodes = True
-    material.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (
-        0.35,
-        0.65,
-        1.0,
-        1.0,
-    )
-    material.node_tree.nodes["Principled BSDF"].inputs["Alpha"].default_value = 0.2
-    if hasattr(material, "surface_render_method"):
-        material.surface_render_method = "DITHERED"
     obj.data.materials.append(material)
+    for polygon in obj.data.polygons:
+        polygon.material_index = 0
+
+
+def clear_component_label(component_id: str) -> None:
+    label = MARK_OBJECTS.pop(component_id, None)
+    if label is None:
+        return
+    data = label.data
+    bpy.data.objects.remove(label, do_unlink=True)
+    if data.users == 0:
+        bpy.data.curves.remove(data)
+
+
+def create_component_label(component_id: str) -> None:
+    component = next(item for item in require_session()["components"] if item["id"] == component_id)
+    bounds = component["world_bounds"]
+    minimum = bounds["minimum_mm"]
+    maximum = bounds["maximum_mm"]
+    _, scene_span = scene_center_and_span()
+    data = bpy.data.curves.new(f"MeshProbeLabel-{component_id}", "FONT")
+    data.body = component["display_name"]
+    data.align_x = "CENTER"
+    data.align_y = "BOTTOM"
+    data.size = max(scene_span / MILLIMETERS_PER_METER / 30.0, 0.002)
+    data.extrude = data.size * 0.01
+    label = bpy.data.objects.new(f"MeshProbeLabel-{component_id}", data)
+    bpy.context.scene.collection.objects.link(label)
+    label.location = (
+        (minimum[0] + maximum[0]) / 2 / MILLIMETERS_PER_METER,
+        (minimum[1] + maximum[1]) / 2 / MILLIMETERS_PER_METER,
+        (maximum[2] + scene_span * 0.02) / MILLIMETERS_PER_METER,
+    )
+    label.rotation_mode = "QUATERNION"
+    label.rotation_quaternion = camera_object().matrix_world.to_quaternion()
+    data.materials.append(replacement_material("MeshProbeMark-labeled", (1.0, 0.85, 0.05, 1.0)))
+    MARK_OBJECTS[component_id] = label
+
+
+def refresh_component_appearance(component_id: str) -> None:
+    restore_mesh(component_id)
+    clear_component_label(component_id)
+    state = COMPONENT_STATES[component_id]
+    mark = state["mark"]
+    if mark != "unmarked":
+        colors = {
+            "selected": (0.05, 0.8, 1.0, 1.0),
+            "highlighted": (1.0, 0.2, 0.02, 1.0),
+            "labeled": (1.0, 0.85, 0.05, 1.0),
+        }
+        replace_component_material(
+            component_id, replacement_material(f"MeshProbeMark-{mark}", colors[mark])
+        )
+        if mark == "labeled":
+            create_component_label(component_id)
+        return
+    if state["display"] == "ghosted":
+        replace_component_material(
+            component_id, replacement_material("MeshProbeGhost", (0.35, 0.65, 1.0, 0.2))
+        )
 
 
 def set_component_visibility(component_id: str, mode: str) -> None:
@@ -599,18 +661,22 @@ def set_component_visibility(component_id: str, mode: str) -> None:
     hidden = mode == "hidden"
     obj.hide_render = hidden
     obj.hide_viewport = hidden
-    if mode == "ghosted":
-        apply_ghost(component_id)
-    else:
-        restore_mesh(component_id)
     COMPONENT_STATES[component_id]["display"] = mode
+    refresh_component_appearance(component_id)
 
 
-def component_display(command: dict[str, Any]) -> dict[str, Any]:
+def selected_component_ids(command: dict[str, Any]) -> set[str]:
     selected = set(command["component_ids"])
+    if not selected:
+        raise ValueError("at least one component id is required")
     unknown = selected - COMPONENT_OBJECTS.keys()
     if unknown:
         raise ValueError(f"unknown component ids: {sorted(unknown)}")
+    return selected
+
+
+def component_display(command: dict[str, Any]) -> dict[str, Any]:
+    selected = selected_component_ids(command)
     mode = command["mode"]
     if mode == "isolated":
         for component_id in COMPONENT_OBJECTS:
@@ -624,12 +690,10 @@ def component_display(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def component_mark(command: dict[str, Any]) -> dict[str, Any]:
-    selected = set(command["component_ids"])
-    unknown = selected - COMPONENT_OBJECTS.keys()
-    if unknown:
-        raise ValueError(f"unknown component ids: {sorted(unknown)}")
+    selected = selected_component_ids(command)
     for component_id in selected:
         COMPONENT_STATES[component_id]["mark"] = command["mode"]
+        refresh_component_appearance(component_id)
     return session_snapshot()
 
 
@@ -650,6 +714,7 @@ def reset_session() -> dict[str, Any]:
         raise ValueError("session state is not initialized")
     for component_id, obj in COMPONENT_OBJECTS.items():
         restore_mesh(component_id)
+        clear_component_label(component_id)
         hide_render, hide_viewport = ORIGINAL_VISIBILITY[component_id]
         obj.hide_render = hide_render
         obj.hide_viewport = hide_viewport
@@ -670,6 +735,8 @@ def runtime_diagnostics() -> dict[str, Any]:
                 "hide_render": obj.hide_render,
                 "hide_viewport": obj.hide_viewport,
                 "mesh_name": obj.data.name,
+                "materials": [material.name for material in obj.data.materials],
+                "label": MARK_OBJECTS[component_id].name if component_id in MARK_OBJECTS else None,
             }
             for component_id, obj in COMPONENT_OBJECTS.items()
         },
@@ -685,7 +752,7 @@ def runtime_diagnostics() -> dict[str, Any]:
 def initialize_session(manifest: dict[str, Any]) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
-    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
 
     MANIFEST = manifest
     objects_by_path = {
@@ -710,6 +777,7 @@ def initialize_session(manifest: dict[str, Any]) -> None:
     CURRENT_CAMERA = deepcopy(IMPORTED_CAMERA)
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
+    MARK_OBJECTS = {}
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 
@@ -986,11 +1054,28 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
     source_sha256 = command.get("source_sha256") or sha256_file(source_path)
+    clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
     initialize_session(manifest)
     return manifest
+
+
+def clear_session_state() -> None:
+    global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
+    MANIFEST = None
+    COMPONENT_OBJECTS = {}
+    ORIGINAL_MESHES = {}
+    ORIGINAL_VISIBILITY = {}
+    COMPONENT_STATES = {}
+    IMPORTED_CAMERA = None
+    CURRENT_CAMERA = None
+    IMPORTED_ILLUMINATION = None
+    CURRENT_ILLUMINATION = None
+    MARK_OBJECTS = {}
 
 
 def dispatch(command: dict[str, Any]) -> dict[str, Any]:

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.models import SceneManifest
-from meshprobe.protocol import Command
+from meshprobe.protocol import Command, SceneOpenCommand
 from meshprobe.session import SessionSnapshot
 from meshprobe.sources import sha256_file, snapshot_source
 
@@ -61,6 +61,7 @@ class BlenderController:
         self._logs: list[str] = []
         self.ready_event: dict[str, Any] | None = None
         self._source_path: Path | None = None
+        self._source_sha256: str | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
@@ -140,6 +141,9 @@ class BlenderController:
     def open_scene(self, source_path: str | Path) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
         before = snapshot_source(source)
+        self._source_path = None
+        self._source_sha256 = None
+        self._accepted_commands.clear()
         try:
             result = self.request(
                 "scene.open", source_path=str(source), source_sha256=before.sha256
@@ -157,10 +161,12 @@ class BlenderController:
         if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
         self._source_path = source
-        self._accepted_commands.clear()
+        self._source_sha256 = manifest.source_sha256
         return manifest
 
     def execute(self, command: Command) -> object:
+        if isinstance(command, SceneOpenCommand):
+            return self.open_scene(command.source_path)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         try:
@@ -177,13 +183,19 @@ class BlenderController:
         return result
 
     def _recover_session(self) -> None:
-        if self._source_path is None:
+        if self._source_path is None or self._source_sha256 is None:
             raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
         source_path = self._source_path
+        source_sha256 = self._source_sha256
         accepted_commands = list(self._accepted_commands)
         self.close()
         self.start()
-        self.open_scene(source_path)
+        reopened = self.open_scene(source_path)
+        if reopened.source_sha256 != source_sha256:
+            self.close()
+            self._source_path = None
+            self._source_sha256 = None
+            raise BlenderWorkerError("source asset bundle changed since the session opened")
         for operation, arguments in accepted_commands:
             self.request(operation, **arguments)
         self._accepted_commands = accepted_commands
