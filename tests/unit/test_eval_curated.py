@@ -425,6 +425,27 @@ def test_curated_variant_build_surfaces_blender_failure(
         build_curated_variants(catalog, sources, tmp_path / "builds")
 
 
+def test_curated_variant_build_revalidates_catalog_sources(tmp_path: Path) -> None:
+    source = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path / "source")
+    catalog = catalog_for(source.path)
+    sources = {item.source_id: source.path for item in catalog.sources}
+    tampered = tmp_path / "tampered.glb"
+    tampered.write_bytes(source.path.read_bytes() + b"changed")
+
+    with pytest.raises(RuntimeError, match="source hash mismatch"):
+        build_curated_variants(
+            catalog,
+            {**sources, catalog.sources[0].source_id: tampered},
+            tmp_path / "builds",
+        )
+    with pytest.raises(ValueError, match="source set mismatch"):
+        build_curated_variants(
+            catalog,
+            {key: value for key, value in sources.items() if key != catalog.sources[0].source_id},
+            tmp_path / "builds",
+        )
+
+
 def test_curated_task_corpus_publishes_with_a_persistent_manifest_worker(
     tmp_path: Path,
     scene_manifest: SceneManifest,

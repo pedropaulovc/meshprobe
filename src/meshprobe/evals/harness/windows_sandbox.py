@@ -174,6 +174,7 @@ class WindowsProcess:
         if exit_code.value == _STILL_ACTIVE:
             return None
         self.returncode = _signed_exit_code(exit_code.value)
+        self._finish()
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:

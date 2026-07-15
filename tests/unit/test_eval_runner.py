@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -100,6 +101,24 @@ class PassingAdapter:
         )
 
 
+class NonzeroAdapter(PassingAdapter):
+    def run(
+        self,
+        *,
+        spec: EpisodeSpec,
+        broker: EvaluationBroker,
+        input_root: Path,
+        artifact_root: Path,
+    ) -> AdapterRun:
+        run = super().run(
+            spec=spec,
+            broker=broker,
+            input_root=input_root,
+            artifact_root=artifact_root,
+        )
+        return replace(run, returncode=7)
+
+
 def test_runner_materializes_isolated_episode_scores_and_publishes_report(tmp_path: Path) -> None:
     corpus = build_corpus(
         tmp_path / "corpus",
@@ -134,3 +153,13 @@ def test_runner_materializes_isolated_episode_scores_and_publishes_report(tmp_pa
     assert run.trace_path.read_text(encoding="utf-8").count("\n") == 4
     assert service.closed
     assert not (run.run_root / "agent-input" / "ground_truth").exists()
+
+    failed = run_episode(
+        corpus_root=corpus.root,
+        episode_id=episode_id,
+        adapter=NonzeroAdapter(truth.answer, truth.component_roles["idler"]),
+        output_root=tmp_path / "nonzero-runs",
+        service_factory=lambda: RunnerService(truth.component_roles["idler"]),
+    )
+    assert failed.report.gates[0].gate == "adapter"
+    assert failed.report.gates[0].status == "fail"

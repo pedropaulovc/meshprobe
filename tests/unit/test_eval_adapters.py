@@ -232,6 +232,57 @@ def test_mcp_adapter_serves_same_broker_contract_and_accepts_submission(tmp_path
     assert [event.operation for event in broker.events] == ["scene.open", "scene.describe"]
 
 
+def test_mcp_adapter_interoperates_with_official_python_sdk_stdio(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    public.mkdir()
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), public)
+    episode = generate_episodes(model)[0]
+    answer = episode.ground_truth.answer.model_dump(mode="json")
+    script = public / "official_mcp_agent.py"
+    script.write_text(
+        "import anyio, json\n"
+        "from mcp import ClientSession\n"
+        "from mcp.server.stdio import stdio_server\n"
+        f"answer={answer!r}\n"
+        "async def main():\n"
+        "  async with stdio_server() as (read_stream, write_stream):\n"
+        "    async with ClientSession(read_stream, write_stream) as session:\n"
+        "      initialized=await session.initialize()\n"
+        "      episode=json.loads(initialized.instructions)\n"
+        "      tools=await session.list_tools()\n"
+        "      assert [tool.name for tool in tools.tools] == ['meshprobe','submit']\n"
+        "      await session.call_tool('meshprobe', {'command': {'request_id':'open',"
+        "'op':'scene.open','source_path':episode['model_path']}})\n"
+        "      await session.call_tool('meshprobe', {'command': {'request_id':'describe',"
+        "'op':'scene.describe'}})\n"
+        "      await session.call_tool('submit', {'episode_id':episode['episode_id'],"
+        "'answer':answer})\n"
+        "anyio.run(main)\n",
+        encoding="utf-8",
+    )
+    broker = EvaluationBroker(
+        service=AdapterService(),
+        model_path=model.path,
+        artifact_root=tmp_path / "agent-artifacts",
+        evaluator_root=tmp_path / "evaluator" / "passes",
+        trace_path=tmp_path / "evaluator" / "trace.jsonl",
+        budgets=episode.spec.budgets,
+    )
+
+    run = McpStdioAdapter((sys.executable, visible_input_path(script))).run(
+        spec=episode.spec,
+        broker=broker,
+        input_root=public,
+        artifact_root=tmp_path / "agent-artifacts",
+    )
+
+    assert run.protocol_error is None, run.stderr
+    assert run.returncode == 0, run.stderr
+    assert run.submission is not None
+    assert run.submission.answer == episode.ground_truth.answer
+    assert [event.operation for event in broker.events] == ["scene.open", "scene.describe"]
+
+
 def test_mcp_adapter_json_rpc_validation_and_tool_error_paths(tmp_path: Path) -> None:
     public = tmp_path / "public"
     public.mkdir()

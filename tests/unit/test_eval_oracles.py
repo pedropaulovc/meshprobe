@@ -474,23 +474,44 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         ),
     )
     snapshot = snapshot_source(model.path)
+    submission = EpisodeSubmission(
+        episode_id=episode.spec.episode_id,
+        answer=episode.ground_truth.answer,
+        evidence_manifest_paths=tuple(
+            render.color.path for render in (perspective, raking_left, raking_right, backlit)
+        ),
+    )
     report = score_episode(
         OracleInputs(
             spec=episode.spec,
             truth=episode.ground_truth,
-            submission=EpisodeSubmission(
-                episode_id=episode.spec.episode_id,
-                answer=episode.ground_truth.answer,
-            ),
+            submission=submission,
             trace=trace,
             source_before=snapshot,
             source_after=snapshot,
+            artifact_root=tmp_path,
             renders=(perspective, raking_left, raking_right, backlit),
         )
     )
 
     assert next(gate for gate in report.gates if gate.gate == "state").status is GateStatus.PASS
     assert next(gate for gate in report.gates if gate.gate == "evidence").status is GateStatus.PASS
+    missing_submission = score_episode(
+        replace(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=submission.model_copy(update={"evidence_manifest_paths": ()}),
+                trace=trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                artifact_root=tmp_path,
+                renders=(perspective, raking_left, raking_right, backlit),
+            )
+        )
+    )
+    missing_evidence = next(gate for gate in missing_submission.gates if gate.gate == "evidence")
+    assert missing_evidence.status is GateStatus.FAIL
     detached_trace = tuple(
         event.model_copy(update={"state_after_sha256": "f" * 64})
         if event.operation is not Operation.RENDER_IMAGE
@@ -502,13 +523,11 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         OracleInputs(
             spec=episode.spec,
             truth=episode.ground_truth,
-            submission=EpisodeSubmission(
-                episode_id=episode.spec.episode_id,
-                answer=episode.ground_truth.answer,
-            ),
+            submission=submission,
             trace=detached_trace,
             source_before=snapshot,
             source_after=snapshot,
+            artifact_root=tmp_path,
             renders=(perspective, raking_left, raking_right, backlit),
         )
     )
@@ -533,13 +552,11 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             OracleInputs(
                 spec=episode.spec,
                 truth=episode.ground_truth,
-                submission=EpisodeSubmission(
-                    episode_id=episode.spec.episode_id,
-                    answer=episode.ground_truth.answer,
-                ),
+                submission=submission,
                 trace=reduced_trace,
                 source_before=snapshot,
                 source_after=snapshot,
+                artifact_root=tmp_path,
                 renders=(perspective, raking_left, raking_right, backlit),
             )
         )
@@ -575,13 +592,11 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             OracleInputs(
                 spec=episode.spec,
                 truth=episode.ground_truth,
-                submission=EpisodeSubmission(
-                    episode_id=episode.spec.episode_id,
-                    answer=episode.ground_truth.answer,
-                ),
+                submission=submission,
                 trace=broken_trace,
                 source_before=snapshot,
                 source_after=snapshot,
+                artifact_root=tmp_path,
                 renders=(perspective, raking_left, raking_right, backlit),
             )
         )
@@ -617,13 +632,11 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             OracleInputs(
                 spec=episode.spec,
                 truth=episode.ground_truth,
-                submission=EpisodeSubmission(
-                    episode_id=episode.spec.episode_id,
-                    answer=episode.ground_truth.answer,
-                ),
+                submission=submission,
                 trace=trace,
                 source_before=snapshot,
                 source_after=snapshot,
+                artifact_root=tmp_path,
                 renders=(
                     perspective_raking,
                     neutral_orthographic,
@@ -648,19 +661,33 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
                 OracleInputs(
                     spec=episode.spec,
                     truth=episode.ground_truth,
-                    submission=EpisodeSubmission(
-                        episode_id=episode.spec.episode_id,
-                        answer=episode.ground_truth.answer,
-                    ),
+                    submission=submission,
                     trace=trace,
                     source_before=snapshot,
                     source_after=snapshot,
+                    artifact_root=tmp_path,
                     renders=reduced,
                 )
             )
         )
         evidence_gate = next(gate for gate in reduced_report.gates if gate.gate == "evidence")
         assert evidence_gate.status is GateStatus.FAIL
+
+    Path(perspective.color.path).write_bytes(b"agent replacement")
+    tampered_report = score_episode(
+        OracleInputs(
+            spec=episode.spec,
+            truth=episode.ground_truth,
+            submission=submission,
+            trace=trace,
+            source_before=snapshot,
+            source_after=snapshot,
+            artifact_root=tmp_path,
+            renders=(perspective, raking_left, raking_right, backlit),
+        )
+    )
+    tampered_evidence = next(gate for gate in tampered_report.gates if gate.gate == "evidence")
+    assert tampered_evidence.status is GateStatus.FAIL
 
 
 def test_full_investigation_coverage_fails_when_any_operation_is_removed(

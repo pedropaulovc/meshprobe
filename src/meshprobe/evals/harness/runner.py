@@ -123,6 +123,7 @@ def run_episode(
             trace=broker.events,
             source_before=source_before,
             source_after=source_after,
+            artifact_root=artifact_root,
             renders=renders,
             contact_sheets=contact_sheets,
             public_errors=broker.public_errors,
@@ -168,7 +169,12 @@ def _render_results(
 
 
 def _adapter_gate(run: AdapterRun) -> GateResult:
-    if run.submission is not None and run.protocol_error is None and not run.timed_out:
+    if (
+        run.submission is not None
+        and run.protocol_error is None
+        and not run.timed_out
+        and run.returncode == 0
+    ):
         return GateResult(
             gate="adapter",
             status=GateStatus.PASS,

@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -15,8 +16,10 @@ from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
 from meshprobe.controller import BlenderWorkerError
 from meshprobe.evals.harness.sandbox import visible_input_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceEvent, TraceStatus
+from meshprobe.models import CustomIllumination
 from meshprobe.protocol import (
     Command,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -228,6 +231,26 @@ class EvaluationBroker:
                     f"scene.open must use assigned model {self.visible_model_path}",
                 )
             return command.model_copy(update={"source_path": str(self._model_path)}), 0, 0, 0, None
+        if isinstance(command, IlluminationSetCommand):
+            illumination = command.illumination
+            if not isinstance(illumination, CustomIllumination):
+                return command, 0, 0, 0, None
+            environment_map = illumination.environment_map
+            if environment_map is None:
+                return command, 0, 0, 0, None
+            translated_map = environment_map.model_copy(
+                update={"path": str(self._readable_path(environment_map.path))}
+            )
+            translated_illumination = illumination.model_copy(
+                update={"environment_map": translated_map}
+            )
+            return (
+                command.model_copy(update={"illumination": translated_illumination}),
+                0,
+                0,
+                0,
+                None,
+            )
         if isinstance(command, RenderImageCommand):
             render_count = 1
             pixels = command.width * command.height
@@ -258,6 +281,43 @@ class EvaluationBroker:
             self._check_render_budget(render_count, pixels, byte_reservation)
             return translated_sheet, render_count, pixels, byte_reservation, staging_root
         return command, 0, 0, 0, None
+
+    def _readable_path(self, visible_path: str) -> Path:
+        input_root = self._model_path.parent
+        if os.name == "nt":
+            host_candidate = Path(visible_path)
+            if not host_candidate.is_absolute():
+                raise _RejectedCommand("broker.input_path", "environment map path must be absolute")
+            resolved = host_candidate.resolve(strict=True)
+        else:
+            sandbox_candidate = PurePosixPath(visible_path)
+            prefixes = {
+                PurePosixPath("/workspace/input"): input_root,
+                PurePosixPath("/workspace/artifacts"): self._artifact_root,
+            }
+            for prefix, root in prefixes.items():
+                try:
+                    relative = sandbox_candidate.relative_to(prefix)
+                except ValueError:
+                    continue
+                if not relative.parts or ".." in relative.parts:
+                    raise _RejectedCommand(
+                        "broker.input_path", "environment map escapes assigned storage"
+                    )
+                resolved = (root / Path(*relative.parts)).resolve(strict=True)
+                break
+            else:
+                raise _RejectedCommand(
+                    "broker.input_path",
+                    "environment map must be under the assigned input or artifact directory",
+                )
+        if not resolved.is_file():
+            raise _RejectedCommand("broker.input_path", "environment map must be a regular file")
+        if not (
+            resolved.is_relative_to(input_root) or resolved.is_relative_to(self._artifact_root)
+        ):
+            raise _RejectedCommand("broker.input_path", "environment map escapes assigned storage")
+        return resolved
 
     def _artifact_path(self, visible_path: str) -> Path:
         relative: PurePosixPath
@@ -307,9 +367,7 @@ class EvaluationBroker:
         request_id: str,
     ) -> tuple[Path, Path]:
         request_digest = hashlib.sha256(request_id.encode()).hexdigest()[:16]
-        staging_root = (
-            self._artifact_root / ".meshprobe-staging" / (f"{sequence:04d}-{request_digest}")
-        )
+        staging_root = self._evaluator_root / "staging" / f"{sequence:04d}-{request_digest}"
         if staging_root.exists():
             raise _RejectedCommand("broker.staging_exists", "request staging directory exists")
         relative = output_path.relative_to(self._artifact_root)
@@ -330,15 +388,53 @@ class EvaluationBroker:
         staged_files = tuple(path for path in staging_root.rglob("*") if path.is_file())
         if not staged_files:
             raise ValueError("render produced no staged artifacts")
-        destinations = tuple(
-            self._artifact_root / path.relative_to(staging_root) for path in staged_files
-        )
-        if any(path.exists() for path in destinations):
-            raise _RejectedCommand("broker.output_exists", "render artifact already exists")
-        for source, destination in zip(staged_files, destinations, strict=True):
+        for source in staged_files:
+            relative = source.relative_to(staging_root)
+            if os.name == "posix":
+                self._publish_staged_file_posix(source, relative)
+                continue
+            destination = self._artifact_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if any(parent.is_symlink() for parent in (destination, *destination.parents)):
+                raise _RejectedCommand("broker.output_path", "render destination uses a symlink")
+            resolved_parent = destination.parent.resolve(strict=True)
+            if not resolved_parent.is_relative_to(self._artifact_root):
+                raise _RejectedCommand(
+                    "broker.output_path", "render destination escapes artifact root"
+                )
+            if destination.exists():
+                raise _RejectedCommand("broker.output_exists", "render artifact already exists")
             os.replace(source, destination)
         shutil.rmtree(staging_root)
+
+    def _publish_staged_file_posix(self, source: Path, relative: Path) -> None:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        root_fd = os.open(self._artifact_root, flags)
+        parent_fd = root_fd
+        try:
+            for part in relative.parts[:-1]:
+                with suppress(FileExistsError):
+                    os.mkdir(part, mode=0o700, dir_fd=parent_fd)
+                next_fd = os.open(part, flags, dir_fd=parent_fd)
+                if parent_fd != root_fd:
+                    os.close(parent_fd)
+                parent_fd = next_fd
+            name = relative.name
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise _RejectedCommand("broker.output_exists", "render artifact already exists")
+            os.replace(source, name, dst_dir_fd=parent_fd)
+        except OSError as error:
+            raise _RejectedCommand(
+                "broker.output_path", "render destination is not a safe artifact path"
+            ) from error
+        finally:
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+            os.close(root_fd)
 
     @staticmethod
     def _discard_request_outputs(staging_root: Path | None, private_dir: Path) -> None:
@@ -417,7 +513,7 @@ def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) 
         return {
             key: _public_result(item, artifact_root, evaluator_root)
             for key, item in value.items()
-            if key != "evaluator"
+            if key not in {"evaluator", "normalized_geometry"}
         }
     if not isinstance(value, str):
         return value

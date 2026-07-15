@@ -13,9 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Protocol
 
-if os.name == "posix":  # pragma: no cover
-    import resource
-
 
 class SandboxUnavailable(RuntimeError):
     """The host cannot provide the required network and filesystem isolation."""
@@ -251,11 +248,15 @@ def spawn_isolated(
     if os.name != "posix":  # pragma: no cover
         raise SandboxUnavailable(f"unsupported sandbox host: {os.name}")
     executable = _bubblewrap_path(bubblewrap)
-    existing_user_tasks = _user_task_count()
     sandbox_command = _sandbox_command(executable, command, public, artifacts, active_environment)
+    limited_command = _limit_command(
+        sandbox_command,
+        active_limits,
+        existing_user_tasks=_user_task_count(),
+    )
     started = time.monotonic()
     process = subprocess.Popen(
-        sandbox_command,
+        limited_command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -263,7 +264,6 @@ def spawn_isolated(
         encoding="utf-8",
         errors="replace",
         start_new_session=True,
-        preexec_fn=lambda: _set_limits(active_limits, existing_user_tasks),
         bufsize=1,
     )
     return IsolatedProcess(
@@ -290,7 +290,7 @@ def _sandbox_command(
     artifact_root: Path,
     environment: Mapping[str, str],
 ) -> tuple[str, ...]:
-    runtime_root, translated_command = _sandbox_agent_command(command)
+    mounts, translated_command = _sandbox_agent_command(command)
     args = [
         str(bubblewrap),
         "--unshare-all",
@@ -337,10 +337,10 @@ def _sandbox_command(
         "LANG",
         "C.UTF-8",
     ]
-    if runtime_root is not None:
-        mount = PurePosixPath("/opt/meshprobe-agent")
+    for host, mount in mounts:
+        args.extend(("--ro-bind", str(host), str(mount)))
+    if any(mount == PurePosixPath("/opt/meshprobe-agent") for _host, mount in mounts):
         executable_parent = str(PurePosixPath(translated_command[0]).parent)
-        args.extend(("--ro-bind", str(runtime_root), str(mount)))
         args.extend(("--setenv", "PATH", f"{executable_parent}:/usr/bin:/bin"))
     for name, value in sorted(environment.items()):
         if not name or "=" in name or "\x00" in name or "\x00" in value:
@@ -350,30 +350,60 @@ def _sandbox_command(
     return tuple(args)
 
 
-def _sandbox_agent_command(command: tuple[str, ...]) -> tuple[Path | None, tuple[str, ...]]:
+def _sandbox_agent_command(
+    command: tuple[str, ...],
+) -> tuple[tuple[tuple[Path, PurePosixPath], ...], tuple[str, ...]]:
     resolved_name = shutil.which(command[0])
     if resolved_name is None:
         raise FileNotFoundError(f"agent executable not found: {command[0]}")
-    executable = Path(resolved_name).absolute()
+    located_executable = Path(resolved_name).absolute()
+    resolved_executable = located_executable.resolve(strict=True)
+    mounts: list[tuple[Path, PurePosixPath]] = []
+    runtime_root: Path | None = None
+    virtualenv_root = located_executable.parent.parent
+    executable = (
+        located_executable
+        if located_executable.parent.name == "bin" and (virtualenv_root / "pyvenv.cfg").is_file()
+        else resolved_executable
+    )
     try:
         executable.relative_to("/usr")
     except ValueError:
-        pass
+        runtime_root = executable.parent
+        if runtime_root.name == "bin" and (runtime_root.parent / "pyvenv.cfg").is_file():
+            runtime_root = runtime_root.parent
+        runtime_mount = PurePosixPath("/opt/meshprobe-agent")
+        mounts.append((runtime_root, runtime_mount))
+        relative_executable = executable.relative_to(runtime_root)
+        translated_executable = runtime_mount / PurePosixPath(relative_executable.as_posix())
     else:
-        return None, (str(executable), *command[1:])
-    runtime_root = executable.parent
-    if runtime_root.name == "bin" and (runtime_root.parent / "pyvenv.cfg").is_file():
-        runtime_root = runtime_root.parent
-    relative_executable = executable.relative_to(runtime_root)
-    translated = PurePosixPath("/opt/meshprobe-agent") / PurePosixPath(
-        relative_executable.as_posix()
-    )
+        translated_executable = PurePosixPath(str(executable))
+    translated_arguments = list(command[1:])
+    for index, argument in enumerate(translated_arguments, start=1):
+        candidate = Path(argument).expanduser()
+        if argument.startswith("/workspace/") or not candidate.is_file():
+            continue
+        resolved_argument = candidate.resolve(strict=True)
+        if resolved_argument.is_relative_to("/usr"):
+            translated_arguments[index - 1] = str(resolved_argument)
+            continue
+        if runtime_root is not None and resolved_argument.is_relative_to(runtime_root):
+            relative_argument = resolved_argument.relative_to(runtime_root)
+            translated_arguments[index - 1] = str(
+                PurePosixPath("/opt/meshprobe-agent") / PurePosixPath(relative_argument.as_posix())
+            )
+            continue
+        argument_mount = PurePosixPath(
+            f"/opt/meshprobe-agent-arguments/{index:04d}-{resolved_argument.name}"
+        )
+        mounts.append((resolved_argument, argument_mount))
+        translated_arguments[index - 1] = str(argument_mount)
     try:
         with executable.open("rb") as stream:
             first_line = stream.read(4_096).split(b"\n", 1)[0].decode("utf-8", errors="replace")
     except OSError:
         first_line = ""
-    if first_line.startswith("#!"):
+    if first_line.startswith("#!") and runtime_root is not None:
         shebang = shlex.split(first_line[2:].strip())
         if shebang:
             interpreter = Path(shebang[0])
@@ -385,13 +415,34 @@ def _sandbox_agent_command(command: tuple[str, ...]) -> tuple[Path | None, tuple
                 translated_interpreter = PurePosixPath("/opt/meshprobe-agent") / PurePosixPath(
                     relative_interpreter.as_posix()
                 )
-                return runtime_root, (
+                return tuple(mounts), (
                     str(translated_interpreter),
                     *shebang[1:],
-                    str(translated),
-                    *command[1:],
+                    str(translated_executable),
+                    *translated_arguments,
                 )
-    return runtime_root, (str(translated), *command[1:])
+    return tuple(mounts), (str(translated_executable), *translated_arguments)
+
+
+def _limit_command(
+    command: tuple[str, ...],
+    limits: IsolationLimits,
+    *,
+    existing_user_tasks: int,
+) -> tuple[str, ...]:
+    executable = shutil.which("prlimit")
+    if executable is None:
+        raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
+    process_ceiling = existing_user_tasks + limits.processes
+    return (
+        str(Path(executable).resolve(strict=True)),
+        f"--cpu={limits.cpu_seconds}:{limits.cpu_seconds}",
+        f"--as={limits.memory_bytes}:{limits.memory_bytes}",
+        f"--fsize={limits.output_bytes}:{limits.output_bytes}",
+        f"--nproc={process_ceiling}:{process_ceiling}",
+        "--",
+        *command,
+    )
 
 
 def _user_task_count() -> int:
@@ -413,17 +464,6 @@ def _user_task_count() -> int:
         except FileNotFoundError:
             continue
     return count
-
-
-def _set_limits(limits: IsolationLimits, existing_user_tasks: int) -> None:
-    if os.name != "posix":  # pragma: no cover
-        raise RuntimeError("POSIX resource limits requested on a non-POSIX host")
-    resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
-    resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (limits.output_bytes, limits.output_bytes))
-    process_ceiling = existing_user_tasks + limits.processes
-    resource.setrlimit(resource.RLIMIT_NPROC, (process_ceiling, process_ceiling))
-    os.umask(0o077)
 
 
 def _artifact_tree_bytes(root: Path) -> int:

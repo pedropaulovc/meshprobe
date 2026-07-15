@@ -5,6 +5,7 @@ import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,39 @@ def test_sandbox_binds_agent_virtualenv_or_checkout_directory(tmp_path: Path) ->
     assert result.stdout.strip() == "bound-agent"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap argument binding is POSIX-specific")
+def test_sandbox_binds_direct_script_arguments(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    script = tmp_path / "external-agent.py"
+    script.write_text("print('bound-script')\n", encoding="utf-8")
+
+    result = run_isolated(
+        ("/usr/bin/python3", str(script)),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "bound-script"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_resolves_symlinked_agent_executable(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    runtime = tmp_path / "agent-runtime"
+    runtime.mkdir()
+    target = runtime / "real-agent"
+    target.write_text("#!/usr/bin/python3\nprint('resolved-agent')\n", encoding="utf-8")
+    target.chmod(0o755)
+    link = tmp_path / "agent-link"
+    link.symlink_to(target)
+
+    result = run_isolated((str(link),), input_root=public, artifact_root=artifacts)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "resolved-agent"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
 def test_sandbox_translates_absolute_virtualenv_shebang(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
@@ -217,3 +251,42 @@ def test_posix_process_limit_baseline_counts_threads_not_only_processes() -> Non
         except FileNotFoundError:
             continue
     assert _user_task_count() >= own_processes
+
+
+def test_windows_poll_releases_process_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    from meshprobe.evals.harness import windows_sandbox
+
+    closed: list[int] = []
+
+    class FakeKernel32:
+        @staticmethod
+        def GetExitCodeProcess(handle: int, output: object) -> int:
+            del handle
+            import ctypes
+            from ctypes import wintypes
+
+            ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = 0
+            return 1
+
+        @staticmethod
+        def CloseHandle(handle: int) -> int:
+            closed.append(handle)
+            return 1
+
+    cleaned: list[bool] = []
+    monkeypatch.setattr(windows_sandbox, "_kernel32", FakeKernel32())
+    process = windows_sandbox.WindowsProcess(
+        command=("agent",),
+        process_handle=11,
+        job_handle=12,
+        process_id=13,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        cleanup=lambda: cleaned.append(True),
+    )
+
+    assert process.poll() == 0
+    assert process._finished
+    assert closed == [11, 12]
+    assert cleaned == [True]

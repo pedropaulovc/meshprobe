@@ -560,7 +560,8 @@ class _PipeStreams:
     """Read subprocess pipes on threads so Windows and POSIX share one loop."""
 
     def __init__(self, stdout: IO[str], stderr: IO[str]) -> None:
-        self._events: queue.Queue[_StreamEvent] = queue.Queue()
+        queued_chunks = max(1, _MAX_STREAM_BYTES // 4096)
+        self._events: queue.Queue[_StreamEvent] = queue.Queue(maxsize=queued_chunks)
         self._open = {"stdout", "stderr"}
         self._lock = threading.Lock()
         self._threads = (

@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from meshprobe.evals.curated import CuratedCatalog
+from meshprobe.evals.curated import CuratedCatalog, topology_sha256
 from meshprobe.evals.generators import MetamorphicVariant
 from meshprobe.sources import sha256_file, snapshot_source
 
@@ -30,6 +30,7 @@ def build_curated_variants(
     version: str = "curated-v1",
     blender: str = "blender",
 ) -> CuratedBuild:
+    _validate_curated_sources(catalog, sources)
     destination = output_root.expanduser().resolve() / version
     builder = Path(__file__).parents[1] / "blender" / "curated_builder.py"
     catalog_hash = _catalog_hash(catalog)
@@ -117,6 +118,24 @@ def build_curated_variants(
     (staging / "build.json").unlink()
     os.replace(staging, destination)
     return validate_curated_build(destination, catalog_hash, builder_hash)
+
+
+def _validate_curated_sources(catalog: CuratedCatalog, sources: dict[str, Path]) -> None:
+    expected = {source.source_id: source for source in catalog.sources}
+    if sources.keys() != expected.keys():
+        missing = sorted(expected.keys() - sources.keys())
+        extra = sorted(sources.keys() - expected.keys())
+        raise ValueError(f"curated source set mismatch: missing={missing}, extra={extra}")
+    content_hashes: dict[Path, str] = {}
+    topology_hashes: dict[Path, str] = {}
+    for source_id, declared in expected.items():
+        path = sources[source_id].expanduser().resolve(strict=True)
+        content = content_hashes.setdefault(path, sha256_file(path))
+        if content != declared.source_sha256:
+            raise RuntimeError(f"curated source hash mismatch: {source_id}")
+        topology = topology_hashes.setdefault(path, topology_sha256(path))
+        if topology != declared.topology_sha256:
+            raise RuntimeError(f"curated topology hash mismatch: {source_id}")
 
 
 def validate_curated_build(root: Path, catalog_hash: str, builder_hash: str) -> CuratedBuild:

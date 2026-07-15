@@ -336,20 +336,25 @@ def _merge_private_truth(corpus: CorpusBuild, destination: Path) -> None:
 
 def generator_source_sha256() -> str:
     directory = Path(__file__).parent
-    sources = tuple(
-        directory / name
-        for name in (
-            "factory.py",
-            "generators.py",
-            "geometry.py",
-            "leakage.py",
-            "schemas.py",
-            "variants.py",
-        )
+    sources = (
+        *(
+            directory / name
+            for name in (
+                "factory.py",
+                "generators.py",
+                "geometry.py",
+                "leakage.py",
+                "schemas.py",
+                "variants.py",
+            )
+        ),
+        directory.parent / "blender" / "worker.py",
+        directory.parent / "identity.py",
+        directory.parent / "models.py",
     )
     digest = hashlib.sha256(b"meshprobe-eval-generator-v1\0")
     for path in sources:
-        digest.update(path.name.encode())
+        digest.update(path.relative_to(directory.parent).as_posix().encode())
         digest.update(b"\0")
         digest.update(bytes.fromhex(sha256_file(path)))
     return digest.hexdigest()

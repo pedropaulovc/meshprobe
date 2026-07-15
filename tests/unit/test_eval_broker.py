@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 from pydantic import JsonValue
 
 from meshprobe.evals.harness.broker import EvaluationBroker
@@ -17,6 +18,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
 )
 from meshprobe.service import CommandResponse
+from meshprobe.sources import sha256_file
 
 
 class FakeEvaluationService:
@@ -35,7 +37,13 @@ class FakeEvaluationService:
         request_id = command.request_id
         operation = command.op
         if operation == "scene.open":
-            result: JsonValue = {"source_sha256": "a" * 64}
+            result: JsonValue = {
+                "source_sha256": "a" * 64,
+                "normalized_geometry": {
+                    "path": "/private/cache/normalized.glb",
+                    "sha256": "b" * 64,
+                },
+            }
         elif operation == "scene.describe":
             result = {"session": {"state_sha256": "1" * 64}}
         elif operation == "illumination.set":
@@ -134,6 +142,75 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     trace = (tmp_path / "evaluator" / "trace.jsonl").read_text(encoding="utf-8")
     assert len(trace.splitlines()) == 4
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
+
+
+def test_broker_omits_normalized_geometry_cache_metadata(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+
+    opened = active.execute(
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path=active.visible_model_path,
+        )
+    )
+
+    assert opened.ok and opened.response is not None
+    assert opened.response.result == {"source_sha256": "a" * 64}
+
+
+def test_broker_mediates_custom_environment_map_paths(tmp_path: Path) -> None:
+    service = FakeEvaluationService()
+    active = broker(tmp_path, service=service)
+    environment_map = tmp_path / "input" / "studio.hdr"
+    environment_map.write_bytes(b"hdr")
+    visible_path = (
+        str(environment_map.resolve()) if os.name == "nt" else "/workspace/input/studio.hdr"
+    )
+
+    accepted = active.execute(
+        IlluminationSetCommand.model_validate(
+            {
+                "request_id": "environment",
+                "op": "illumination.set",
+                "illumination": {
+                    "preset": "custom",
+                    "background_rgb": [1, 1, 1],
+                    "ambient_strength": 1,
+                    "environment_map": {
+                        "path": visible_path,
+                        "sha256": sha256_file(environment_map),
+                    },
+                },
+            }
+        )
+    )
+
+    assert accepted.ok
+    translated = service.commands[-1]
+    assert isinstance(translated, IlluminationSetCommand)
+    assert translated.illumination.environment_map is not None  # type: ignore[union-attr]
+    assert translated.illumination.environment_map.path == str(environment_map.resolve())  # type: ignore[union-attr]
+
+    rejected = active.execute(
+        IlluminationSetCommand.model_validate(
+            {
+                "request_id": "escaped-environment",
+                "op": "illumination.set",
+                "illumination": {
+                    "preset": "custom",
+                    "background_rgb": [1, 1, 1],
+                    "ambient_strength": 1,
+                    "environment_map": {
+                        "path": str((tmp_path / "outside.hdr").resolve()),
+                        "sha256": "a" * 64,
+                    },
+                },
+            }
+        )
+    )
+    assert rejected.error is not None
+    assert rejected.error.code == "broker.input_path"
 
 
 def test_broker_rejects_wrong_model_output_escape_duplicates_and_budgets(tmp_path: Path) -> None:
@@ -294,3 +371,45 @@ def test_broker_discards_output_that_exceeds_reserved_bound(tmp_path: Path) -> N
     assert active.metrics.output_bytes == 0
     assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
     assert not any((tmp_path / "agent" / "artifacts").rglob("*.png"))
+
+
+class DestinationSwapService(FakeEvaluationService):
+    def __init__(self, artifact_root: Path, outside: Path) -> None:
+        super().__init__()
+        self._artifact_root = artifact_root
+        self._outside = outside
+
+    def execute_for_evaluation(
+        self,
+        command: Command,
+        *,
+        evaluator_output_dir: str,
+    ) -> CommandResponse:
+        response = super().execute_for_evaluation(
+            command,
+            evaluator_output_dir=evaluator_output_dir,
+        )
+        self._outside.mkdir()
+        (self._artifact_root / "views").symlink_to(self._outside, target_is_directory=True)
+        return response
+
+
+@pytest.mark.skipif(os.name != "posix", reason="dirfd publication is POSIX-specific")
+def test_broker_rejects_destination_parent_swapped_to_symlink(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "agent" / "artifacts"
+    service = DestinationSwapService(artifact_root, tmp_path / "outside")
+    active = broker(tmp_path, service=service)
+
+    rejected = active.execute(
+        RenderImageCommand(
+            request_id="destination-swap",
+            op="render.image",
+            output_path="views/evidence.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rejected.error is not None
+    assert rejected.error.code == "broker.output_path"
+    assert not (tmp_path / "outside" / "evidence.png").exists()
