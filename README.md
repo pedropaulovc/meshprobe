@@ -12,15 +12,30 @@ private component and highlight masks plus a Depth/Normal EXR for evaluators, ra
 line-of-sight occluders, and build a focused 3×3 contact sheet with perspective context
 and six orthographic detail views.
 
-## Try the protocol
+## Install
 
-MeshProbe uses Python 3.12 or newer and `uv`:
+MeshProbe uses Python 3.12 or newer, `uv`, and Blender 5.2 LTS. The qualification
+harness also requires Bubblewrap on Linux. On Ubuntu 24.04 or newer, load the distro's
+AppArmor profile. It grants Bubblewrap the namespace permissions needed by the harness
+and keeps user-namespace hardening enabled:
+
+```bash
+sudo apt-get install apparmor-profiles bubblewrap
+sudo cp \
+  /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+Install the locked Python environment and run the test suite:
 
 ```bash
 uv sync
 uv run meshprobe schema
 uv run pytest
 ```
+
+## Try the protocol
 
 Validate a scene manifest or find components in one:
 

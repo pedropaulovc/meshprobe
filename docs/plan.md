@@ -633,4 +633,4 @@ MeshProbe is ready for its first release when:
 - every operation family and the full-stack track meet separately published pass
   thresholds;
 - a clean machine can install, run the smoke suite, and reproduce its report with
-  `uv` plus Blender.
+  `uv`, Blender, and Bubblewrap configured for the host's user-namespace policy.
