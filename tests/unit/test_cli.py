@@ -23,6 +23,17 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def test_open_reports_missing_blender(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+    result = runner.invoke(
+        app,
+        ["open", str(source), "--blender", "meshprobe-blender-does-not-exist"],
+    )
+    assert result.exit_code == 2
+    assert "Blender executable not found" in result.output
+
+
 def test_validate_manifest_reports_source(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
     path = write_manifest(tmp_path, scene_manifest)
     result = runner.invoke(app, ["validate-manifest", str(path)])

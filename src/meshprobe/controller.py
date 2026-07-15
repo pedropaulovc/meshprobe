@@ -43,10 +43,7 @@ class BlenderController:
 
     def __init__(self, executable: str | Path | None = None, timeout_seconds: float = 30) -> None:
         configured = str(executable or os.environ.get("MESHPROBE_BLENDER", "blender"))
-        resolved = shutil.which(configured)
-        if resolved is None:
-            raise BlenderWorkerError(f"Blender executable not found: {configured}")
-        self.executable = Path(resolved)
+        self.executable = Path(configured)
         self.timeout_seconds = timeout_seconds
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
@@ -60,6 +57,10 @@ class BlenderController:
     def start(self) -> dict[str, Any]:
         if self._process is not None:
             raise BlenderWorkerError("Blender worker is already started")
+        resolved = shutil.which(str(self.executable))
+        if resolved is None:
+            raise BlenderWorkerError(f"Blender executable not found: {self.executable}")
+        self.executable = Path(resolved)
         self._lines = queue.Queue()
         worker_path = Path(__file__).with_name("blender") / "worker.py"
         self._process = subprocess.Popen(
