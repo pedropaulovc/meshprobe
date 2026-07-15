@@ -164,7 +164,8 @@ class CliJsonlAdapter:
                         break
         finally:
             if process.stdin is not None:
-                process.stdin.close()
+                with contextlib.suppress(BrokenPipeError, OSError):
+                    process.stdin.close()
             if process.poll() is None:
                 try:
                     process.wait(timeout=1)
@@ -298,7 +299,8 @@ class McpStdioAdapter:
                         break
         finally:
             if process.stdin is not None:
-                process.stdin.close()
+                with contextlib.suppress(BrokenPipeError, OSError):
+                    process.stdin.close()
             if process.poll() is None:
                 try:
                     process.wait(timeout=1)

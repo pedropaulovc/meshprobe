@@ -539,7 +539,9 @@ def _environment_block(
     executable: str, artifact_root: Path, configured: Mapping[str, str]
 ) -> object:
     system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    drive = artifact_root.drive.upper()
     values = {
+        f"={drive}": str(artifact_root),
         "COMSPEC": os.environ.get("COMSPEC", str(Path(system_root) / "System32" / "cmd.exe")),
         "HOME": str(artifact_root),
         "LANG": "C.UTF-8",
@@ -557,7 +559,13 @@ def _environment_block(
         if not name or "=" in name or "\x00" in name or "\x00" in value:
             raise ValueError(f"invalid sandbox environment entry: {name!r}")
         values[name] = value
-    serialized = "\x00".join(f"{name}={value}" for name, value in sorted(values.items())) + "\x00"
+    serialized = (
+        "\x00".join(
+            f"{name}={value}"
+            for name, value in sorted(values.items(), key=lambda item: item[0].upper())
+        )
+        + "\x00"
+    )
     return ctypes.create_unicode_buffer(serialized)
 
 

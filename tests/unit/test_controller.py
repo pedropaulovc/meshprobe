@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -43,8 +45,8 @@ from meshprobe.sources import snapshot_source
 
 
 def make_fake_blender(tmp_path: Path, protocol_version: int = 1) -> Path:
-    executable = tmp_path / "fake-blender"
-    executable.write_text(
+    script = tmp_path / "fake_blender_worker.py"
+    script.write_text(
         """#!/usr/bin/env python3
 import json
 import os
@@ -83,6 +85,15 @@ for line in sys.stdin:
 """.replace("__PROTOCOL_VERSION__", str(protocol_version)),
         encoding="utf-8",
     )
+    if os.name == "nt":
+        executable = tmp_path / "fake-blender.cmd"
+        executable.write_text(
+            f'@"{sys.executable}" "{script}"\r\n',
+            encoding="utf-8",
+        )
+        return executable
+    executable = tmp_path / "fake-blender"
+    script.replace(executable)
     executable.chmod(0o755)
     return executable
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -99,9 +100,18 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     )
 
     assert rendered.ok and rendered.response is not None
+    artifact_path = tmp_path / "agent" / "artifacts" / "views" / "evidence.png"
+    visible_path = (
+        str(artifact_path.resolve())
+        if os.name == "nt"
+        else "/workspace/artifacts/views/evidence.png"
+    )
     assert rendered.response.result == {
         "state_sha256": "2" * 64,
-        "color": {"path": "/workspace/artifacts/views/evidence.png", "bytes": 12},
+        "color": {
+            "path": visible_path,
+            "bytes": 12,
+        },
     }
     assert active.events[-1].result != rendered.response.result
     assert active.events[-1].state_before_sha256 == "2" * 64

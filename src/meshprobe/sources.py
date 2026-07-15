@@ -7,7 +7,7 @@ import json
 import shlex
 import struct
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import unquote, urlsplit
 
 
@@ -251,7 +251,10 @@ def _local_reference(source: Path, reference: str) -> Path:
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
         raise ValueError(f"external asset URI is not a local relative path: {reference}")
     decoded_path = unquote(parsed.path)
-    if not decoded_path or Path(decoded_path).is_absolute():
+    if not decoded_path or any(
+        path_type(decoded_path).is_absolute()
+        for path_type in (Path, PurePosixPath, PureWindowsPath)
+    ):
         raise ValueError(f"external asset URI is not a local relative path: {reference}")
     bundle_root = source.parent.resolve()
     resolved = (bundle_root / decoded_path).resolve(strict=True)
