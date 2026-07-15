@@ -366,7 +366,11 @@ def _sandbox_agent_command(
         if located_executable.parent.name == "bin" and (virtualenv_root / "pyvenv.cfg").is_file()
         else resolved_executable
     )
-    if executable == located_executable and not resolved_executable.is_relative_to("/usr"):
+    if (
+        executable == located_executable
+        and located_executable.is_symlink()
+        and not resolved_executable.is_relative_to("/usr")
+    ):
         base_runtime = (
             resolved_executable.parent.parent
             if resolved_executable.parent.name == "bin"
