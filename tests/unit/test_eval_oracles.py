@@ -441,7 +441,36 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             after=backlit.state_sha256,
         ),
         accepted_event(
-            11, "render.image", arguments={}, result=perspective.model_dump(mode="json")
+            11,
+            "render.image",
+            arguments={},
+            result=perspective.model_dump(mode="json"),
+            before=perspective.state_sha256,
+            after=perspective.state_sha256,
+        ),
+        accepted_event(
+            12,
+            "render.image",
+            arguments={},
+            result=raking_left.model_dump(mode="json"),
+            before=raking_left.state_sha256,
+            after=raking_left.state_sha256,
+        ),
+        accepted_event(
+            13,
+            "render.image",
+            arguments={},
+            result=raking_right.model_dump(mode="json"),
+            before=raking_right.state_sha256,
+            after=raking_right.state_sha256,
+        ),
+        accepted_event(
+            14,
+            "render.image",
+            arguments={},
+            result=backlit.model_dump(mode="json"),
+            before=backlit.state_sha256,
+            after=backlit.state_sha256,
         ),
     )
     snapshot = snapshot_source(model.path)
@@ -462,6 +491,30 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
 
     assert next(gate for gate in report.gates if gate.gate == "state").status is GateStatus.PASS
     assert next(gate for gate in report.gates if gate.gate == "evidence").status is GateStatus.PASS
+    detached_trace = tuple(
+        event.model_copy(update={"state_after_sha256": "f" * 64})
+        if event.operation is not Operation.RENDER_IMAGE
+        and event.state_after_sha256 == perspective.state_sha256
+        else event
+        for event in trace
+    )
+    detached_report = score_episode(
+        OracleInputs(
+            spec=episode.spec,
+            truth=episode.ground_truth,
+            submission=EpisodeSubmission(
+                episode_id=episode.spec.episode_id,
+                answer=episode.ground_truth.answer,
+            ),
+            trace=detached_trace,
+            source_before=snapshot,
+            source_after=snapshot,
+            renders=(perspective, raking_left, raking_right, backlit),
+        )
+    )
+    detached_state = next(gate for gate in detached_report.gates if gate.gate == "state")
+    assert detached_state.status is GateStatus.FAIL
+
     group_state_hashes = {
         "context_85": perspective.state_sha256,
         "surface_left": raking_left.state_sha256,

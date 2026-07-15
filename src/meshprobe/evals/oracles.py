@@ -135,6 +135,15 @@ def _compare_json(
 def _state_gate(inputs: OracleInputs) -> GateResult:
     failures: list[str] = []
     accepted = [event for event in inputs.trace if event.status is TraceStatus.ACCEPTED]
+    rendered_state_hashes = {
+        event.state_after_sha256
+        for event in accepted
+        if event.operation is Operation.RENDER_IMAGE
+        and event.state_after_sha256 is not None
+        and isinstance(event.result, dict)
+        and event.result.get("state_sha256") == event.state_after_sha256
+    }
+    renders_by_state = {render.state_sha256: render for render in _all_renders(inputs)}
     ungrouped = [
         requirement
         for requirement in inputs.truth.state_requirements
@@ -159,26 +168,71 @@ def _state_gate(inputs: OracleInputs) -> GateResult:
             )
     for group_name, requirements in grouped.items():
         if any(
-            all(
-                _event_satisfies_state(
-                    event,
-                    requirement.predicate,
-                    requirement.expected,
-                    (
-                        inputs.truth.component_roles[requirement.component_role]
-                        if requirement.component_role is not None
-                        else None
-                    ),
-                )
-                for requirement in requirements
+            _event_satisfies_state_group(event, requirements, inputs.truth.component_roles)
+            and event.state_after_sha256 in rendered_state_hashes
+            and _render_satisfies_state_group(
+                renders_by_state[event.state_after_sha256],
+                requirements,
+                inputs.truth.component_roles,
             )
             for event in accepted
+            if event.operation is not Operation.RENDER_IMAGE
+            and event.state_after_sha256 in renders_by_state
         ):
             continue
-        failures.append(f"no accepted state snapshot proves group {group_name}")
+        failures.append(
+            "no accepted state transition and render prove the same snapshot "
+            f"for group {group_name}"
+        )
     if failures:
         return _fail("state", "required scene transitions were not proven", failures=failures)
     return _pass("state", "every required scene transition is present in accepted results")
+
+
+def _event_satisfies_state_group(
+    event: TraceEvent,
+    requirements: list[StateRequirement],
+    component_roles: dict[str, str],
+) -> bool:
+    if event.state_before_sha256 == event.state_after_sha256:
+        return False
+    return all(
+        _event_satisfies_state(
+            event,
+            requirement.predicate,
+            requirement.expected,
+            (
+                component_roles[requirement.component_role]
+                if requirement.component_role is not None
+                else None
+            ),
+        )
+        for requirement in requirements
+    )
+
+
+def _render_satisfies_state_group(
+    render: RenderManifest,
+    requirements: list[StateRequirement],
+    component_roles: dict[str, str],
+) -> bool:
+    snapshot = TraceEvent.model_construct(
+        operation=Operation.RENDER_IMAGE,
+        result=render.session.model_dump(mode="json"),
+    )
+    return all(
+        _event_satisfies_state(
+            snapshot,
+            requirement.predicate,
+            requirement.expected,
+            (
+                component_roles[requirement.component_role]
+                if requirement.component_role is not None
+                else None
+            ),
+        )
+        for requirement in requirements
+    )
 
 
 def _event_satisfies_state(
