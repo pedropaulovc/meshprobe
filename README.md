@@ -5,10 +5,11 @@ without editing the source model. Agents can identify components, move a camera,
 switch between orthographic and perspective projection, control lens and lighting,
 hide occluders, mark parts, and request evidence renders or contact sheets.
 
-The project is in early development. The current slice implements the public command
-schema, scene manifests, deterministic component selectors, visual session state,
-camera and illumination validation, and a CLI for exercising those contracts. Blender
-rendering is the next slice.
+The project is in early development. MeshProbe can start a persistent factory-clean
+Blender worker, import GLB, glTF, OBJ, or STL files, and return a validated scene
+manifest without changing the source file. The Python core also implements the public
+command schema, deterministic component selectors, visual session state, and camera
+and illumination validation. Rendering is the next slice.
 
 ## Try the protocol
 
@@ -23,6 +24,7 @@ uv run pytest
 Validate a scene manifest or find components in one:
 
 ```bash
+uv run meshprobe open assembly.glb > scene.json
 uv run meshprobe validate-manifest scene.json
 uv run meshprobe find scene.json 'assembly/**/idler*' --kind glob
 ```
@@ -37,4 +39,3 @@ The approved implementation and evaluation design is in [docs/plan.md](docs/plan
 ## License
 
 Apache-2.0.
-

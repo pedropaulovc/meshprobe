@@ -10,6 +10,7 @@ import typer
 from pydantic import ValidationError
 
 from meshprobe.camera import orbit_camera
+from meshprobe.controller import BlenderController, BlenderWorkerError
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
     Command,
@@ -47,6 +48,22 @@ def schema() -> None:
     """Print the JSON Schema for every public protocol command."""
 
     _emit(command_json_schema())
+
+
+@app.command("open")
+def open_scene(
+    source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    blender: Annotated[str | None, typer.Option("--blender")] = None,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+) -> None:
+    """Open a model in a factory-clean Blender worker and print its manifest."""
+
+    try:
+        with BlenderController(executable=blender, timeout_seconds=timeout_seconds) as controller:
+            manifest = controller.open_scene(source)
+    except (BlenderWorkerError, OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(manifest)
 
 
 @app.command("validate-manifest")
