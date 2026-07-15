@@ -13,8 +13,14 @@ from meshprobe.evals.generators import (
     generate_episodes,
     publish_model,
 )
-from meshprobe.evals.schemas import AnswerStatus, EpisodeClass, Operation, TaskFamily
-from meshprobe.evals.variants import verify_relation
+from meshprobe.evals.schemas import (
+    AnswerStatus,
+    EpisodeClass,
+    EvidenceKind,
+    Operation,
+    TaskFamily,
+)
+from meshprobe.evals.variants import relation_for, verify_relation
 
 
 def test_public_generator_surface_contains_only_released_families() -> None:
@@ -80,6 +86,48 @@ def test_seed_rotation_covers_every_metamorphic_variant() -> None:
     assert variants == set(MetamorphicVariant)
 
 
+def test_missing_material_does_not_demand_impossible_surface_contrast(tmp_path: Path) -> None:
+    missing_episodes = generate_episodes(
+        publish_model(build_model(GeneratorFamily.MISSING_MATERIAL, 0), tmp_path / "missing")
+    )
+    missing = missing_episodes[1]
+    positive = generate_episodes(
+        publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path / "positive")
+    )[1]
+
+    assert EvidenceKind.TARGET_CONTRAST not in {
+        requirement.kind for requirement in missing.ground_truth.evidence_requirements
+    }
+    assert (
+        sum(
+            requirement.kind is EvidenceKind.TARGET_CONTRAST
+            for requirement in positive.ground_truth.evidence_requirements
+        )
+        == 2
+    )
+    assert all(
+        episode.spec.episode_class is EpisodeClass.NEGATIVE
+        and episode.ground_truth.answer.status is AnswerStatus.INDETERMINATE
+        and episode.ground_truth.answer.missing_capabilities == ("arrow material",)
+        for episode in missing_episodes[1:]
+    )
+
+
+def test_ambiguous_twin_requires_indeterminate_answer_in_every_inspection(
+    tmp_path: Path,
+) -> None:
+    episodes = generate_episodes(
+        publish_model(build_model(GeneratorFamily.AMBIGUOUS_TWIN, 0), tmp_path)
+    )
+
+    assert all(
+        episode.spec.episode_class is EpisodeClass.NEGATIVE
+        and episode.ground_truth.answer.status is AnswerStatus.INDETERMINATE
+        and len(episode.ground_truth.answer.conflicting_component_ids) == 2
+        for episode in episodes[1:]
+    )
+
+
 @pytest.mark.parametrize("variant", tuple(MetamorphicVariant))
 def test_metamorphic_variants_obey_declared_answer_relations(
     variant: MetamorphicVariant,
@@ -91,6 +139,24 @@ def test_metamorphic_variants_obey_declared_answer_relations(
     )
     transformed = build_model(GeneratorFamily.HIDDEN_CLIP, 12, variant=variant)
     verify_relation(base, transformed)
+
+
+def test_rigid_transform_recomputes_view_dependent_nearer_ring() -> None:
+    base = build_model(
+        GeneratorFamily.HIDDEN_CLIP,
+        12,
+        variant=MetamorphicVariant.MATERIAL,
+    )
+    transformed = build_model(
+        GeneratorFamily.HIDDEN_CLIP,
+        12,
+        variant=MetamorphicVariant.RIGID_TRANSFORM,
+    )
+
+    assert base.semantic_answers["near_ring_role"] != transformed.semantic_answers["near_ring_role"]
+    assert relation_for(MetamorphicVariant.RIGID_TRANSFORM).transformed_fields == (
+        "near_ring_role",
+    )
 
 
 def test_metamorphic_verifier_rejects_each_broken_relation() -> None:

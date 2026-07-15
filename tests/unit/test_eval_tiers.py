@@ -5,9 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from meshprobe.evals.factory import build_corpus
+from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.evals.schemas import CorpusManifest, CorpusTier, ModelSource, RuntimePin
+from meshprobe.evals.schemas import (
+    CorpusManifest,
+    CorpusTier,
+    EpisodeGroundTruth,
+    EpisodeSpec,
+    ModelSource,
+    RuntimePin,
+)
 from meshprobe.evals.tiers import (
     current_runtime_pin,
     pin_private_tier,
@@ -27,12 +34,48 @@ def runtime_pin() -> RuntimePin:
 
 
 def add_opaque_family(corpus_root: Path) -> None:
+    episode_root = corpus_root / "public" / "episodes"
+    truth_root = corpus_root / "private" / "ground_truth"
+    first_spec = EpisodeSpec.model_validate_json(
+        next(iter(sorted(episode_root.glob("*.json")))).read_text(encoding="utf-8")
+    )
+    for episode_path in sorted(episode_root.glob("*.json")):
+        spec = EpisodeSpec.model_validate_json(episode_path.read_text(encoding="utf-8"))
+        if spec.model_file != first_spec.model_file:
+            continue
+        truth_path = truth_root / f"{spec.episode_id}.json"
+        truth = EpisodeGroundTruth.model_validate_json(truth_path.read_text(encoding="utf-8"))
+        truth_path.write_text(
+            truth.model_copy(update={"generator_family": "opaque_family_v2"}).model_dump_json(),
+            encoding="utf-8",
+        )
     manifest_path = corpus_root / "public" / "manifest.json"
     manifest = CorpusManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     updated = manifest.model_copy(
         update={"generator_families": (*manifest.generator_families, "opaque_family_v2")}
     )
     manifest_path.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_private_family_claim_must_be_backed_by_episode_truth(tmp_path: Path) -> None:
+    corpus = build_corpus(
+        tmp_path / "corpus",
+        corpus_version="manifest-only-opaque-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(32,),
+        model_source=ModelSource.PRIVATE,
+    )
+    manifest_path = corpus.root / "public" / "manifest.json"
+    manifest = CorpusManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(
+        manifest.model_copy(
+            update={"generator_families": (*manifest.generator_families, "opaque_family_v2")}
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="private episode families"):
+        validate_corpus(corpus.root)
 
 
 def test_standard_tiers_are_nested_exact_and_hash_validated(tmp_path: Path) -> None:
@@ -139,7 +182,7 @@ def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
     overlapping = build_corpus(
         tmp_path / "overlapping",
         corpus_version="overlapping-v1",
-        seeds=(0,),
+        seeds=(0, 1),
         model_source=ModelSource.PRIVATE,
     )
     add_opaque_family(overlapping.root)
@@ -149,7 +192,7 @@ def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
         private_corpus = build_corpus(
             tmp_path / "private-corpus",
             corpus_version="tiny-private-v1",
-            seeds=(32,),
+            seeds=(32, 33),
             model_source=ModelSource.PRIVATE,
         )
         add_opaque_family(private_corpus.root)

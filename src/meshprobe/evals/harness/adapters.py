@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
 from meshprobe.evals.harness.broker import EvaluationBroker
-from meshprobe.evals.harness.sandbox import IsolationLimits, spawn_isolated
+from meshprobe.evals.harness.sandbox import IsolationLimits, spawn_isolated, visible_input_path
 from meshprobe.evals.schemas import EpisodeSpec, EpisodeSubmission
 from meshprobe.protocol import COMMAND_ADAPTER, command_json_schema
 
@@ -103,6 +104,7 @@ class CliJsonlAdapter:
             "tool_schema": command_json_schema(),
             "model_path": broker.visible_model_path,
             "budgets": spec.budgets.model_dump(mode="json"),
+            "required_operations": [str(operation) for operation in spec.required_operations],
         }
         try:
             agent_stdin.write(json.dumps(initialization, separators=(",", ":")) + "\n")
@@ -169,6 +171,8 @@ class CliJsonlAdapter:
                     stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
         if process.returncode is None:
             raise RuntimeError("agent process ended without a return code")
+        if getattr(process, "output_limit_exceeded", False):
+            protocol_error = "agent exceeded the aggregate output-byte budget"
         return AdapterRun(
             submission=submission,
             returncode=process.returncode,
@@ -212,6 +216,35 @@ class CliJsonlAdapter:
         except (BrokenPipeError, OSError):
             return None, "agent closed stdin before accepting the tool result"
         return None, None
+
+
+class ReferenceAgentAdapter:
+    """Run MeshProbe's standalone calibration agent inside the public sandbox."""
+
+    command = ("meshprobe-reference-agent", "schema-1")
+
+    @property
+    def identity_paths(self) -> tuple[Path, ...]:
+        return (Path(__file__).parents[1] / "reference_agent.py",)
+
+    def run(
+        self,
+        *,
+        spec: EpisodeSpec,
+        broker: EvaluationBroker,
+        input_root: Path,
+        artifact_root: Path,
+    ) -> AdapterRun:
+        source = Path(__file__).parents[1] / "reference_agent.py"
+        agent_path = input_root / "meshprobe_reference_agent.py"
+        agent_path.write_bytes(source.read_bytes())
+        python = sys.executable if os.name == "nt" else "/usr/bin/python3"
+        return CliJsonlAdapter((python, visible_input_path(agent_path))).run(
+            spec=spec,
+            broker=broker,
+            input_root=input_root,
+            artifact_root=artifact_root,
+        )
 
 
 class McpStdioAdapter:
@@ -313,6 +346,8 @@ class McpStdioAdapter:
                     stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
         if process.returncode is None:
             raise RuntimeError("agent process ended without a return code")
+        if getattr(process, "output_limit_exceeded", False):
+            protocol_error = "agent exceeded the aggregate output-byte budget"
         return AdapterRun(
             submission=submission,
             returncode=process.returncode,
@@ -361,6 +396,9 @@ class McpStdioAdapter:
                         "answer_schema": spec.answer_schema,
                         "model_path": broker.visible_model_path,
                         "budgets": spec.budgets.model_dump(mode="json"),
+                        "required_operations": [
+                            str(operation) for operation in spec.required_operations
+                        ],
                     },
                     separators=(",", ":"),
                 ),

@@ -53,6 +53,7 @@ def test_ground_truth_rejects_mismatched_role_maps() -> None:
         EpisodeGroundTruth(
             episode_id="episode_0001",
             model_sha256="a" * 64,
+            generator_family="fixture",
             answer=StructuredAnswer(status=AnswerStatus.ANSWERED, values={"side": "positive"}),
             component_roles={"target": "cmp_abc"},
             component_paths={},
@@ -97,6 +98,7 @@ def test_episode_and_ground_truth_reject_ambiguous_operation_contracts() -> None
     truth_fields = {
         "episode_id": "episode_0001",
         "model_sha256": "a" * 64,
+        "generator_family": "fixture",
         "answer": StructuredAnswer(status=AnswerStatus.ANSWERED),
         "component_roles": {"target": "component"},
         "component_paths": {"target": "assembly/target"},

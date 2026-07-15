@@ -181,7 +181,10 @@ class EvaluationBroker:
             self._discard_request_outputs(staging_root, private_dir)
             status = TraceStatus.REJECTED
             error_code = f"tool.{type(error).__name__}"
-            reply = self._error_reply(error_code, str(error))
+            reply = self._error_reply(
+                error_code,
+                str(error).replace(str(self._evaluator_root), "<private evaluator path>"),
+            )
         except Exception as error:
             self._discard_request_outputs(staging_root, private_dir)
             status = TraceStatus.CRASHED
@@ -257,11 +260,38 @@ class EvaluationBroker:
         return command, 0, 0, 0, None
 
     def _artifact_path(self, visible_path: str) -> Path:
-        relative = PurePosixPath(visible_path)
-        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        relative: PurePosixPath
+        if os.name == "nt":
+            windows_path = Path(visible_path)
+            if windows_path.is_absolute():
+                resolved_windows = windows_path.resolve()
+                if not resolved_windows.is_relative_to(self._artifact_root):
+                    raise _RejectedCommand(
+                        "broker.output_path",
+                        "render output escapes the assigned artifact directory",
+                    )
+                relative = PurePosixPath(
+                    resolved_windows.relative_to(self._artifact_root).as_posix()
+                )
+            else:
+                relative = PurePosixPath(visible_path)
+        else:
+            candidate = PurePosixPath(visible_path)
+            artifact_prefix = PurePosixPath("/workspace/artifacts")
+            if candidate.is_absolute():
+                try:
+                    relative = candidate.relative_to(artifact_prefix)
+                except ValueError as error:
+                    raise _RejectedCommand(
+                        "broker.output_path",
+                        "render output escapes the assigned artifact directory",
+                    ) from error
+            else:
+                relative = candidate
+        if not relative.parts or ".." in relative.parts:
             raise _RejectedCommand(
                 "broker.output_path",
-                "render output must be a relative path under the assigned artifact directory",
+                "render output must be under the assigned artifact directory",
             )
         resolved = (self._artifact_root / Path(*relative.parts)).resolve()
         if not resolved.is_relative_to(self._artifact_root):

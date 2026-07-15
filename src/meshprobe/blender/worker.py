@@ -27,6 +27,7 @@ from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-foun
 
 PROTOCOL_VERSION = 1
 MILLIMETERS_PER_METER = 1_000.0
+PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 SUPPORTED_GLTF_EXTENSIONS = {
@@ -670,6 +671,27 @@ def scene_center_and_span() -> tuple[Vector, float]:
     return center, max(span, 100.0)
 
 
+def scene_frame() -> tuple[Vector, Vector, Vector]:
+    manifest = require_session()
+    roots = [component for component in manifest["components"] if component["parent_id"] is None]
+    if len(roots) != 1:
+        return Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))
+    transform = roots[0]["world_transform"]
+    axes = tuple(
+        Vector((transform[index], transform[4 + index], transform[8 + index])).normalized()
+        for index in range(3)
+    )
+    if any(axis.length_squared == 0 for axis in axes):
+        return Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))
+    return axes
+
+
+def frame_offset(
+    frame: tuple[Vector, Vector, Vector], values: tuple[float, float, float]
+) -> Vector:
+    return sum((axis * value for axis, value in zip(frame, values, strict=True)), Vector())
+
+
 def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
     rotation = (target_mm - position_mm).to_track_quat("-Z", "Y").normalized()
     return [rotation.x, rotation.y, rotation.z, rotation.w]
@@ -677,35 +699,67 @@ def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
 
 def preset_lights(preset: str) -> dict[str, Any]:
     center, span = scene_center_and_span()
+    frame = scene_frame()
+    power_scale = (span / PRESET_REFERENCE_SPAN_MM) ** 2
     background = [0.03, 0.03, 0.03]
     ambient = 0.15
     definitions: list[tuple[str, Vector, float, float]] = []
     if preset == "neutral_studio":
         definitions = [
-            ("key", center + Vector((span, -span, span)), 900.0, span),
-            ("fill", center + Vector((-span, -span / 2, span / 2)), 450.0, span),
-            ("rim", center + Vector((0, span, span)), 600.0, span / 2),
+            ("key", center + frame_offset(frame, (span, -span, span)), 900.0, span),
+            (
+                "fill",
+                center + frame_offset(frame, (-span, -span / 2, span / 2)),
+                450.0,
+                span,
+            ),
+            ("rim", center + frame_offset(frame, (0, span, span)), 600.0, span / 2),
         ]
     elif preset == "high_key":
         background = [0.25, 0.25, 0.25]
         ambient = 0.45
         definitions = [
-            ("key", center + Vector((span, -span, span)), 1_200.0, span * 1.5),
-            ("fill", center + Vector((-span, -span, span)), 1_000.0, span * 1.5),
-            ("under", center + Vector((0, 0, -span)), 700.0, span * 1.5),
+            (
+                "key",
+                center + frame_offset(frame, (span, -span, span)),
+                1_200.0,
+                span * 1.5,
+            ),
+            (
+                "fill",
+                center + frame_offset(frame, (-span, -span, span)),
+                1_000.0,
+                span * 1.5,
+            ),
+            (
+                "under",
+                center + frame_offset(frame, (0, 0, -span)),
+                700.0,
+                span * 1.5,
+            ),
         ]
     elif preset in {"raking_left", "raking_right"}:
         side = -1 if preset == "raking_left" else 1
         definitions = [
-            ("rake", center + Vector((side * span * 2, -span / 4, span / 8)), 1_000.0, span / 3)
+            (
+                "rake",
+                center + frame_offset(frame, (side * span * 2, -span / 4, span / 8)),
+                1_000.0,
+                span / 3,
+            )
         ]
     elif preset == "backlit":
-        definitions = [("back", center + Vector((0, span * 2, 0)), 1_200.0, span)]
+        definitions = [("back", center + frame_offset(frame, (0, span * 2, 0)), 1_200.0, span)]
     elif preset == "flat_diagnostic":
         background = [0.18, 0.18, 0.18]
         ambient = 0.25
         definitions = [
-            (f"axis-{index}", center + direction * span, 500.0, span * 2)
+            (
+                f"axis-{index}",
+                center + frame_offset(frame, tuple(direction * span)),
+                500.0,
+                span * 2,
+            )
             for index, direction in enumerate(
                 (
                     Vector((1, 0, 0)),
@@ -726,7 +780,7 @@ def preset_lights(preset: str) -> dict[str, Any]:
             "type": "area",
             "position_mm": list(position),
             "orientation_xyzw": look_orientation(position, center),
-            "power_w": power,
+            "power_w": power * power_scale,
             "linear_rgb": [1.0, 1.0, 1.0],
             "size_mm": max(size, 1.0),
         }

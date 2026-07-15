@@ -337,9 +337,9 @@ def _coverage_gate(inputs: OracleInputs) -> GateResult:
             Operation.COMPONENT_MARK,
             Operation.SESSION_RESET,
         } and not any(
-            event.state_before_sha256 != event.state_after_sha256
+            event.state_after_sha256 is not None
+            and event.state_before_sha256 != event.state_after_sha256
             for event in events
-            if event.state_before_sha256 is not None and event.state_after_sha256 is not None
         ):
             failures.append(f"{operation} was accepted but did not change state")
     target_id = inputs.truth.component_roles.get("idler") or inputs.truth.component_roles.get(

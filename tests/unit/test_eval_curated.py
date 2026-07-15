@@ -393,6 +393,15 @@ def test_curated_variant_build_is_atomic_resumable_and_hash_validated(
 
     assert build.model_count == 160
     assert build_curated_variants(catalog, sources, tmp_path / "builds") == build
+    manifest_path = build.root / "public" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["variants"] == [str(variant) for variant in MetamorphicVariant]
+    manifest["variants"] = manifest["variants"][:-1]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="variant set"):
+        build_curated_variants(catalog, sources, tmp_path / "builds")
+    manifest["variants"] = [str(variant) for variant in MetamorphicVariant]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     model = next((build.root / "public" / "models").glob("*.glb"))
     model.write_bytes(b"changed")
     with pytest.raises(RuntimeError, match="do not match"):
@@ -540,6 +549,29 @@ def test_curated_task_hash_includes_blender_importer(
     curated_task_generator_sha256(build)
 
     assert any(path.name == "worker.py" for path in hashed)
+
+
+def test_curated_task_hash_is_path_independent_and_includes_private_roles(
+    tmp_path: Path,
+) -> None:
+    builds: list[CuratedBuild] = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        (root / "public").mkdir(parents=True)
+        (root / "private" / "roles").mkdir(parents=True)
+        (root / "public" / "manifest.json").write_text("{}\n", encoding="utf-8")
+        (root / "private" / "roles" / "model.json").write_text(
+            '{"target":"idler"}\n', encoding="utf-8"
+        )
+        builds.append(CuratedBuild(root=root, model_sha256={}, model_count=0))
+
+    first_hash = curated_task_generator_sha256(builds[0])
+    assert curated_task_generator_sha256(builds[1]) == first_hash
+
+    (builds[1].root / "private" / "roles" / "model.json").write_text(
+        '{"target":"shaft"}\n', encoding="utf-8"
+    )
+    assert curated_task_generator_sha256(builds[1]) != first_hash
 
 
 def _manifest_with_source(manifest: SceneManifest, source_sha256: str) -> SceneManifest:

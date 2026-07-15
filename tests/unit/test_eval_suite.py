@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.evals.harness.adapters import AdapterRun
+from meshprobe.evals.harness.adapters import AdapterRun, CliJsonlAdapter
 from meshprobe.evals.harness.broker import EvaluationBroker
-from meshprobe.evals.harness.suite import run_tier
+from meshprobe.evals.harness.suite import _run_identity, run_tier
 from meshprobe.evals.schemas import (
     CorpusTier,
     EpisodeGroundTruth,
@@ -126,3 +127,18 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
     assert first.report_path.is_file()
     assert second == first
     assert adapter.calls == 4
+
+
+def test_run_identity_changes_when_agent_script_changes(tmp_path: Path) -> None:
+    corpus_manifest = tmp_path / "corpus.json"
+    tier_manifest = tmp_path / "tier.json"
+    agent = tmp_path / "agent.py"
+    corpus_manifest.write_text("corpus", encoding="utf-8")
+    tier_manifest.write_text("tier", encoding="utf-8")
+    agent.write_text("print('first')", encoding="utf-8")
+    adapter = CliJsonlAdapter((sys.executable, str(agent)))
+    first = _run_identity(corpus_manifest, tier_manifest, adapter)
+
+    agent.write_text("print('second')", encoding="utf-8")
+
+    assert _run_identity(corpus_manifest, tier_manifest, adapter) != first

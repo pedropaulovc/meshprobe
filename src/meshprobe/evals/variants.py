@@ -24,6 +24,17 @@ _GEOMETRIC_FIELDS = (
 
 
 def relation_for(variant: MetamorphicVariant) -> MetamorphicRelation:
+    if variant is MetamorphicVariant.RIGID_TRANSFORM:
+        return MetamorphicRelation(
+            invariant_fields=(
+                "contacted_shaft",
+                "clip_side",
+                "arrow_direction",
+                "clearance_mm",
+                "handedness",
+            ),
+            transformed_fields=("near_ring_role",),
+        )
     if variant is MetamorphicVariant.MIRROR:
         return MetamorphicRelation(
             invariant_fields=("contacted_shaft", "near_ring_role", "clearance_mm"),

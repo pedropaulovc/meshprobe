@@ -150,6 +150,7 @@ def validate_corpus(root: Path) -> CorpusBuild:
     if private_episode_ids != expected_episode_ids:
         raise RuntimeError("private ground-truth files do not exactly match the manifest")
     model_hashes: dict[str, str] = {}
+    model_families: dict[str, str] = {}
     model_sources: set[ModelSource] = set()
     for episode_id, expected_hash in manifest.episode_sha256.items():
         path = public / "episodes" / f"{episode_id}.json"
@@ -161,6 +162,9 @@ def validate_corpus(root: Path) -> CorpusBuild:
         spec = EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
         model_sources.add(spec.model_source)
         truth = EpisodeGroundTruth.model_validate_json(truth_path.read_text(encoding="utf-8"))
+        previous_family = model_families.setdefault(spec.model_file, truth.generator_family)
+        if previous_family != truth.generator_family:
+            raise RuntimeError(f"model episodes disagree on generator family: {spec.model_file}")
         validate_public_episode(spec, truth)
         if spec.required_operations != truth.required_operations:
             raise RuntimeError(f"operation contract mismatch: {episode_id}")
@@ -177,6 +181,8 @@ def validate_corpus(root: Path) -> CorpusBuild:
         raise RuntimeError("model files and hashes do not exactly match the manifest")
     if model_sources != set(manifest.model_sources):
         raise RuntimeError("episode model sources do not match the corpus manifest")
+    if set(model_families.values()) != set(manifest.generator_families):
+        raise RuntimeError("private episode families do not match the corpus manifest")
     if set(model_hashes) != {path.name for path in (public / "models").glob("*.glb")}:
         raise RuntimeError("model files are not referenced exactly by published episodes")
     procedural_families = {family.value for family in PUBLIC_GENERATOR_FAMILIES}

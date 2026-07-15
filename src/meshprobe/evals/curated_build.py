@@ -108,6 +108,7 @@ def build_curated_variants(
             "version": version,
             "catalog_sha256": catalog_hash,
             "builder_sha256": builder_hash,
+            "variants": [str(variant) for variant in MetamorphicVariant],
             "model_sha256": model_hashes,
         },
     )
@@ -125,6 +126,8 @@ def validate_curated_build(root: Path, catalog_hash: str, builder_hash: str) -> 
         raise RuntimeError("curated build belongs to a different catalog")
     if manifest.get("builder_sha256") != builder_hash:
         raise RuntimeError("curated build belongs to a different Blender builder")
+    if manifest.get("variants") != [str(variant) for variant in MetamorphicVariant]:
+        raise RuntimeError("curated build belongs to a different metamorphic variant set")
     declared = manifest.get("model_sha256")
     if not isinstance(declared, dict):
         raise RuntimeError("curated build manifest has no model hash map")
@@ -153,6 +156,7 @@ def _build_id(
         "version": version,
         "catalog_sha256": catalog_hash,
         "builder_sha256": builder_hash,
+        "variants": [str(variant) for variant in MetamorphicVariant],
         "sources": {source_id: sha256_file(path) for source_id, path in sorted(sources.items())},
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

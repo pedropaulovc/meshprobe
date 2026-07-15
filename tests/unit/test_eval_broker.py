@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import JsonValue
 
 from meshprobe.evals.harness.broker import EvaluationBroker
+from meshprobe.evals.harness.sandbox import visible_artifact_path
 from meshprobe.evals.schemas import EpisodeBudgets, TraceStatus
 from meshprobe.protocol import (
     Command,
@@ -202,6 +203,46 @@ def test_broker_reserves_output_bytes_before_calling_renderer(tmp_path: Path) ->
     assert service.commands == []
     assert active.metrics.output_bytes == 0
     assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
+
+
+def test_broker_accepts_the_sandbox_visible_artifact_prefix(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+    artifact = tmp_path / "agent" / "artifacts" / "visible.png"
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="visible-output",
+            op="render.image",
+            output_path=visible_artifact_path(artifact),
+            width=64,
+            height=64,
+            samples=1,
+        )
+    )
+
+    assert rendered.ok
+    assert artifact.is_file()
+
+
+class PrivatePathErrorService(FakeEvaluationService):
+    def execute_for_evaluation(
+        self,
+        command: Command,
+        *,
+        evaluator_output_dir: str,
+    ) -> CommandResponse:
+        del command
+        raise ValueError(f"private pass failed at {evaluator_output_dir}/depth.exr")
+
+
+def test_broker_redacts_private_paths_from_tool_errors(tmp_path: Path) -> None:
+    active = broker(tmp_path, service=PrivatePathErrorService())
+
+    rejected = active.execute(SceneDescribeCommand(request_id="private-error", op="scene.describe"))
+
+    assert rejected.error is not None
+    assert "<private evaluator path>" in rejected.error.message
+    assert str(tmp_path / "evaluator") not in rejected.error.message
 
 
 class OversizeEvaluationService(FakeEvaluationService):

@@ -102,6 +102,25 @@ def test_sandbox_timeout_terminates_agent(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+def test_sandbox_enforces_aggregate_artifact_bytes(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    program = (
+        "from pathlib import Path\n"
+        "root=Path.cwd()\n"
+        "[(root / f'artifact-{index}.bin').write_bytes(b'x' * 60) for index in range(3)]\n"
+    )
+
+    result = run_isolated(
+        (sandbox_python(), "-c", program),
+        input_root=public,
+        artifact_root=artifacts,
+        limits=IsolationLimits(output_bytes=100),
+    )
+
+    assert result.returncode != 0
+    assert "aggregate artifact output limit exceeded" in result.stderr
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
 def test_sandbox_binds_agent_virtualenv_or_checkout_directory(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
@@ -115,6 +134,25 @@ def test_sandbox_binds_agent_virtualenv_or_checkout_directory(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "bound-agent"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_translates_absolute_virtualenv_shebang(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    runtime = tmp_path / "agent-venv"
+    executable_root = runtime / "bin"
+    executable_root.mkdir(parents=True)
+    (runtime / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    python = executable_root / "python"
+    python.symlink_to("/usr/bin/python3")
+    agent = executable_root / "agent"
+    agent.write_text(f"#!{python}\nprint('venv-agent')\n", encoding="utf-8")
+    agent.chmod(0o755)
+
+    result = run_isolated((str(agent),), input_root=public, artifact_root=artifacts)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "venv-agent"
 
 
 def test_sandbox_rejects_missing_bubblewrap_and_overlapping_roots(tmp_path: Path) -> None:

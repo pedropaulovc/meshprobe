@@ -155,6 +155,22 @@ def test_eval_orchestration_commands_emit_compact_summaries(
     assert callable(runtime_provider)
     assert callable(service_factory)
 
+    reference = runner.invoke(
+        app,
+        [
+            "eval",
+            "run-tier",
+            str(corpus.root),
+            str(catalog_path),
+            str(tmp_path / "reference-runs"),
+            "--adapter",
+            "reference",
+            "--blender",
+            "pinned-blender",
+        ],
+    )
+    assert reference.exit_code == 0
+
 
 def test_open_reports_missing_blender(tmp_path) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "assembly.glb"

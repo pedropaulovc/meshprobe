@@ -196,6 +196,7 @@ class EpisodeGroundTruth(EvalModel):
     schema_version: Literal[1] = 1
     episode_id: OpaqueId
     model_sha256: Sha256
+    generator_family: str
     answer: StructuredAnswer
     component_roles: dict[str, str]
     component_paths: dict[str, str]

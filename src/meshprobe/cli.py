@@ -17,7 +17,11 @@ from meshprobe.evals.curated_build import build_curated_variants
 from meshprobe.evals.curated_tasks import build_curated_corpus
 from meshprobe.evals.factory import CorpusBuild, build_corpus, merge_corpora, validate_corpus
 from meshprobe.evals.generators import PUBLIC_GENERATOR_FAMILIES, GeneratorFamily
-from meshprobe.evals.harness.adapters import CliJsonlAdapter, McpStdioAdapter
+from meshprobe.evals.harness.adapters import (
+    CliJsonlAdapter,
+    McpStdioAdapter,
+    ReferenceAgentAdapter,
+)
 from meshprobe.evals.harness.suite import run_tier
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import SceneManifest
@@ -47,6 +51,7 @@ app.add_typer(eval_app, name="eval")
 class AgentAdapterKind(StrEnum):
     CLI = "cli"
     MCP = "mcp"
+    REFERENCE = "reference"
 
 
 def _load_manifest(path: Path) -> SceneManifest:
@@ -190,24 +195,32 @@ def run_eval_tier(
     corpus_root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
     tier_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    agent_command_json: Annotated[str, typer.Option("--agent-command-json")],
+    agent_command_json: Annotated[str | None, typer.Option("--agent-command-json")] = None,
     adapter_kind: Annotated[AgentAdapterKind, typer.Option("--adapter")] = AgentAdapterKind.CLI,
     blender: Annotated[str, typer.Option("--blender")] = "blender",
 ) -> None:
     """Run an isolated agent over every episode in an exact pinned tier."""
 
     try:
-        command_payload = json.loads(agent_command_json)
-        if not isinstance(command_payload, list) or not all(
-            isinstance(item, str) for item in command_payload
-        ):
-            raise ValueError("agent command must be a JSON array of strings")
-        command = tuple(command_payload)
-        adapter = (
-            CliJsonlAdapter(command)
-            if adapter_kind is AgentAdapterKind.CLI
-            else McpStdioAdapter(command)
-        )
+        adapter: ReferenceAgentAdapter | CliJsonlAdapter | McpStdioAdapter
+        if adapter_kind is AgentAdapterKind.REFERENCE:
+            if agent_command_json is not None:
+                raise ValueError("the reference adapter does not accept an agent command")
+            adapter = ReferenceAgentAdapter()
+        else:
+            if agent_command_json is None:
+                raise ValueError("CLI and MCP adapters require --agent-command-json")
+            command_payload = json.loads(agent_command_json)
+            if not isinstance(command_payload, list) or not all(
+                isinstance(item, str) for item in command_payload
+            ):
+                raise ValueError("agent command must be a JSON array of strings")
+            command = tuple(command_payload)
+            adapter = (
+                CliJsonlAdapter(command)
+                if adapter_kind is AgentAdapterKind.CLI
+                else McpStdioAdapter(command)
+            )
         result = run_tier(
             corpus_root=corpus_root,
             tier_manifest_path=tier_manifest,

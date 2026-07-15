@@ -217,7 +217,7 @@ def build_model(
         horizontal_flip = {"left": "right", "right": "left"}
         arrow_direction = horizontal_flip.get(arrow_direction, arrow_direction)
     clearance_mm = round(rng.uniform(80.0, 420.0), 3)
-    near_ring = rng.choice(("near_ring", "far_ring"))
+    near_ring_position = rng.choice(("near_ring", "far_ring"))
 
     muted = MaterialSpec("muted-alloy", (0.14, 0.16, 0.18, 1), metallic=0.75, roughness=0.18)
     steel = MaterialSpec("brushed-steel", (0.42, 0.48, 0.54, 1), metallic=0.8, roughness=0.32)
@@ -372,8 +372,8 @@ def build_model(
     )
     ring_rotation = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))
     ring_positions = {
-        near_ring: -0.45,
-        "far_ring" if near_ring == "near_ring" else "near_ring": 0.55,
+        near_ring_position: -0.45,
+        "far_ring" if near_ring_position == "near_ring" else "near_ring": 0.55,
     }
     for role, radius in (("near_ring", 0.9), ("far_ring", 0.62)):
         scene.add(
@@ -438,11 +438,24 @@ def build_model(
     if selected_variant is MetamorphicVariant.REORDER_HIERARCHY:
         order_seed ^= 0x5EED0F00D
     role_order = _random_topological_order(scene, random.Random(order_seed))
+    ring_world_positions = {
+        role: _apply_root_transform(
+            (0.0, ring_y, 3.7),
+            translation=root_translation,
+            rotation_xyzw=root_rotation,
+            scale=root_scale,
+        )
+        for role, ring_y in ring_positions.items()
+    }
+    nearer_ring_role = min(
+        ring_world_positions,
+        key=lambda role: math.dist(ring_world_positions[role], camera_position),
+    )
     semantic_answers: dict[str, str | float | int] = {
         "contacted_shaft": contacted_shaft,
         "clip_side": "positive" if clip_sign > 0 else "negative",
         "arrow_direction": arrow_direction,
-        "near_ring_role": near_ring,
+        "near_ring_role": nearer_ring_role,
         "clearance_mm": round(clearance_mm * physical_scale, 3),
         "handedness": "mirrored" if mirror < 0 else "standard",
     }
@@ -507,19 +520,11 @@ def _episode(
     status = AnswerStatus.ANSWERED
     conflicts: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
-    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN and index == 1:
+    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN and index > 0:
         status = AnswerStatus.INDETERMINATE
         answers = {}
         conflicts = (model.component_ids["idler"], model.component_ids["distractor"])
-    if model.generated.family is GeneratorFamily.MISSING_MATERIAL and index == 1:
-        status = AnswerStatus.INDETERMINATE
-        answers = {}
-        missing = ("arrow material",)
-    if index == 3 and model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN:
-        status = AnswerStatus.INDETERMINATE
-        answers = {}
-        conflicts = (model.component_ids["idler"], model.component_ids["distractor"])
-    if index == 3 and model.generated.family is GeneratorFamily.MISSING_MATERIAL:
+    if model.generated.family is GeneratorFamily.MISSING_MATERIAL and index > 0:
         status = AnswerStatus.INDETERMINATE
         answers = {}
         missing = ("arrow material",)
@@ -551,10 +556,11 @@ def _episode(
         ),
     )
     state_requirements = () if index == 0 else _state_requirements(index)
-    evidence_requirements = () if index == 0 else _evidence_requirements(index)
+    evidence_requirements = () if index == 0 else _evidence_requirements(model, index)
     truth = EpisodeGroundTruth(
         episode_id=episode_id,
         model_sha256=model.sha256,
+        generator_family=model.generated.family.value,
         answer=answer,
         component_roles=model.component_ids,
         component_paths=model.component_paths,
@@ -689,10 +695,14 @@ def _answer_schema(index: int) -> dict[str, JsonValue]:
 
 
 def _episode_class(model: PublishedModel, index: int) -> EpisodeClass:
-    if model.generated.family in {
-        GeneratorFamily.AMBIGUOUS_TWIN,
-        GeneratorFamily.MISSING_MATERIAL,
-    } and index in {1, 3}:
+    if (
+        model.generated.family
+        in {
+            GeneratorFamily.AMBIGUOUS_TWIN,
+            GeneratorFamily.MISSING_MATERIAL,
+        }
+        and index > 0
+    ):
         return EpisodeClass.NEGATIVE
     if index == 0 or (index == 3 and model.generated.seed % 4 == 0):
         return EpisodeClass.POSITIVE
@@ -815,7 +825,7 @@ def _state_requirements(index: int) -> tuple[StateRequirement, ...]:
     return tuple(requirements)
 
 
-def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
+def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceRequirement, ...]:
     requirements = [
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_VISIBLE,
@@ -851,12 +861,6 @@ def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
             render_group="context_85",
         ),
         EvidenceRequirement(
-            kind=EvidenceKind.TARGET_CONTRAST,
-            component_role="arrow",
-            minimum=0.04,
-            render_group="surface_left",
-        ),
-        EvidenceRequirement(
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="arrow",
             minimum=0.005,
@@ -871,12 +875,6 @@ def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
             kind=EvidenceKind.ILLUMINATION,
             expected="raking_left",
             render_group="surface_left",
-        ),
-        EvidenceRequirement(
-            kind=EvidenceKind.TARGET_CONTRAST,
-            component_role="arrow",
-            minimum=0.04,
-            render_group="surface_right",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_VISIBLE,
@@ -917,6 +915,23 @@ def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
             render_group="gap_backlit",
         ),
     ]
+    if model.generated.family is not GeneratorFamily.MISSING_MATERIAL:
+        requirements.extend(
+            (
+                EvidenceRequirement(
+                    kind=EvidenceKind.TARGET_CONTRAST,
+                    component_role="arrow",
+                    minimum=0.04,
+                    render_group="surface_left",
+                ),
+                EvidenceRequirement(
+                    kind=EvidenceKind.TARGET_CONTRAST,
+                    component_role="arrow",
+                    minimum=0.04,
+                    render_group="surface_right",
+                ),
+            )
+        )
     if index >= 2:
         requirements.extend(
             (
@@ -972,6 +987,34 @@ def _random_topological_order(scene: GlbScene, rng: random.Random) -> tuple[str,
             emitted.append(role)
             del pending[role]
     return tuple(emitted)
+
+
+def _apply_root_transform(
+    point: tuple[float, float, float],
+    *,
+    translation: tuple[float, float, float],
+    rotation_xyzw: tuple[float, float, float, float],
+    scale: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    scaled = tuple(value * factor for value, factor in zip(point, scale, strict=True))
+    x, y, z, w = rotation_xyzw
+    q_vector = (x, y, z)
+    cross = (
+        q_vector[1] * scaled[2] - q_vector[2] * scaled[1],
+        q_vector[2] * scaled[0] - q_vector[0] * scaled[2],
+        q_vector[0] * scaled[1] - q_vector[1] * scaled[0],
+    )
+    twice_cross = tuple(2 * value for value in cross)
+    nested = (
+        q_vector[1] * twice_cross[2] - q_vector[2] * twice_cross[1],
+        q_vector[2] * twice_cross[0] - q_vector[0] * twice_cross[2],
+        q_vector[0] * twice_cross[1] - q_vector[1] * twice_cross[0],
+    )
+    rotated = tuple(
+        original + w * first + second
+        for original, first, second in zip(scaled, twice_cross, nested, strict=True)
+    )
+    return tuple(offset + value for offset, value in zip(translation, rotated, strict=True))  # type: ignore[return-value]
 
 
 def _seed_int(family: GeneratorFamily, seed: int) -> int:

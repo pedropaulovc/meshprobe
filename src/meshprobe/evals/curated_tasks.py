@@ -183,14 +183,19 @@ def generate_curated_episodes(model: CuratedModelTruth) -> tuple[GeneratedEpisod
 def curated_task_generator_sha256(build: CuratedBuild) -> str:
     digest = hashlib.sha256(b"meshprobe-curated-task-generator-v1\0")
     importer = Path(__file__).parents[1] / "blender" / "worker.py"
-    for path in (
-        Path(__file__),
-        Path(__file__).with_name("schemas.py"),
-        Path(__file__).with_name("leakage.py"),
-        importer,
-        build.root / "public" / "manifest.json",
-    ):
-        digest.update(path.as_posix().encode())
+    inputs = [
+        ("curated_tasks.py", Path(__file__)),
+        ("schemas.py", Path(__file__).with_name("schemas.py")),
+        ("leakage.py", Path(__file__).with_name("leakage.py")),
+        ("blender/worker.py", importer),
+        ("curated-build-manifest.json", build.root / "public" / "manifest.json"),
+    ]
+    inputs.extend(
+        (f"roles/{path.name}", path)
+        for path in sorted((build.root / "private" / "roles").glob("*.json"))
+    )
+    for logical_name, path in inputs:
+        digest.update(logical_name.encode())
         digest.update(b"\0")
         digest.update(bytes.fromhex(sha256_file(path)))
     return digest.hexdigest()
@@ -238,6 +243,7 @@ def _episode(
     truth = EpisodeGroundTruth(
         episode_id=episode_id,
         model_sha256=model.model_sha256,
+        generator_family="controlled_curated_assemblies",
         answer=answer,
         component_roles=model.component_ids,
         component_paths=model.component_paths,

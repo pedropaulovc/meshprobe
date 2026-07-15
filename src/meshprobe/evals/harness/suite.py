@@ -100,14 +100,34 @@ def run_tier(
 
 def _run_identity(corpus_manifest: Path, tier_manifest: Path, adapter: AgentAdapter) -> str:
     command = getattr(adapter, "command", None)
+    identity_paths = list(getattr(adapter, "identity_paths", ()))
+    if isinstance(command, tuple):
+        identity_paths.extend(_command_files(command))
     payload = {
         "corpus_manifest_sha256": sha256_file(corpus_manifest),
         "tier_manifest_sha256": sha256_file(tier_manifest),
         "adapter_type": f"{type(adapter).__module__}.{type(adapter).__qualname__}",
         "adapter_command": list(command) if isinstance(command, tuple) else repr(adapter),
+        "agent_files": {
+            str(path.expanduser().resolve()): sha256_file(path.expanduser().resolve(strict=True))
+            for path in sorted(set(identity_paths))
+        },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _command_files(command: tuple[str, ...]) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for index, token in enumerate(command):
+        candidate = Path(token).expanduser()
+        if index == 0 and not candidate.is_file():
+            resolved = shutil.which(token)
+            if resolved is not None:
+                candidate = Path(resolved)
+        if candidate.is_file():
+            paths.append(candidate)
+    return tuple(paths)
 
 
 def _read_checkpoint(path: Path, identity: str) -> set[str]:

@@ -153,6 +153,24 @@ def test_coverage_uses_curated_target_role(tmp_path: Path) -> None:
     assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.FAIL
 
 
+def test_coverage_counts_first_observed_state_transition(tmp_path: Path) -> None:
+    inputs = discovery_inputs(tmp_path)
+    truth = inputs.truth.model_copy(
+        update={"required_operations": (*inputs.truth.required_operations, Operation.VIEW_SET)}
+    )
+    first_state = accepted_event(
+        5,
+        "view.set",
+        arguments={},
+        result={"state_sha256": "b" * 64},
+        before=None,
+        after="b" * 64,
+    )
+    report = score_episode(replace(inputs, truth=truth, trace=(*inputs.trace, first_state)))
+
+    assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.PASS
+
+
 def test_answer_gate_rejects_plausible_but_wrong_values(tmp_path: Path) -> None:
     inputs = discovery_inputs(tmp_path)
     wrong = inputs.submission.model_copy(
