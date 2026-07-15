@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,29 @@ def test_sandbox_timeout_terminates_agent(tmp_path: Path) -> None:
 
     assert result.timed_out
     assert result.returncode != 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="AppContainer ACL serialization is Windows-specific")
+def test_windows_parallel_sandboxes_share_python_runtime(tmp_path: Path) -> None:
+    workers = 4
+    barrier = threading.Barrier(workers)
+
+    def launch(index: int) -> tuple[int, str, str]:
+        episode = tmp_path / f"episode-{index}"
+        episode.mkdir()
+        public, artifacts = roots(episode)
+        barrier.wait()
+        result = run_isolated(
+            (sandbox_python(), "-c", f"print('agent-{index}')"),
+            input_root=public,
+            artifact_root=artifacts,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = tuple(executor.map(launch, range(workers)))
+
+    assert results == tuple((0, f"agent-{index}\n", "") for index in range(workers))
 
 
 def test_sandbox_enforces_aggregate_artifact_bytes(tmp_path: Path) -> None:

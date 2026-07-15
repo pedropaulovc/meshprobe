@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import threading
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from ctypes import wintypes
 from pathlib import Path
 from typing import IO, Any
@@ -20,8 +20,10 @@ from meshprobe.evals.harness.sandbox import IsolationLimits, SandboxUnavailable
 _HRESULT_ALREADY_EXISTS = 0x800700B7
 _STILL_ACTIVE = 259
 _WAIT_OBJECT_0 = 0
+_WAIT_ABANDONED = 0x00000080
 _WAIT_TIMEOUT = 258
 _INFINITE = 0xFFFFFFFF
+_ACL_MUTEX_NAME = r"Global\MeshProbe.WindowsSandboxAcl.v1"
 
 _STARTF_USESTDHANDLES = 0x00000100
 _CREATE_SUSPENDED = 0x00000004
@@ -274,11 +276,12 @@ def spawn_windows(
         sid_string = _sid_string(appcontainer_sid)
         profile_root = _profile_folder(sid_string)
         acl_roots = _runtime_roots(Path(executable))
-        for root in (input_root, *acl_roots):
-            _grant_acl(root, sid_string, "RX")
-            granted.append(root)
-        _grant_acl(artifact_root, sid_string, "M")
-        granted.append(artifact_root)
+        with _acl_transaction():
+            for root in (input_root, *acl_roots):
+                _grant_acl(root, sid_string, "RX")
+                granted.append(root)
+            _grant_acl(artifact_root, sid_string, "M")
+            granted.append(artifact_root)
         process = _create_process(
             resolved_command,
             appcontainer_sid=appcontainer_sid,
@@ -535,13 +538,33 @@ def _grant_acl(path: Path, sid: str, rights: str) -> None:
 
 
 def _cleanup_profile(name: str, sid: str, roots: list[Path]) -> None:
-    for root in reversed(roots):
-        subprocess.run(
-            ("icacls.exe", str(root), "/remove:g", f"*{sid}", "/Q"),
-            capture_output=True,
-            check=False,
-        )
+    with _acl_transaction():
+        for root in reversed(roots):
+            subprocess.run(
+                ("icacls.exe", str(root), "/remove:g", f"*{sid}", "/Q"),
+                capture_output=True,
+                check=False,
+            )
     _userenv.DeleteAppContainerProfile(name)
+
+
+@contextlib.contextmanager
+def _acl_transaction() -> Iterator[None]:
+    """Serialize read-modify-write ACL updates across MeshProbe processes."""
+
+    mutex = _kernel32.CreateMutexW(None, False, _ACL_MUTEX_NAME)
+    if not mutex:
+        raise _win_error(_last_error())
+    try:
+        result = _kernel32.WaitForSingleObject(mutex, _INFINITE)
+        if result not in {_WAIT_OBJECT_0, _WAIT_ABANDONED}:
+            raise _win_error(_last_error())
+        try:
+            yield
+        finally:
+            _check_bool(_kernel32.ReleaseMutex(mutex), "ReleaseMutex")
+    finally:
+        _kernel32.CloseHandle(mutex)
 
 
 def _runtime_roots(executable: Path) -> tuple[Path, ...]:
@@ -645,6 +668,10 @@ if os.name == "nt":
 
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    _kernel32.CreateMutexW.restype = wintypes.HANDLE
+    _kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel32.ReleaseMutex.restype = wintypes.BOOL
+    _kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
     _kernel32.CreateProcessW.argtypes = [
         wintypes.LPCWSTR,
         wintypes.LPWSTR,
