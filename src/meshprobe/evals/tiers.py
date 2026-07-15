@@ -10,9 +10,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from meshprobe.evals.factory import CorpusBuild, validate_corpus
+from meshprobe.evals.generators import PRIVATE_GENERATOR_FAMILIES
 from meshprobe.evals.schemas import (
     CorpusTier,
     EpisodeSpec,
+    ModelSource,
     PassThresholds,
     RuntimePin,
     TaskFamily,
@@ -55,6 +57,20 @@ def current_runtime_pin(blender: str = "blender") -> RuntimePin:
     )
 
 
+def validate_runtime_pin(expected: RuntimePin, actual: RuntimePin | None = None) -> RuntimePin:
+    """Fail before a run when package, protocol, Blender, importer, or engines drift."""
+
+    observed = actual or current_runtime_pin()
+    if observed != expected:
+        differences = {
+            field: {"expected": getattr(expected, field), "actual": getattr(observed, field)}
+            for field in RuntimePin.model_fields
+            if getattr(expected, field) != getattr(observed, field)
+        }
+        raise RuntimeError(f"qualification runtime does not match its pin: {differences}")
+    return observed
+
+
 def pin_standard_tiers(
     corpus_root: Path,
     output_root: Path,
@@ -91,6 +107,12 @@ def pin_private_tier(
 
     corpus = validate_corpus(corpus_root.expanduser().resolve(strict=True))
     specs = _load_specs(corpus)
+    sources = {spec.model_source for spec in specs.values()}
+    if sources != {ModelSource.PRIVATE}:
+        raise ValueError("private qualification accepts only evaluator-private models")
+    held_out = {family.value for family in PRIVATE_GENERATOR_FAMILIES}
+    if not set(corpus.manifest.generator_families).issubset(held_out):
+        raise ValueError("private qualification accepts only held-out generator families")
     full_stack = sum(spec.family is TaskFamily.FULL_INVESTIGATION for spec in specs.values())
     if full_stack < 500:
         raise ValueError("private qualification requires at least 500 full-stack episodes")

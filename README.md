@@ -56,6 +56,49 @@ MCP clients get the same discriminated command schema and result envelope throug
 uv run meshprobe-mcp
 ```
 
+## Qualification harness
+
+The evaluation harness runs each agent in a Bubblewrap sandbox with no network, a
+read-only assigned model, a writable artifact directory, and evaluator-owned traces and
+render passes. It supports a JSONL command-line protocol and an MCP stdio protocol. Both
+adapters use the same prompt, command schema, budgets, broker, and answer contract.
+
+Build the released 512-model procedural corpus and the 160-model curated track, then
+combine and pin them:
+
+```bash
+uv run meshprobe eval generate .corpora --version procedural-v1
+uv run meshprobe eval curated-generate \
+  evals/curated/catalog.json .cache/meshprobe-curated .corpora
+uv run meshprobe eval merge .corpora \
+  .corpora/procedural-v1 .corpora/curated-tasks-v1 \
+  --version qualification-v1
+uv run meshprobe eval pin \
+  .corpora/qualification-v1 .corpora/manifests
+```
+
+The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
+investigations. The nested smoke, pull-request, nightly, and release manifests committed
+under `evals/manifests/public/` pin every episode, model, corpus, MeshProbe version,
+Blender version, importer, and render engine. The curated catalog pins the source commit,
+download hash, topology hash, license, and attribution for 20 CC0 assets; the build
+creates eight controlled variants of each three-source inspection assembly.
+
+Run a pinned tier with either agent transport:
+
+```bash
+uv run meshprobe eval run-tier \
+  .corpora/qualification-v1 evals/manifests/public/smoke.json .runs \
+  --adapter cli \
+  --agent-command-json '["/path/to/agent"]'
+```
+
+The CLI agent reads one episode envelope, sends `tool_call` lines, and finishes with a
+structured `submission`. With `--adapter mcp`, the agent speaks MCP as a client over its
+standard streams and calls the `meshprobe` and `submit` tools. Runs checkpoint after each
+episode and publish JSON plus Markdown reports split by operation, task family,
+difficulty, projection, focal-length band, illumination, model source, and failure gate.
+
 The approved implementation and evaluation design is in [docs/plan.md](docs/plan.md).
 
 ## License

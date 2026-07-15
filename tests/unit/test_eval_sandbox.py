@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 from meshprobe.evals.harness.sandbox import (
     IsolationLimits,
     SandboxUnavailable,
+    _user_task_count,
     run_isolated,
 )
 
@@ -83,3 +85,15 @@ def test_sandbox_rejects_missing_bubblewrap_and_overlapping_roots(tmp_path: Path
             input_root=public,
             artifact_root=public / "artifacts",
         )
+
+
+def test_process_limit_baseline_counts_threads_not_only_processes() -> None:
+    own_processes = 0
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            own_processes += entry.stat().st_uid == os.getuid()
+        except FileNotFoundError:
+            continue
+    assert _user_task_count() >= own_processes

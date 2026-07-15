@@ -57,6 +57,36 @@ class GeneratorFamily(StrEnum):
     COPLANAR_MARKER = "coplanar_marker"
     MISSING_MATERIAL = "missing_material"
     AMBIGUOUS_TWIN = "ambiguous_twin"
+    INTERNAL_BAFFLE = "internal_baffle"
+    ASYMMETRIC_TWIN = "asymmetric_twin"
+    RECESSED_MARK = "recessed_mark"
+    NESTED_SHELL = "nested_shell"
+
+
+PUBLIC_GENERATOR_FAMILIES = (
+    GeneratorFamily.HIDDEN_CLIP,
+    GeneratorFamily.STAMPED_ARROW,
+    GeneratorFamily.COAXIAL_DEPTH,
+    GeneratorFamily.CLEARANCE_SLOT,
+    GeneratorFamily.OCCLUDED_FASTENER,
+    GeneratorFamily.AXIAL_GAP,
+    GeneratorFamily.MIRRORED_HANDEDNESS,
+    GeneratorFamily.DUPLICATE_NAME,
+    GeneratorFamily.NESTED_HIERARCHY,
+    GeneratorFamily.REFLECTIVE_CAVITY,
+    GeneratorFamily.LOW_CONTRAST_RELIEF,
+    GeneratorFamily.EXTREME_SCALE,
+    GeneratorFamily.TRANSPARENT_SHELL,
+    GeneratorFamily.COPLANAR_MARKER,
+    GeneratorFamily.MISSING_MATERIAL,
+    GeneratorFamily.AMBIGUOUS_TWIN,
+)
+PRIVATE_GENERATOR_FAMILIES = (
+    GeneratorFamily.INTERNAL_BAFFLE,
+    GeneratorFamily.ASYMMETRIC_TWIN,
+    GeneratorFamily.RECESSED_MARK,
+    GeneratorFamily.NESTED_SHELL,
+)
 
 
 class MetamorphicVariant(StrEnum):
@@ -114,6 +144,10 @@ FAMILY_TASKS: dict[GeneratorFamily, TaskFamily] = {
     GeneratorFamily.COPLANAR_MARKER: TaskFamily.SURFACE_DETAIL,
     GeneratorFamily.MISSING_MATERIAL: TaskFamily.NEGATIVE_AMBIGUOUS,
     GeneratorFamily.AMBIGUOUS_TWIN: TaskFamily.NEGATIVE_AMBIGUOUS,
+    GeneratorFamily.INTERNAL_BAFFLE: TaskFamily.HIDDEN_GEOMETRY,
+    GeneratorFamily.ASYMMETRIC_TWIN: TaskFamily.SPATIAL_RELATIONSHIP,
+    GeneratorFamily.RECESSED_MARK: TaskFamily.SURFACE_DETAIL,
+    GeneratorFamily.NESTED_SHELL: TaskFamily.OCCLUSION_REASONING,
 }
 
 _ADJECTIVES = (
@@ -178,7 +212,11 @@ def build_model(
     names = _component_names(rng)
     if selected_variant is MetamorphicVariant.RENAME:
         names = _component_names(random.Random(_seed_int(family, seed) ^ 0x5A17C0DE))
-    if family in {GeneratorFamily.DUPLICATE_NAME, GeneratorFamily.AMBIGUOUS_TWIN}:
+    if family in {
+        GeneratorFamily.DUPLICATE_NAME,
+        GeneratorFamily.AMBIGUOUS_TWIN,
+        GeneratorFamily.ASYMMETRIC_TWIN,
+    }:
         names["distractor"] = names["idler"]
 
     mirror = (
@@ -314,6 +352,8 @@ def build_model(
         )
     )
     cover_y = -1.15 if family is not GeneratorFamily.AXIAL_GAP else -0.75
+    if family is GeneratorFamily.INTERNAL_BAFFLE:
+        cover_y = -0.45
     scene.add(
         ComponentSpec(
             "cover",
@@ -337,6 +377,8 @@ def build_model(
     arrow_depth = 0.002 if family is GeneratorFamily.COPLANAR_MARKER else 0.015
     if family in {GeneratorFamily.STAMPED_ARROW, GeneratorFamily.LOW_CONTRAST_RELIEF}:
         arrow_depth = 0.007
+    if family is GeneratorFamily.RECESSED_MARK:
+        arrow_depth = 0.003
     scene.add(
         ComponentSpec(
             "arrow",
@@ -386,6 +428,8 @@ def build_model(
         )
     )
     distractor_scale = 0.08 if family is GeneratorFamily.EXTREME_SCALE else 0.42
+    if family is GeneratorFamily.ASYMMETRIC_TWIN:
+        distractor_scale = 0.74
     scene.add(
         ComponentSpec(
             "distractor",
@@ -399,6 +443,7 @@ def build_model(
     if (
         selected_variant is MetamorphicVariant.EXTRA_OCCLUDER
         or family is GeneratorFamily.OCCLUDED_FASTENER
+        or family in {GeneratorFamily.INTERNAL_BAFFLE, GeneratorFamily.NESTED_SHELL}
     ):
         scene.add(
             ComponentSpec(
@@ -406,8 +451,10 @@ def build_model(
                 names["extra_occluder"],
                 box((1.4, 0.25, 2.0)),
                 dark,
-                "housing",
-                (idler_x, -1.55, 1.4),
+                "idler" if family is GeneratorFamily.NESTED_SHELL else "housing",
+                (0.0, -1.0, 0.0)
+                if family is GeneratorFamily.NESTED_SHELL
+                else (idler_x, -1.55, 1.4),
             )
         )
 
@@ -451,7 +498,11 @@ def publish_model(generated: GeneratedModel, models_dir: Path) -> PublishedModel
     )
 
 
-def generate_episodes(model: PublishedModel) -> tuple[GeneratedEpisode, ...]:
+def generate_episodes(
+    model: PublishedModel,
+    *,
+    model_source: ModelSource = ModelSource.PROCEDURAL,
+) -> tuple[GeneratedEpisode, ...]:
     tasks = (
         (TaskFamily.COMPONENT_DISCOVERY, _discovery_operations()),
         (FAMILY_TASKS[model.generated.family], _reasoning_operations()),
@@ -459,7 +510,7 @@ def generate_episodes(model: PublishedModel) -> tuple[GeneratedEpisode, ...]:
         (TaskFamily.FULL_INVESTIGATION, tuple(Operation)),
     )
     return tuple(
-        _episode(model, index, family, operations)
+        _episode(model, index, family, operations, model_source)
         for index, (family, operations) in enumerate(tasks)
     )
 
@@ -469,6 +520,7 @@ def _episode(
     index: int,
     task_family: TaskFamily,
     operations: tuple[Operation, ...],
+    model_source: ModelSource,
 ) -> GeneratedEpisode:
     digest = hashlib.sha256(
         f"{model.generated.family}:{model.generated.seed}:{index}".encode()
@@ -512,7 +564,7 @@ def _episode(
         family=task_family,
         episode_class=_episode_class(model, index),
         difficulty=tuple(Difficulty)[index],
-        model_source=ModelSource.PROCEDURAL,
+        model_source=model_source,
         prompt=prompt,
         answer_schema=_answer_schema(),
         required_operations=operations,

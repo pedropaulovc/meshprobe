@@ -42,7 +42,10 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["meshprobe"]
-omit = ["src/meshprobe/blender/worker.py"]
+omit = [
+  "src/meshprobe/blender/curated_builder.py",
+  "src/meshprobe/blender/worker.py",
+]
 
 [tool.coverage.report]
 fail_under = 90

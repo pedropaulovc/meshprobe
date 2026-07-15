@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from meshprobe.evals.generators import (
+    PRIVATE_GENERATOR_FAMILIES,
+    PUBLIC_GENERATOR_FAMILIES,
     GeneratorFamily,
     MetamorphicVariant,
     build_model,
@@ -15,8 +18,11 @@ from meshprobe.evals.schemas import EpisodeClass, Operation, TaskFamily
 from meshprobe.evals.variants import verify_relation
 
 
-def test_all_sixteen_generator_families_are_registered() -> None:
-    assert len(GeneratorFamily) == 16
+def test_public_and_held_out_generator_families_are_disjoint() -> None:
+    assert len(PUBLIC_GENERATOR_FAMILIES) == 16
+    assert len(PRIVATE_GENERATOR_FAMILIES) == 4
+    assert set(PUBLIC_GENERATOR_FAMILIES).isdisjoint(PRIVATE_GENERATOR_FAMILIES)
+    assert set(PUBLIC_GENERATOR_FAMILIES + PRIVATE_GENERATOR_FAMILIES) == set(GeneratorFamily)
 
 
 def test_seeded_model_and_episodes_are_deterministic(tmp_path: Path) -> None:
@@ -50,6 +56,20 @@ def test_seed_rotation_covers_every_metamorphic_variant() -> None:
     assert variants == set(MetamorphicVariant)
 
 
+def test_held_out_families_encode_distinct_unseen_geometry_patterns() -> None:
+    asymmetric = build_model(GeneratorFamily.ASYMMETRIC_TWIN, 0)
+    assert asymmetric.target_name == next(
+        component.name
+        for component in asymmetric.scene.components
+        if component.role == "distractor"
+    )
+
+    internal_paths = build_model(GeneratorFamily.INTERNAL_BAFFLE, 0).scene.component_paths()
+    nested_paths = build_model(GeneratorFamily.NESTED_SHELL, 0).scene.component_paths()
+    assert internal_paths["extra_occluder"].startswith(internal_paths["housing"] + "/")
+    assert nested_paths["extra_occluder"].startswith(nested_paths["idler"] + "/")
+
+
 @pytest.mark.parametrize("variant", tuple(MetamorphicVariant))
 def test_metamorphic_variants_obey_declared_answer_relations(
     variant: MetamorphicVariant,
@@ -61,6 +81,50 @@ def test_metamorphic_variants_obey_declared_answer_relations(
     )
     transformed = build_model(GeneratorFamily.HIDDEN_CLIP, 12, variant=variant)
     verify_relation(base, transformed)
+
+
+def test_metamorphic_verifier_rejects_each_broken_relation() -> None:
+    base = build_model(
+        GeneratorFamily.HIDDEN_CLIP,
+        12,
+        variant=MetamorphicVariant.MATERIAL,
+    )
+    with pytest.raises(ValueError, match="share a family"):
+        verify_relation(base, build_model(GeneratorFamily.STAMPED_ARROW, 12))
+
+    invariant = replace(base, semantic_answers=base.semantic_answers | {"contacted_shaft": 99})
+    with pytest.raises(ValueError, match="invariant fields"):
+        verify_relation(base, invariant)
+
+    mirror = build_model(
+        GeneratorFamily.HIDDEN_CLIP,
+        12,
+        variant=MetamorphicVariant.MIRROR,
+    )
+    for field, value, message in (
+        ("clip_side", base.semantic_answers["clip_side"], "clip_side"),
+        ("arrow_direction", "diagonal", "arrow_direction"),
+        ("handedness", base.semantic_answers["handedness"], "handedness"),
+    ):
+        broken = replace(
+            mirror,
+            semantic_answers=mirror.semantic_answers | {field: value},
+        )
+        with pytest.raises(ValueError, match=message):
+            verify_relation(base, broken)
+
+    rescale = build_model(
+        GeneratorFamily.HIDDEN_CLIP,
+        12,
+        variant=MetamorphicVariant.RESCALE,
+    )
+    broken_scale = replace(
+        rescale,
+        semantic_answers=rescale.semantic_answers
+        | {"clearance_mm": base.semantic_answers["clearance_mm"]},
+    )
+    with pytest.raises(ValueError, match="unexpected ratio"):
+        verify_relation(base, broken_scale)
 
 
 def test_private_component_ids_do_not_appear_in_public_prompt(tmp_path: Path) -> None:

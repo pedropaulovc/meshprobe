@@ -298,6 +298,7 @@ class CorpusManifest(EvalModel):
     corpus_version: str
     tier: CorpusTier
     generator_sha256: Sha256
+    model_sources: tuple[ModelSource, ...] = Field(min_length=1)
     generator_families: tuple[str, ...] = Field(min_length=1)
     generator_seeds: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
     model_sha256: dict[Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")], Sha256]
@@ -306,6 +307,8 @@ class CorpusManifest(EvalModel):
 
     @model_validator(mode="after")
     def validate_episode_hashes(self) -> Self:
+        if len(set(self.model_sources)) != len(self.model_sources):
+            raise ValueError("model sources must be unique")
         if len(set(self.generator_families)) != len(self.generator_families):
             raise ValueError("generator families must be unique")
         if len(set(self.generator_seeds)) != len(self.generator_seeds):

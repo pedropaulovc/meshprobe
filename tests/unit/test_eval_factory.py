@@ -8,9 +8,11 @@ import pytest
 from meshprobe.evals.factory import (
     _prepare_staging,
     _read_checkpoint,
+    _recipe_sha256,
     _validate_operation_class_coverage,
     build_corpus,
     generator_source_sha256,
+    merge_corpora,
     validate_corpus,
 )
 from meshprobe.evals.generators import (
@@ -25,6 +27,7 @@ from meshprobe.evals.leakage import (
     validate_public_directory,
     validate_public_episode,
 )
+from meshprobe.evals.schemas import ModelSource
 
 
 def test_factory_atomically_publishes_checkpointed_public_and_private_trees(
@@ -78,6 +81,64 @@ def test_factory_rejects_existing_version_with_different_recipe(tmp_path: Path) 
             families=(GeneratorFamily.HIDDEN_CLIP,),
             seeds=(1,),
         )
+
+
+@pytest.mark.parametrize(
+    ("families", "seeds", "message"),
+    [
+        ((), (0,), "at least one family"),
+        ((GeneratorFamily.HIDDEN_CLIP,), (), "at least one family"),
+        (
+            (GeneratorFamily.HIDDEN_CLIP, GeneratorFamily.HIDDEN_CLIP),
+            (0,),
+            "families must be unique",
+        ),
+        ((GeneratorFamily.HIDDEN_CLIP,), (0, 0), "seeds must be unique"),
+        ((GeneratorFamily.HIDDEN_CLIP,), (-1,), "seeds must be unique"),
+    ],
+)
+def test_factory_rejects_invalid_generation_recipes(
+    tmp_path: Path,
+    families: tuple[GeneratorFamily, ...],
+    seeds: tuple[int, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_corpus(tmp_path, families=families, seeds=seeds)
+
+
+def test_factory_merges_validated_corpora_without_rewriting_artifacts(tmp_path: Path) -> None:
+    first = build_corpus(
+        tmp_path / "inputs",
+        corpus_version="first",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    second = build_corpus(
+        tmp_path / "inputs",
+        corpus_version="second",
+        families=(GeneratorFamily.STAMPED_ARROW,),
+        seeds=(1,),
+    )
+
+    merged = merge_corpora(
+        (first.root, second.root),
+        tmp_path / "combined",
+        corpus_version="qualification-v1",
+    )
+
+    assert merged.model_count == first.model_count + second.model_count
+    assert merged.episode_count == first.episode_count + second.episode_count
+    for name, digest in first.manifest.model_sha256.items():
+        assert merged.manifest.model_sha256[name] == digest
+    assert (
+        merge_corpora(
+            (first.root, second.root),
+            tmp_path / "combined",
+            corpus_version="qualification-v1",
+        )
+        == merged
+    )
 
 
 def test_factory_rejects_existing_version_from_stale_generator(tmp_path: Path) -> None:
@@ -195,6 +256,12 @@ def test_completed_checkpoint_cannot_publish_missing_artifacts(tmp_path: Path) -
     staging.mkdir()
     checkpoint = {
         "generator_sha256": generator_source_sha256(),
+        "recipe_sha256": _recipe_sha256(
+            generator_source_sha256(),
+            (GeneratorFamily.HIDDEN_CLIP,),
+            (0,),
+            ModelSource.PROCEDURAL,
+        ),
         "completed": [f"{GeneratorFamily.HIDDEN_CLIP}:0"],
     }
     (staging / "checkpoint.json").write_text(json.dumps(checkpoint), encoding="utf-8")

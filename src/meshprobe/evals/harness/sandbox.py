@@ -119,7 +119,7 @@ def spawn_isolated(
     executable = _bubblewrap_path(bubblewrap)
     active_environment = environment or {}
     active_limits = limits or IsolationLimits()
-    existing_user_processes = _user_process_count()
+    existing_user_tasks = _user_task_count()
     sandbox_command = _sandbox_command(executable, command, public, artifacts, active_environment)
     started = time.monotonic()
     process = subprocess.Popen(
@@ -131,7 +131,7 @@ def spawn_isolated(
         encoding="utf-8",
         errors="replace",
         start_new_session=True,
-        preexec_fn=lambda: _set_limits(active_limits, existing_user_processes),
+        preexec_fn=lambda: _set_limits(active_limits, existing_user_tasks),
         bufsize=1,
     )
     return IsolatedProcess(
@@ -212,7 +212,9 @@ def _sandbox_command(
     return tuple(args)
 
 
-def _user_process_count() -> int:
+def _user_task_count() -> int:
+    """Count UID-owned kernel tasks because RLIMIT_NPROC includes threads."""
+
     user_id = os.getuid()
     count = 0
     for entry in Path("/proc").iterdir():
@@ -222,14 +224,19 @@ def _user_process_count() -> int:
             owned_by_user = entry.stat().st_uid == user_id
         except FileNotFoundError:
             continue
-        count += owned_by_user
+        if not owned_by_user:
+            continue
+        try:
+            count += sum(child.name.isdigit() for child in (entry / "task").iterdir())
+        except FileNotFoundError:
+            continue
     return count
 
 
-def _set_limits(limits: IsolationLimits, existing_user_processes: int) -> None:
+def _set_limits(limits: IsolationLimits, existing_user_tasks: int) -> None:
     resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
     resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
     resource.setrlimit(resource.RLIMIT_FSIZE, (limits.output_bytes, limits.output_bytes))
-    process_ceiling = existing_user_processes + limits.processes
+    process_ceiling = existing_user_tasks + limits.processes
     resource.setrlimit(resource.RLIMIT_NPROC, (process_ceiling, process_ceiling))
     os.umask(0o077)

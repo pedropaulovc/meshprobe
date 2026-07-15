@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from meshprobe.evals.factory import validate_corpus
+from meshprobe.evals.factory import CorpusBuild, validate_corpus
 from meshprobe.evals.harness.adapters import AdapterRun
 from meshprobe.evals.harness.broker import EvaluationBroker, EvaluationService
 from meshprobe.evals.oracles import OracleInputs, score_episode
@@ -62,10 +62,14 @@ def run_episode(
     adapter: AgentAdapter,
     output_root: Path,
     service_factory: Callable[[], EvaluationSession] = MeshProbeService,
+    validated_corpus: CorpusBuild | None = None,
 ) -> EpisodeRun:
     """Materialize one episode, run its agent, and score private evidence."""
 
-    corpus = validate_corpus(corpus_root.expanduser().resolve(strict=True))
+    corpus_path = corpus_root.expanduser().resolve(strict=True)
+    corpus = validated_corpus or validate_corpus(corpus_path)
+    if corpus.root != corpus_path:
+        raise ValueError("validated corpus does not match the requested corpus root")
     if episode_id not in corpus.manifest.episodes:
         raise ValueError(f"episode is not present in corpus manifest: {episode_id}")
     public_episode = corpus.root / "public" / "episodes" / f"{episode_id}.json"
