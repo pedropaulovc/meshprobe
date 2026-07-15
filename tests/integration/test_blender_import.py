@@ -272,6 +272,7 @@ def test_persistent_worker_imports_glb_without_source_changes(tmp_path: Path) ->
     assert manifest.source_sha256 == before_hash
     assert manifest.source_format == "glb"
     assert manifest.capabilities.hierarchy == "preserved"
+    assert manifest.capabilities.textures == "absent"
     assert len(manifest.components) == 3
     assert [component.display_name for component in manifest.components] == [
         "cover",
@@ -301,6 +302,14 @@ def test_worker_rejects_unsupported_format(tmp_path: Path) -> None:
         controller.open_scene(source)
 
 
+def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        result = controller.request("scene.open", source_path=str(source))
+
+    assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:
     source = build_external_gltf(tmp_path)
     before = snapshot_source(source)
@@ -326,6 +335,7 @@ def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
     )
     assert len(matches) == 2
     assert {component.display_name for component in matches} == {"bolt"}
+    assert {component.path for component in matches} == {"left-group/bolt", "right-group/bolt"}
     assert manifest.capabilities.component_names == "source"
     assert manifest.capabilities.hierarchy == "flattened"
     assert any(warning.code == "hierarchy.flattened" for warning in manifest.warnings)
@@ -351,6 +361,16 @@ def test_open_cli_emits_valid_manifest(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["source_format"] == "glb"
     assert len(payload["components"]) == 3
+
+
+def test_open_cli_reports_source_bundle_errors(tmp_path: Path) -> None:
+    source = tmp_path / "invalid.gltf"
+    source.write_text("{not-json", encoding="utf-8")
+
+    result = runner.invoke(app, ["open", str(source)])
+
+    assert result.exit_code == 2
+    assert "invalid glTF JSON" in result.output
 
 
 @pytest.mark.parametrize("source_format", ["obj", "stl"])

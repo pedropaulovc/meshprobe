@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,19 @@ from meshprobe.sources import sha256_file, snapshot_source
 def write_gltf(tmp_path: Path, document: object) -> Path:
     source = tmp_path / "scene.gltf"
     source.write_text(json.dumps(document), encoding="utf-8")
+    return source
+
+
+def write_glb(tmp_path: Path, document: object) -> Path:
+    source = tmp_path / "scene.glb"
+    json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * (-len(json_chunk) % 4)
+    total_length = 12 + 8 + len(json_chunk)
+    source.write_bytes(
+        struct.pack("<4sII", b"glTF", 2, total_length)
+        + struct.pack("<II", len(json_chunk), 0x4E4F534A)
+        + json_chunk
+    )
     return source
 
 
@@ -37,6 +51,7 @@ def test_embedded_gltf_keeps_single_file_content_hash(tmp_path: Path) -> None:
         ({"buffers": {}}, "buffers must be an array"),
         ({"images": [{"uri": 42}]}, "uri must be a string"),
         ({"buffers": [{"uri": "https://example.com/mesh.bin"}]}, "local relative path"),
+        ({"buffers": [{"uri": "/tmp/mesh.bin"}]}, "local relative path"),
         ({"buffers": [{"uri": ""}]}, "uri is empty"),
     ],
 )
@@ -52,6 +67,33 @@ def test_snapshot_rejects_missing_external_asset(tmp_path: Path) -> None:
     source = write_gltf(tmp_path, {"buffers": [{"uri": "missing.bin"}]})
     with pytest.raises(FileNotFoundError):
         snapshot_source(source)
+
+
+def test_snapshot_rejects_dependency_outside_source_bundle(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    source = write_gltf(bundle, {"buffers": [{"uri": "../outside.bin"}]})
+
+    with pytest.raises(ValueError, match="escapes the source bundle"):
+        snapshot_source(source)
+
+
+def test_glb_snapshot_includes_external_image(tmp_path: Path) -> None:
+    texture = tmp_path / "surface.png"
+    texture.write_bytes(b"original")
+    source = write_glb(
+        tmp_path,
+        {"asset": {"version": "2.0"}, "images": [{"uri": "surface.png"}]},
+    )
+
+    before = snapshot_source(source)
+    texture.write_bytes(b"changed")
+    after = snapshot_source(source)
+
+    assert {asset.path for asset in before.assets} == {source, texture}
+    assert before.sha256 != after.sha256
 
 
 def test_obj_snapshot_includes_material_and_texture_dependencies(tmp_path: Path) -> None:

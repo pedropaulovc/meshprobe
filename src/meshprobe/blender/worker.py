@@ -103,9 +103,10 @@ def mesh_hash(mesh: bpy.types.Mesh) -> str:
     return digest.hexdigest()
 
 
-def material_summary(obj: bpy.types.Object) -> dict[str, list[str]]:
+def material_summary(obj: bpy.types.Object) -> tuple[dict[str, list[str]], int]:
     names: list[str] = []
     missing_textures: list[str] = []
+    texture_count = 0
     for slot in obj.material_slots:
         material = slot.material
         if material is None:
@@ -116,6 +117,7 @@ def material_summary(obj: bpy.types.Object) -> dict[str, list[str]]:
         for node in material.node_tree.nodes:
             if node.type != "TEX_IMAGE":
                 continue
+            texture_count += 1
             image = node.image
             if image is None:
                 missing_textures.append(f"{material.name}:{node.name}")
@@ -125,10 +127,13 @@ def material_summary(obj: bpy.types.Object) -> dict[str, list[str]]:
             resolved = Path(bpy.path.abspath(image.filepath))
             if not resolved.exists():
                 missing_textures.append(str(resolved))
-    return {
-        "names": sorted(set(names)),
-        "missing_textures": sorted(set(missing_textures)),
-    }
+    return (
+        {
+            "names": sorted(set(names)),
+            "missing_textures": sorted(set(missing_textures)),
+        },
+        texture_count,
+    )
 
 
 def quaternion_xyzw(obj: bpy.types.Object) -> list[float]:
@@ -368,8 +373,18 @@ def build_manifest(
         raise ValueError("the imported scene contains no mesh components")
 
     component_objects = set(objects)
-    source_names, names_preserved = source_names_for_objects(source_path, objects)
-    ids = {obj: stable_component_id(source_sha256, object_path(obj)) for obj in objects}
+    path_objects = set(objects)
+    for obj in objects:
+        current = obj.parent
+        while current is not None:
+            path_objects.add(current)
+            current = current.parent
+    source_names, names_preserved = source_names_for_objects(
+        source_path, sorted(path_objects, key=object_path)
+    )
+    paths = source_paths(objects, source_names)
+    objects.sort(key=paths.__getitem__)
+    ids = {obj: stable_component_id(source_sha256, paths[obj]) for obj in objects}
     children: dict[bpy.types.Object, list[str]] = {obj: [] for obj in objects}
     parents: dict[bpy.types.Object, bpy.types.Object | None] = {}
     for obj in objects:
@@ -382,16 +397,18 @@ def build_manifest(
     all_world_points: list[Vector] = []
     missing_texture_count = 0
     material_count = 0
+    texture_count = 0
     for obj in objects:
         local_bounds, world_bounds = object_bounds(obj)
         all_world_points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
-        materials = material_summary(obj)
+        materials, object_texture_count = material_summary(obj)
         material_count += len(materials["names"])
+        texture_count += object_texture_count
         missing_texture_count += len(materials["missing_textures"])
         components.append(
             {
                 "id": ids[obj],
-                "path": object_path(obj),
+                "path": paths[obj],
                 "display_name": source_names[obj],
                 "source_name": source_names[obj],
                 "parent_id": ids[parents[obj]] if parents[obj] is not None else None,
@@ -438,7 +455,7 @@ def build_manifest(
             }
         )
     texture_capability = "absent"
-    if material_count:
+    if texture_count:
         texture_capability = "partial" if missing_texture_count else "preserved"
     return {
         "schema_version": 1,
@@ -496,6 +513,39 @@ def source_names_for_objects(
     return names, preserved
 
 
+def source_paths(
+    components: list[bpy.types.Object], source_names: dict[bpy.types.Object, str]
+) -> dict[bpy.types.Object, str]:
+    nodes = set(components)
+    for component in components:
+        ancestor = component.parent
+        while ancestor is not None:
+            nodes.add(ancestor)
+            ancestor = ancestor.parent
+
+    siblings: dict[tuple[bpy.types.Object | None, str], list[bpy.types.Object]] = {}
+    for node in nodes:
+        name = source_names[node]
+        siblings.setdefault((node.parent, name), []).append(node)
+
+    segments: dict[bpy.types.Object, str] = {}
+    for (_, name), matching_nodes in siblings.items():
+        ordered = sorted(matching_nodes, key=lambda node: node.name)
+        for index, node in enumerate(ordered, start=1):
+            suffix = f"~{index}" if len(ordered) > 1 else ""
+            segments[node] = escape_path_segment(f"{name}{suffix}")
+
+    paths: dict[bpy.types.Object, str] = {}
+    for component in components:
+        path_segments: list[str] = []
+        current: bpy.types.Object | None = component
+        while current is not None:
+            path_segments.append(segments[current])
+            current = current.parent
+        paths[component] = "/".join(reversed(path_segments))
+    return paths
+
+
 def source_node_names(source_path: Path) -> tuple[str, ...]:
     suffix = source_path.suffix.lower()
     if suffix == ".obj":
@@ -542,7 +592,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     source_path = Path(command["source_path"]).expanduser().resolve(strict=True)
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
-    source_sha256 = command["source_sha256"]
+    source_sha256 = command.get("source_sha256") or sha256_file(source_path)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     return build_manifest(source_path, source_sha256, import_warnings)

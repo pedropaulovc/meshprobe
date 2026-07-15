@@ -61,7 +61,7 @@ def open_scene(
     try:
         with BlenderController(executable=blender, timeout_seconds=timeout_seconds) as controller:
             manifest = controller.open_scene(source)
-    except BlenderWorkerError as error:
+    except (BlenderWorkerError, OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
     _emit(manifest)
 

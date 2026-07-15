@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -30,7 +31,7 @@ def snapshot_source(source_path: Path) -> SourceSnapshot:
 
     source = source_path.expanduser().resolve(strict=True)
     dependencies: tuple[tuple[str, Path], ...] = ()
-    if source.suffix.lower() == ".gltf":
+    if source.suffix.lower() in {".glb", ".gltf"}:
         dependencies = _gltf_dependencies(source)
     if source.suffix.lower() == ".obj":
         dependencies = _obj_dependencies(source)
@@ -69,12 +70,7 @@ def _snapshot_asset(logical_path: str, path: Path) -> SourceAsset:
 
 
 def _gltf_dependencies(source: Path) -> tuple[tuple[str, Path], ...]:
-    try:
-        document = json.loads(source.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"invalid glTF JSON: {error}") from error
-    if not isinstance(document, dict):
-        raise ValueError("glTF document must be a JSON object")
+    document = _gltf_document(source)
 
     dependencies: list[tuple[str, Path]] = []
     for collection_name in ("buffers", "images"):
@@ -89,16 +85,52 @@ def _gltf_dependencies(source: Path) -> tuple[tuple[str, Path], ...]:
                 raise ValueError(f"glTF {collection_name}[{index}].uri must be a string")
             if uri.startswith("data:"):
                 continue
-            parsed = urlsplit(uri)
-            if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-                raise ValueError(f"external glTF URI is not a local relative path: {uri}")
-            decoded_path = unquote(parsed.path)
-            if not decoded_path:
+            if not uri:
                 raise ValueError(f"glTF {collection_name}[{index}].uri is empty")
-            dependency = (source.parent / decoded_path).resolve(strict=True)
+            dependency = _local_reference(source, uri)
             logical_path = f"{collection_name}/{index}/{uri}"
             dependencies.append((logical_path, dependency))
     return tuple(dependencies)
+
+
+def _gltf_document(source: Path) -> dict[str, object]:
+    if source.suffix.lower() == ".glb":
+        return _glb_document(source)
+    try:
+        document = json.loads(source.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid glTF JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise ValueError("glTF document must be a JSON object")
+    return document
+
+
+def _glb_document(source: Path) -> dict[str, object]:
+    payload = source.read_bytes()
+    if len(payload) < 20 or payload[:4] != b"glTF":
+        raise ValueError("invalid GLB header")
+    version, declared_length = struct.unpack_from("<II", payload, 4)
+    if version != 2 or declared_length != len(payload):
+        raise ValueError("invalid GLB version or declared length")
+    offset = 12
+    while offset + 8 <= len(payload):
+        chunk_length, chunk_type = struct.unpack_from("<II", payload, offset)
+        offset += 8
+        chunk_end = offset + chunk_length
+        if chunk_end > len(payload):
+            raise ValueError("GLB chunk exceeds the declared file length")
+        chunk = payload[offset:chunk_end]
+        offset = chunk_end
+        if chunk_type != 0x4E4F534A:
+            continue
+        try:
+            document = json.loads(chunk.rstrip(b"\x00 \t\r\n").decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid GLB JSON: {error}") from error
+        if not isinstance(document, dict):
+            raise ValueError("GLB JSON document must be an object")
+        return document
+    raise ValueError("GLB has no JSON chunk")
 
 
 def _obj_dependencies(source: Path) -> tuple[tuple[str, Path], ...]:
@@ -214,4 +246,8 @@ def _local_reference(source: Path, reference: str) -> Path:
     decoded_path = unquote(parsed.path)
     if not decoded_path or Path(decoded_path).is_absolute():
         raise ValueError(f"external asset URI is not a local relative path: {reference}")
-    return (source.parent / decoded_path).resolve(strict=True)
+    bundle_root = source.parent.resolve()
+    resolved = (bundle_root / decoded_path).resolve(strict=True)
+    if not resolved.is_relative_to(bundle_root):
+        raise ValueError(f"external asset URI escapes the source bundle: {reference}")
+    return resolved
