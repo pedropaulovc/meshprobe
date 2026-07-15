@@ -341,6 +341,12 @@ def test_curated_tasks_resolve_private_roles_and_force_full_operation_use(
         for episode in episodes
         for component_id in truth.component_ids.values()
     )
+    for episode in episodes:
+        value_schema = episode.spec.answer_schema["properties"]["values"]
+        assert isinstance(value_schema, dict)
+        properties = value_schema["properties"]
+        assert isinstance(properties, dict)
+        assert set(episode.ground_truth.answer.values) == set(properties)
 
 
 def test_curated_variant_build_is_atomic_resumable_and_hash_validated(

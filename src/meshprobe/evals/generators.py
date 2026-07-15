@@ -502,10 +502,7 @@ def _episode(
         f"{model.generated.family}:{model.generated.seed}:{index}".encode()
     ).hexdigest()
     episode_id = f"ep_{digest[:24]}"
-    answers: dict[str, JsonValue] = {
-        key: value for key, value in model.generated.semantic_answers.items()
-    }
-    answers["target_component_id"] = model.component_ids["idler"]
+    answers = _answer_values(model, index)
     status = AnswerStatus.ANSWERED
     conflicts: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
@@ -542,7 +539,7 @@ def _episode(
         difficulty=tuple(Difficulty)[index],
         model_source=model_source,
         prompt=prompt,
-        answer_schema=_answer_schema(),
+        answer_schema=_answer_schema(index),
         required_operations=operations,
         budgets=EpisodeBudgets(
             tool_calls=40 if index == 0 else 120,
@@ -573,7 +570,19 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
     if index == 0:
         return (
             f"Open the assigned model, locate every component named {target!r}, inspect the exact "
-            "hierarchy candidates, and return the stable ID and full path of the intended idler."
+            "hierarchy candidates, and return target_component_id plus target_component_path for "
+            "the intended idler."
+        )
+    qualification = ""
+    if model.generated.family is GeneratorFamily.MISSING_MATERIAL:
+        qualification = (
+            " The conclusion also requires the arrow material. If the capability report proves "
+            "that material is absent, return indeterminate and name the missing capability."
+        )
+    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN:
+        qualification = (
+            " If the named idler cannot be uniquely distinguished, return indeterminate with "
+            "every conflicting stable component ID in hierarchy order."
         )
     if index == 1:
         return (
@@ -581,14 +590,16 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
             "the local-X side carrying its retaining clip, the stamped arrow direction, and which "
             "coaxial ring is nearer the starting camera. Submit an 85 mm perspective context "
             "render with the cover hidden and target highlighted, isolated orthographic arrow "
-            "renders under both raking directions, and an orthographic backlit gap render."
+            "renders under both raking directions, and an orthographic backlit gap render. Return "
+            "the exact fields declared by the answer schema." + qualification
         )
     if index == 2:
         return (
             f"Produce comparative evidence for {target!r}: an 85 mm perspective context render, an "
             "orthographic clearance view, opposing raking-light detail evidence, "
             "a backlit gap view, "
-            "and a focused 3x3 contact sheet. Report the geometric conclusions in structured JSON."
+            "and a focused 3x3 contact sheet. Report every field declared by the answer schema."
+            + qualification
         )
     return (
         f"Perform a complete inspection of {target!r}. Exercise every MeshProbe operation, "
@@ -596,20 +607,83 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
         "distinguish the nearer coaxial ring, measure the declared clearance, hide the cover, "
         "highlight the target, submit "
         "the focused contact sheet and supporting renders, then reset the session before answering."
+        + qualification
     )
 
 
-def _answer_schema() -> dict[str, JsonValue]:
+def _answer_values(model: PublishedModel, index: int) -> dict[str, JsonValue]:
+    values: dict[str, JsonValue] = {
+        "target_component_id": model.component_ids["idler"],
+        "target_component_path": model.component_paths["idler"],
+    }
+    if index == 0:
+        return values
+    contacted_shaft = int(model.generated.semantic_answers["contacted_shaft"])
+    near_ring_role = str(model.generated.semantic_answers["near_ring_role"])
+    values.update(
+        {
+            "contacted_shaft_component_id": model.component_ids[
+                "shaft_one" if contacted_shaft == 1 else "shaft_two"
+            ],
+            "clip_side": model.generated.semantic_answers["clip_side"],
+            "arrow_direction": model.generated.semantic_answers["arrow_direction"],
+            "nearer_ring_component_id": model.component_ids[near_ring_role],
+        }
+    )
+    if index >= 2:
+        values["clearance_mm"] = model.generated.semantic_answers["clearance_mm"]
+    return values
+
+
+def _answer_schema(index: int) -> dict[str, JsonValue]:
+    properties: dict[str, JsonValue] = {
+        "target_component_id": {"type": "string", "description": "stable component ID"},
+        "target_component_path": {"type": "string", "description": "complete hierarchy path"},
+    }
+    if index > 0:
+        properties.update(
+            {
+                "contacted_shaft_component_id": {
+                    "type": "string",
+                    "description": "stable ID of the shaft geometrically contacted by the idler",
+                },
+                "clip_side": {
+                    "enum": ["positive", "negative"],
+                    "description": "retaining-clip side along the idler parent-local X axis",
+                },
+                "arrow_direction": {"enum": ["left", "right", "up", "down"]},
+                "nearer_ring_component_id": {
+                    "type": "string",
+                    "description": "stable ID of the coaxial ring nearer the starting camera",
+                },
+            }
+        )
+    if index >= 2:
+        properties["clearance_mm"] = {
+            "type": "number",
+            "description": "orthographically measured gap between the clearance blocks in mm",
+        }
+    required_values: list[JsonValue] = [key for key in properties]
     return {
         "type": "object",
         "required": ["status", "values"],
         "additionalProperties": False,
         "properties": {
             "status": {"enum": ["answered", "indeterminate"]},
-            "values": {"type": "object"},
+            "values": {
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": False,
+            },
             "conflicting_component_ids": {"type": "array", "items": {"type": "string"}},
             "missing_capabilities": {"type": "array", "items": {"type": "string"}},
         },
+        "allOf": [
+            {
+                "if": {"properties": {"status": {"const": "answered"}}},
+                "then": {"properties": {"values": {"required": required_values}}},
+            }
+        ],
     }
 
 

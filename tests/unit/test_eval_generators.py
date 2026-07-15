@@ -13,7 +13,7 @@ from meshprobe.evals.generators import (
     generate_episodes,
     publish_model,
 )
-from meshprobe.evals.schemas import EpisodeClass, Operation, TaskFamily
+from meshprobe.evals.schemas import AnswerStatus, EpisodeClass, Operation, TaskFamily
 from meshprobe.evals.variants import verify_relation
 
 
@@ -127,6 +127,24 @@ def test_private_component_ids_do_not_appear_in_public_prompt(tmp_path: Path) ->
         assert all(
             component_id not in episode.spec.prompt for component_id in model.component_ids.values()
         )
+
+
+def test_public_answer_schema_names_every_scored_field(tmp_path: Path) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 4), tmp_path)
+    episodes = generate_episodes(model)
+
+    discovery = episodes[0]
+    assert set(discovery.ground_truth.answer.values) == {
+        "target_component_id",
+        "target_component_path",
+    }
+    for episode in episodes:
+        value_schema = episode.spec.answer_schema["properties"]["values"]
+        assert isinstance(value_schema, dict)
+        properties = value_schema["properties"]
+        assert isinstance(properties, dict)
+        if episode.ground_truth.answer.status is AnswerStatus.ANSWERED:
+            assert set(episode.ground_truth.answer.values) == set(properties)
 
 
 def test_every_operation_has_positive_negative_and_adversarial_episodes(

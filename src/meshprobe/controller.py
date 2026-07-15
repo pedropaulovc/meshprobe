@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -112,6 +113,7 @@ class BlenderController:
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
+        self._worker_path = Path(__file__).with_name("blender") / "worker.py"
         self.ready_event: dict[str, Any] | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
@@ -132,7 +134,6 @@ class BlenderController:
         self.executable = Path(resolved)
         output_queue: queue.Queue[str | None] = queue.Queue()
         self._lines = output_queue
-        worker_path = Path(__file__).with_name("blender") / "worker.py"
         self._process = subprocess.Popen(
             [
                 str(self.executable),
@@ -140,7 +141,7 @@ class BlenderController:
                 "--factory-startup",
                 "--disable-autoexec",
                 "--python",
-                str(worker_path),
+                str(self._worker_path),
                 "--",
             ],
             stdin=subprocess.PIPE,
@@ -1028,6 +1029,11 @@ class BlenderController:
 
     def _crash_message(self) -> str:
         process = self._process
-        return_code = process.poll() if process is not None else None
+        return_code = None
+        if process is not None:
+            return_code = process.poll()
+            if return_code is None:
+                with suppress(subprocess.TimeoutExpired):
+                    return_code = process.wait(timeout=1)
         recent_logs = "\n".join(self._logs[-20:])
         return f"Blender worker exited with code {return_code}. Recent output:\n{recent_logs}"

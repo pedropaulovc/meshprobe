@@ -428,13 +428,30 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
 
 
 def _answer_schema() -> dict[str, JsonValue]:
+    values: dict[str, JsonValue] = {
+        f"{role}_{suffix}": {
+            "type": "string",
+            "description": (
+                f"stable component ID for the {role}"
+                if suffix == "component_id"
+                else f"complete hierarchy path for the {role}"
+            ),
+        }
+        for role in ("target", "reference", "occluder")
+        for suffix in ("component_id", "path")
+    }
     return {
         "type": "object",
         "required": ["status", "values"],
         "additionalProperties": False,
         "properties": {
             "status": {"enum": ["answered", "indeterminate"]},
-            "values": {"type": "object"},
+            "values": {
+                "type": "object",
+                "properties": values,
+                "required": [key for key in values],
+                "additionalProperties": False,
+            },
             "conflicting_component_ids": {"type": "array", "items": {"type": "string"}},
             "missing_capabilities": {"type": "array", "items": {"type": "string"}},
         },
