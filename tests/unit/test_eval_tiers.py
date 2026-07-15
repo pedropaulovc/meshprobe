@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from meshprobe.evals.factory import build_corpus
-from meshprobe.evals.generators import PRIVATE_GENERATOR_FAMILIES, GeneratorFamily
+from meshprobe.evals.generators import (
+    PRIVATE_GENERATOR_FAMILIES,
+    PUBLIC_GENERATOR_FAMILIES,
+    GeneratorFamily,
+)
 from meshprobe.evals.schemas import CorpusTier, ModelSource, RuntimePin
 from meshprobe.evals.tiers import (
     current_runtime_pin,
@@ -93,8 +97,8 @@ def test_standard_tiers_are_nested_exact_and_hash_validated(tmp_path: Path) -> N
     private_corpus = build_corpus(
         tmp_path / "private-corpus",
         corpus_version="private-v1",
-        families=PRIVATE_GENERATOR_FAMILIES,
-        seeds=range(128),
+        families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
+        seeds=range(32, 64),
         model_source=ModelSource.PRIVATE,
     )
     private = pin_private_tier(
@@ -103,7 +107,8 @@ def test_standard_tiers_are_nested_exact_and_hash_validated(tmp_path: Path) -> N
         runtime=runtime_pin(),
     )
     assert private.tier is CorpusTier.PRIVATE
-    assert len(private.episodes) == 2_048
+    assert len(private.episodes) == 2_560
+    assert len(private.model_sha256) == 640
 
 
 def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
@@ -124,14 +129,23 @@ def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
         seeds=(0,),
         model_source=ModelSource.PRIVATE,
     )
-    with pytest.raises(ValueError, match="held-out"):
+    with pytest.raises(ValueError, match="released and held-out"):
         pin_private_tier(wrong_family.root, tmp_path / "wrong-family-pin", runtime=runtime_pin())
+    overlapping = build_corpus(
+        tmp_path / "overlapping",
+        corpus_version="overlapping-v1",
+        families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
+        seeds=(0,),
+        model_source=ModelSource.PRIVATE,
+    )
+    with pytest.raises(ValueError, match="must not overlap"):
+        pin_private_tier(overlapping.root, tmp_path / "overlapping-pin", runtime=runtime_pin())
     with pytest.raises(ValueError, match="at least 500 full-stack"):
         private_corpus = build_corpus(
             tmp_path / "private-corpus",
             corpus_version="tiny-private-v1",
-            families=(GeneratorFamily.INTERNAL_BAFFLE,),
-            seeds=(0,),
+            families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
+            seeds=(32,),
             model_source=ModelSource.PRIVATE,
         )
         pin_private_tier(private_corpus.root, tmp_path / "private", runtime=runtime_pin())
