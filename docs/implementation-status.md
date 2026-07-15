@@ -34,7 +34,7 @@ exist. Counts and test names refer to the current branch.
 | Golden image and exact mask regression suite | Complete | `test_render_goldens.py` enforces bounded Delta E and edge drift plus exact semantic component masks |
 | Truncated protocol and render-crash recovery tests | Complete | controller rejects truncated worker output; real Blender render-phase crash restarts, replays accepted state, and preserves the source |
 | Release-scale threshold proof | Missing | Run a declared agent adapter on the pinned public and private release tiers and publish reports |
-| Clean-install smoke report | Partial | CI builds and installs wheels into clean uv environments on Linux and Windows; `tools/clean_install_smoke.py` reproduces a pinned tier from that wheel; publish its smoke report |
+| Clean-install smoke report | Complete | CI builds and installs wheels in clean Linux and Windows uv environments; `evals/reports/clean-install-v4/` records a 40/40 pinned smoke run from the built wheel with runtime and artifact hashes |
 
 The completion gate is the conjunction of every row above being complete, the
 full Linux and Windows suites passing on the same commit, and the pinned release
