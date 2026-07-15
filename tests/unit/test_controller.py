@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from PIL import Image
 
 from meshprobe.controller import (
     BlenderController,
@@ -16,17 +17,28 @@ from meshprobe.controller import (
     sha256_file,
 )
 from meshprobe.identity import stable_component_id
-from meshprobe.models import MarkMode, SceneManifest
+from meshprobe.models import (
+    Camera,
+    DisplayMode,
+    MarkMode,
+    PerspectiveProjection,
+    PresetIllumination,
+    RenderManifest,
+    SceneManifest,
+    SessionSnapshot,
+)
 from meshprobe.protocol import (
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
     SceneDescribeCommand,
     SceneOpenCommand,
     SessionResetCommand,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
-from meshprobe.session import InspectionSession, SessionSnapshot
+from meshprobe.session import InspectionSession
 from meshprobe.sources import snapshot_source
 
 
@@ -509,3 +521,285 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     assert calls == ["close", "start", "close"]
     assert controller._source_path is None
     assert controller._source_sha256 is None
+
+
+def render_manifest_for(
+    path: Path,
+    source_hash: str,
+    snapshot: SessionSnapshot | None = None,
+) -> RenderManifest:
+    session: dict[str, object] = (
+        snapshot.model_dump(mode="json")
+        if snapshot is not None
+        else {
+            "camera": {
+                "pose": {
+                    "position_mm": [100, 100, 100],
+                    "orientation_xyzw": [0, 0, 0, 1],
+                },
+                "projection": {"mode": "perspective", "focal_length_mm": 50},
+            },
+            "illumination": {"preset": "neutral_studio"},
+            "components": {},
+            "state_sha256": "b" * 64,
+        }
+    )
+    state_sha256 = cast(str, session["state_sha256"])
+    return RenderManifest.model_validate(
+        {
+            "source_sha256": source_hash,
+            "state_sha256": state_sha256,
+            "width": 128,
+            "height": 128,
+            "samples": 1,
+            "engine": "eevee",
+            "device": "graphics",
+            "blender_version": "5.2.0",
+            "session": session,
+            "color": {
+                "path": str(path),
+                "media_type": "image/png",
+                "sha256": sha256_file(path),
+                "bytes": path.stat().st_size,
+            },
+            "luminance": {
+                "minimum": 0.1,
+                "median": 0.2,
+                "maximum": 0.3,
+                "crushed_fraction": 0,
+                "clipped_fraction": 0,
+            },
+        }
+    )
+
+
+def test_render_requires_open_scene() -> None:
+    controller = BlenderController()
+    command = RenderImageCommand(request_id="render", op="render.image", output_path="evidence.png")
+    with pytest.raises(BlenderWorkerError, match="before a scene is open"):
+        controller.render_image(command)
+
+
+def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderImageCommand(request_id="render", op="render.image", output_path=str(source))
+    with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_image(command)
+
+
+def test_render_rejects_evaluator_output_that_overwrites_source_dependency(
+    tmp_path: Path,
+) -> None:
+    texture = tmp_path / "evidence.components.png"
+    texture.write_bytes(b"texture")
+    source = tmp_path / "fixture.gltf"
+    source.write_text(
+        json.dumps(
+            {
+                "asset": {"version": "2.0"},
+                "images": [{"uri": texture.name}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(tmp_path / "evidence.png"),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_image(command, evaluator_output_dir=tmp_path)
+
+
+def test_render_validates_worker_artifact_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    output = tmp_path / "evidence.png"
+    output.write_bytes(b"png bytes")
+    source_snapshot = snapshot_source(source)
+    manifest = render_manifest_for(output, source_snapshot.sha256)
+    controller = BlenderController()
+    controller._source_snapshot = source_snapshot
+    controller._source_sha256 = source_snapshot.sha256
+    monkeypatch.setattr(
+        controller,
+        "request",
+        lambda operation, **arguments: manifest.model_dump(mode="json"),
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(output),
+        width=128,
+        height=128,
+        samples=1,
+    )
+
+    assert controller.render_image(command) == manifest
+    output.write_bytes(b"tampered!")
+    with pytest.raises(BlenderWorkerError, match="digest mismatch"):
+        controller._verify_render_artifacts(manifest)
+
+
+def test_contact_sheet_orchestrates_evidence_and_restores_state(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    source_snapshot = snapshot_source(source)
+    controller._source_snapshot = source_snapshot
+    controller._source_sha256 = source_snapshot.sha256
+    session = InspectionSession(scene_manifest)
+    focus_id = scene_manifest.components[-1].id
+    blocker_id = scene_manifest.components[-2].id
+    session.mark((focus_id,), MarkMode.SELECTED)
+    expected_restored = session.snapshot()
+    controller._accepted_commands = [
+        ("component.mark", {"component_ids": [focus_id], "mode": "selected"})
+    ]
+    calls: list[str] = []
+
+    def request(operation: str, **arguments: object) -> dict[str, Any]:
+        calls.append(operation)
+        if operation == "session.reset":
+            return session.reset().model_dump(mode="json")
+        if operation == "illumination.set":
+            illumination = PresetIllumination.model_validate(arguments["illumination"])
+            return session.set_illumination(illumination).model_dump(mode="json")
+        if operation == "view.set":
+            camera = Camera.model_validate(arguments["camera"])
+            return session.set_camera(camera).model_dump(mode="json")
+        if operation == "component.mark":
+            snapshot = session.mark(
+                cast(list[str], arguments["component_ids"]),
+                MarkMode(cast(str, arguments["mode"])),
+            )
+            return snapshot.model_dump(mode="json")
+        if operation == "component.display":
+            snapshot = session.display(
+                cast(list[str], arguments["component_ids"]),
+                DisplayMode(cast(str, arguments["mode"])),
+            )
+            return snapshot.model_dump(mode="json")
+        if operation == "component.occluders":
+            return {"occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}]}
+        if operation == "render.image":
+            output = Path(cast(str, arguments["output_path"]))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (128, 128), (120, 130, 140)).save(output)
+            return render_manifest_for(
+                output,
+                source_snapshot.sha256,
+                session.snapshot(),
+            ).model_dump(mode="json")
+        raise AssertionError(f"unexpected operation: {operation}")
+
+    monkeypatch.setattr(controller, "request", request)
+    output = tmp_path / "contact.png"
+    sheet = controller.render_contact_sheet(
+        RenderContactSheetCommand(
+            request_id="sheet",
+            op="render.contact_sheet",
+            output_path=str(output),
+            focus_component_ids=(focus_id, focus_id),
+            panel_width=128,
+            panel_height=128,
+            samples=1,
+        )
+    )
+
+    assert sheet.focus_component_ids == (focus_id,)
+    assert sheet.removed_occluder_ids == (blocker_id,)
+    assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+    assert all(
+        panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
+    )
+    assert output.is_file()
+    assert session.snapshot() == expected_restored
+    assert calls.count("render.image") == 9
+    assert calls[-2:] == ["session.reset", "component.mark"]
+
+
+def test_contact_sheet_validates_scene_focus_and_output(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+) -> None:
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path=str(tmp_path / "contact.jpg"),
+        focus_component_ids=("missing",),
+    )
+    with pytest.raises(BlenderWorkerError, match="before a scene is open"):
+        BlenderController().render_contact_sheet(command)
+
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    controller._source_snapshot = snapshot_source(source)
+    with pytest.raises(BlenderWorkerError, match="unknown component"):
+        controller.render_contact_sheet(command)
+
+    command = command.model_copy(
+        update={"focus_component_ids": (scene_manifest.components[-1].id,)}
+    )
+    with pytest.raises(BlenderWorkerError, match=r"must end in \.png"):
+        controller.render_contact_sheet(command)
+
+
+def test_contact_sheet_rejects_staging_path_that_overwrites_source_dependency(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+) -> None:
+    output = tmp_path / "contact.png"
+    staging = tmp_path / ".contact.png.part"
+    staging.write_bytes(b"source dependency")
+    source = tmp_path / "fixture.gltf"
+    source.write_text(
+        json.dumps({"asset": {"version": "2.0"}, "images": [{"uri": staging.name}]}),
+        encoding="utf-8",
+    )
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path=str(output),
+        focus_component_ids=(scene_manifest.components[-1].id,),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_contact_sheet(command)
+
+
+def test_perspective_orbit_framing_uses_limiting_panel_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    cameras: list[Camera] = []
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        cameras.append(Camera.model_validate(arguments["camera"]))
+        return {}
+
+    monkeypatch.setattr(controller, "request", request)
+    projection = PerspectiveProjection()
+    controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 2.0)
+    controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 0.5)
+
+    distances = [sum(value**2 for value in camera.pose.position_mm) ** 0.5 for camera in cameras]
+    assert distances[1] > distances[0]

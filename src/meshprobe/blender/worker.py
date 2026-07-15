@@ -18,6 +18,7 @@ import traceback
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 import bpy  # type: ignore[import-not-found]
@@ -38,6 +39,7 @@ IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
 OVERRIDE_MATERIALS: dict[str, bpy.types.Material] = {}
+EMISSION_MATERIALS: dict[str, bpy.types.Material] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -55,6 +57,15 @@ def sha256_file(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def artifact(path: Path, media_type: str) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "media_type": media_type,
+        "sha256": sha256_file(path),
+        "bytes": path.stat().st_size,
+    }
 
 
 def object_path(obj: bpy.types.Object) -> str:
@@ -490,6 +501,7 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [
             ("key", center + Vector((span, -span, span)), 1_200.0, span * 1.5),
             ("fill", center + Vector((-span, -span, span)), 1_000.0, span * 1.5),
+            ("under", center + Vector((0, 0, -span)), 700.0, span * 1.5),
         ]
     elif preset in {"raking_left", "raking_right"}:
         side = -1 if preset == "raking_left" else 1
@@ -500,7 +512,21 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [("back", center + Vector((0, span * 2, 0)), 1_200.0, span)]
     elif preset == "flat_diagnostic":
         background = [0.18, 0.18, 0.18]
-        ambient = 1.0
+        ambient = 0.25
+        definitions = [
+            (f"axis-{index}", center + direction * span, 500.0, span * 2)
+            for index, direction in enumerate(
+                (
+                    Vector((1, 0, 0)),
+                    Vector((-1, 0, 0)),
+                    Vector((0, 1, 0)),
+                    Vector((0, -1, 0)),
+                    Vector((0, 0, 1)),
+                    Vector((0, 0, -1)),
+                ),
+                start=1,
+            )
+        ]
     else:
         raise ValueError(f"unknown illumination preset: {preset}")
     lights = [
@@ -781,13 +807,385 @@ def runtime_diagnostics() -> dict[str, Any]:
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+        "render": {
+            "engine": bpy.context.scene.render.engine,
+            "eevee_samples": eevee_render_samples(),
+        },
+    }
+
+
+def configure_render(command: dict[str, Any]) -> str:
+    scene = bpy.context.scene
+    engine = command["engine"]
+    scene.render.engine = eevee_engine() if engine == "eevee" else "CYCLES"
+    scene.render.resolution_x = command["width"]
+    scene.render.resolution_y = command["height"]
+    scene.render.resolution_percentage = 100
+    scene.render.film_transparent = False
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.image_settings.color_depth = "8"
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.use_file_extension = False
+    if engine == "cycles":
+        configure_cycles_gpu(command["samples"])
+        return "cuda"
+    configure_eevee_samples(command["samples"])
+    return "graphics"
+
+
+def eevee_engine() -> str:
+    identifiers = {
+        item.identifier for item in bpy.context.scene.render.bl_rna.properties["engine"].enum_items
+    }
+    if "BLENDER_EEVEE" in identifiers:
+        return "BLENDER_EEVEE"
+    if "BLENDER_EEVEE_NEXT" in identifiers:
+        return "BLENDER_EEVEE_NEXT"
+    raise RuntimeError(f"Blender exposes no Eevee render engine: {sorted(identifiers)}")
+
+
+def configure_eevee_samples(samples: int) -> None:
+    settings = bpy.context.scene.eevee
+    if hasattr(settings, "taa_render_samples"):
+        settings.taa_render_samples = samples
+        return
+    if hasattr(settings, "taa_samples"):
+        settings.taa_samples = samples
+        return
+    raise RuntimeError("Blender exposes no supported Eevee render sample setting")
+
+
+def eevee_render_samples() -> int:
+    settings = bpy.context.scene.eevee
+    if hasattr(settings, "taa_render_samples"):
+        return int(settings.taa_render_samples)
+    if hasattr(settings, "taa_samples"):
+        return int(settings.taa_samples)
+    raise RuntimeError("Blender exposes no supported Eevee render sample setting")
+
+
+def configure_cycles_gpu(samples: int) -> None:
+    scene = bpy.context.scene
+    preferences = bpy.context.preferences.addons["cycles"].preferences
+    try:
+        preferences.compute_device_type = "CUDA"
+        preferences.get_devices()
+    except Exception as error:
+        raise RuntimeError(f"CUDA initialization failed: {error}") from error
+    devices = [device for device in preferences.devices if device.type == "CUDA"]
+    if not devices:
+        raise RuntimeError("Cycles CUDA rendering requested but no CUDA device is available")
+    for device in preferences.devices:
+        device.use = device in devices
+    scene.cycles.device = "GPU"
+    scene.cycles.samples = samples
+    scene.cycles.use_denoising = True
+
+
+def render_still(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bpy.context.scene.render.filepath = str(path)
+    bpy.ops.render.render(write_still=True)
+    if not path.is_file():
+        raise RuntimeError(f"Blender did not publish render output: {path}")
+
+
+def luminance_summary(path: Path) -> dict[str, float]:
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        if image.size[0] == 0 or image.size[1] == 0:
+            raise RuntimeError("render result has no pixels")
+        width, height = image.size
+        x_stride = max(1, math.ceil(width / 512))
+        y_stride = max(1, math.ceil(height / 512))
+        values: list[float] = []
+        for y in range(0, height, y_stride):
+            row_start = y * width * 4
+            row = image.pixels[row_start : row_start + width * 4]
+            for x in range(0, width, x_stride):
+                offset = x * 4
+                value = 0.2126 * row[offset] + 0.7152 * row[offset + 1] + 0.0722 * row[offset + 2]
+                values.append(min(1.0, max(0.0, value)))
+        return {
+            "minimum": min(values),
+            "median": median(values),
+            "maximum": max(values),
+            "crushed_fraction": sum(value <= 0.01 for value in values) / len(values),
+            "clipped_fraction": sum(value >= 0.99 for value in values) / len(values),
+        }
+    finally:
+        bpy.data.images.remove(image)
+
+
+def emission_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
+    material = EMISSION_MATERIALS.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        EMISSION_MATERIALS[name] = material
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Color"].default_value = color
+    emission.inputs["Strength"].default_value = 1.0
+    material.node_tree.links.new(emission.outputs["Emission"], output.inputs["Surface"])
+    return material
+
+
+def srgb_channel_to_linear(channel: int) -> float:
+    value = channel / 255.0
+    if value <= 0.04045:
+        return value / 12.92
+    return float(((value + 0.055) / 1.055) ** 2.4)
+
+
+def component_pass_colors() -> dict[str, tuple[int, int, int]]:
+    colors: dict[str, tuple[int, int, int]] = {}
+    used: set[tuple[int, int, int]] = set()
+    for component_id in sorted(COMPONENT_OBJECTS):
+        seed = hashlib.sha256(component_id.encode()).digest()
+        color = (max(seed[0], 16), max(seed[1], 16), max(seed[2], 16))
+        counter = 0
+        while color in used:
+            counter += 1
+            seed = hashlib.sha256(f"{component_id}:{counter}".encode()).digest()
+            color = (max(seed[0], 16), max(seed[1], 16), max(seed[2], 16))
+        colors[component_id] = color
+        used.add(color)
+    return colors
+
+
+def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
+    scene = bpy.context.scene
+    original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
+    other_visibility = {
+        obj: obj.hide_render for obj in scene.objects if obj.type not in {"MESH", "CAMERA"}
+    }
+    original_world = scene.world
+    mask_world = bpy.data.worlds.get("MeshProbeMaskWorld") or bpy.data.worlds.new(
+        "MeshProbeMaskWorld"
+    )
+    mask_world.use_nodes = True
+    background = mask_world.node_tree.nodes.get("Background")
+    background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    background.inputs["Strength"].default_value = 0.0
+    scene.world = mask_world
+    original_transform = scene.view_settings.view_transform
+    original_look = scene.view_settings.look
+    original_exposure = scene.view_settings.exposure
+    original_gamma = scene.view_settings.gamma
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
+    scene.view_settings.exposure = 0.0
+    scene.view_settings.gamma = 1.0
+    scene.render.engine = eevee_engine()
+    try:
+        for obj in other_visibility:
+            obj.hide_render = True
+        for component_id, obj in COMPONENT_OBJECTS.items():
+            mesh = obj.data.copy()
+            mesh.materials.clear()
+            red, green, blue = colors[component_id]
+            mesh.materials.append(
+                emission_material(
+                    f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}",
+                    (
+                        srgb_channel_to_linear(red),
+                        srgb_channel_to_linear(green),
+                        srgb_channel_to_linear(blue),
+                        1.0,
+                    ),
+                )
+            )
+            for polygon in mesh.polygons:
+                polygon.material_index = 0
+            obj.data = mesh
+        render_still(path)
+    finally:
+        for component_id, obj in COMPONENT_OBJECTS.items():
+            replacement = obj.data
+            obj.data = original_meshes[component_id]
+            if replacement.users == 0:
+                bpy.data.meshes.remove(replacement)
+        for obj, hide_render in other_visibility.items():
+            obj.hide_render = hide_render
+        scene.world = original_world
+        scene.view_settings.view_transform = original_transform
+        scene.view_settings.look = original_look
+        scene.view_settings.exposure = original_exposure
+        scene.view_settings.gamma = original_gamma
+
+
+def render_evaluator_passes(output_dir: Path, stem: str) -> dict[str, Any]:
+    scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
+    view_layer.use_pass_z = True
+    view_layer.use_pass_normal = True
+    original_group = scene.compositing_node_group
+    group = bpy.data.node_groups.new(f"MeshProbePasses-{stem}", "CompositorNodeTree")
+    scene.compositing_node_group = group
+    render_layers = group.nodes.new("CompositorNodeRLayers")
+    pass_output = compositor_file_output(group, output_dir, f"{stem}.passes")
+    pass_output.file_output_items.new("FLOAT", "Depth")
+    pass_output.file_output_items.new("VECTOR", "Normal")
+    group.links.new(render_layers.outputs["Depth"], pass_output.inputs["Depth"])
+    group.links.new(render_layers.outputs["Normal"], pass_output.inputs["Normal"])
+    prefix = f"{stem}.passes"
+    before = {path: file_version(path) for path in output_dir.glob(f"{prefix}*.exr")}
+    try:
+        bpy.ops.render.render()
+    finally:
+        scene.compositing_node_group = original_group
+        bpy.data.node_groups.remove(group)
+    multilayer_path = published_compositor_path(output_dir, prefix, before)
+
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_depth = "8"
+    component_path = output_dir / f"{stem}.components.png"
+    component_colors = component_pass_colors()
+    render_mask(component_path, component_colors)
+    highlight_path = output_dir / f"{stem}.highlighted.png"
+    highlight_colors = {
+        component_id: (
+            (255, 255, 255) if COMPONENT_STATES[component_id]["mark"] != "unmarked" else (0, 0, 0)
+        )
+        for component_id in COMPONENT_OBJECTS
+    }
+    render_mask(highlight_path, highlight_colors)
+    return {
+        "multilayer": artifact(multilayer_path, "image/x-exr"),
+        "component_ids": artifact(component_path, "image/png"),
+        "highlighted": artifact(highlight_path, "image/png"),
+        "component_colors": component_colors,
+    }
+
+
+def compositor_file_output(
+    group: bpy.types.NodeTree,
+    output_dir: Path,
+    file_name: str,
+) -> bpy.types.Node:
+    node = group.nodes.new("CompositorNodeOutputFile")
+    node.directory = str(output_dir)
+    node.file_name = file_name
+    node.use_file_extension = True
+    node.format.file_format = "OPEN_EXR_MULTILAYER"
+    node.format.color_depth = "32"
+    return node
+
+
+def file_version(path: Path) -> tuple[int, int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+
+def published_compositor_path(
+    output_dir: Path,
+    prefix: str,
+    before: dict[Path, tuple[int, int, int]],
+) -> Path:
+    expected = output_dir / f"{prefix}.exr"
+    candidates = [
+        path
+        for path in output_dir.glob(f"{prefix}*.exr")
+        if path not in before or file_version(path) != before[path]
+    ]
+    if len(candidates) != 1:
+        names = sorted(path.name for path in candidates)
+        raise RuntimeError(f"expected one fresh compositor output for {prefix}, found {names}")
+    candidate = candidates[0]
+    if candidate == expected:
+        return expected
+    expected.unlink(missing_ok=True)
+    candidate.replace(expected)
+    return expected
+
+
+def render_image(command: dict[str, Any]) -> dict[str, Any]:
+    manifest = require_session()
+    output = Path(command["output_path"]).expanduser().resolve()
+    if output.suffix.lower() != ".png":
+        raise ValueError("render.image output_path must end in .png")
+    device = configure_render(command)
+    render_still(output)
+    luminance = luminance_summary(output)
+    evaluator = None
+    if command.get("evaluator_output_dir") is not None:
+        evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
+        evaluator_dir.mkdir(parents=True, exist_ok=True)
+        evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+    session = session_snapshot()
+    return {
+        "schema_version": 1,
+        "source_sha256": manifest["source_sha256"],
+        "state_sha256": session["state_sha256"],
+        "width": command["width"],
+        "height": command["height"],
+        "samples": command["samples"],
+        "engine": command["engine"],
+        "device": device,
+        "blender_version": bpy.app.version_string,
+        "session": session,
+        "color": artifact(output, "image/png"),
+        "evaluator": evaluator,
+        "luminance": luminance,
+    }
+
+
+def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
+    focus_ids = selected_component_ids(command)
+    camera_origin = camera_object().matrix_world.translation
+    object_ids = {obj: component_id for component_id, obj in COMPONENT_OBJECTS.items()}
+    points: list[Vector] = []
+    for component_id in sorted(focus_ids):
+        obj = COMPONENT_OBJECTS[component_id]
+        vertices = obj.data.vertices
+        stride = max(1, len(vertices) // 128)
+        points.extend(
+            obj.matrix_world @ vertices[index].co for index in range(0, len(vertices), stride)
+        )
+        points.append(obj.matrix_world.translation.copy())
+    counts: dict[str, int] = {}
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for point in points:
+        direction = point - camera_origin
+        distance = direction.length
+        if distance <= 1e-9:
+            continue
+        hit, _, _, _, hit_object, _ = bpy.context.scene.ray_cast(
+            depsgraph, camera_origin, direction.normalized(), distance=distance + 1e-6
+        )
+        if not hit or hit_object is None:
+            continue
+        original = hit_object.original if hasattr(hit_object, "original") else hit_object
+        hit_component_id = object_ids.get(original)
+        if hit_component_id is None or hit_component_id in focus_ids:
+            continue
+        if COMPONENT_STATES[hit_component_id]["display"] == "hidden":
+            continue
+        counts[hit_component_id] = counts.get(hit_component_id, 0) + 1
+    sample_count = len(points)
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "focus_component_ids": sorted(focus_ids),
+        "sample_count": sample_count,
+        "occluders": [
+            {
+                "component_id": component_id,
+                "blocked_rays": count,
+                "fraction": count / sample_count if sample_count else 0.0,
+            }
+            for component_id, count in ranked
+        ],
     }
 
 
 def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
-    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS, OVERRIDE_MATERIALS
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
+    global OVERRIDE_MATERIALS, EMISSION_MATERIALS
 
     MANIFEST = manifest
     objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
@@ -820,6 +1218,7 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
     MARK_OBJECTS = {}
     OVERRIDE_MATERIALS = {}
+    EMISSION_MATERIALS = {}
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 
@@ -1147,6 +1546,12 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "session.runtime":
         require_session()
         return runtime_diagnostics()
+    if operation == "render.image":
+        require_session()
+        return render_image(command)
+    if operation == "component.occluders":
+        require_session()
+        return rank_occluders(command)
     if operation == "session.shutdown":
         return {"shutdown": True}
     raise ValueError(f"unsupported worker operation: {operation}")

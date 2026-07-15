@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from PIL import Image
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
@@ -16,6 +17,7 @@ from meshprobe.controller import BlenderController, BlenderWorkerError
 from meshprobe.models import (
     AreaLight,
     Camera,
+    ContactSheetManifest,
     CustomIllumination,
     DisplayMode,
     IlluminationPreset,
@@ -24,17 +26,21 @@ from meshprobe.models import (
     PerspectiveProjection,
     Pose,
     PresetIllumination,
+    RenderEngine,
+    RenderManifest,
+    SessionSnapshot,
 )
 from meshprobe.protocol import (
     ComponentDisplayCommand,
     ComponentMarkCommand,
     IlluminationSetCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
     SessionResetCommand,
     ViewOrbitCommand,
     ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
-from meshprobe.session import SessionSnapshot
 from meshprobe.sources import snapshot_source
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
@@ -242,6 +248,42 @@ bpy.ops.export_scene.gltf(
     filepath={json.dumps(str(output))},
     export_format='GLB',
     export_lights=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_occluded_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "occluded.glb"
+    script = tmp_path / "build_occluded.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+bpy.context.object.name = 'target'
+bpy.ops.mesh.primitive_cube_add(size=2.0, location=(2, 0, 0))
+bpy.context.object.name = 'blocker'
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
 )
 """,
         encoding="utf-8",
@@ -694,3 +736,135 @@ def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
             controller.request("scene.describe")
         assert controller._source_path is None
         assert controller._source_sha256 is None
+
+
+def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    before = snapshot_source(source)
+    output = tmp_path / "evidence.png"
+    evaluator_dir = tmp_path / "private"
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="mark",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+            )
+        )
+        command = RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path=str(output),
+            width=256,
+            height=192,
+            samples=1,
+            engine=RenderEngine.EEVEE,
+        )
+        first = controller.render_image(command, evaluator_output_dir=evaluator_dir)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="move",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=120,
+                elevation_degrees=25,
+                distance_mm=5_000,
+                projection=PerspectiveProjection(),
+            )
+        )
+        rendered = controller.render_image(command, evaluator_output_dir=evaluator_dir)
+        runtime = controller.request("session.runtime")
+
+    assert isinstance(rendered, RenderManifest)
+    assert rendered.width == 256
+    assert rendered.height == 192
+    assert rendered.evaluator is not None
+    assert first.evaluator is not None
+    assert first.evaluator.multilayer.sha256 != rendered.evaluator.multilayer.sha256
+    assert runtime["render"]["eevee_samples"] == 1
+    assert rendered.evaluator.component_colors.keys() == {
+        component.id for component in manifest.components
+    }
+    assert Image.open(rendered.color.path).size == (256, 192)
+    assert Image.open(rendered.evaluator.component_ids.path).size == (256, 192)
+    highlighted = Image.open(rendered.evaluator.highlighted.path).convert("RGB")
+    assert highlighted.getbbox() is not None
+    pass_header = Path(rendered.evaluator.multilayer.path).read_bytes()[:4_096]
+    assert b"Depth" in pass_header
+    assert b"Normal" in pass_header
+    assert snapshot_source(source) == before
+
+
+def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "cycles.png"
+    with BlenderController(timeout_seconds=120) as controller:
+        controller.open_scene(source)
+        rendered = controller.execute(
+            RenderImageCommand(
+                request_id="cycles",
+                op="render.image",
+                output_path=str(output),
+                width=64,
+                height=64,
+                samples=1,
+                engine=RenderEngine.CYCLES,
+            )
+        )
+
+    assert isinstance(rendered, RenderManifest)
+    assert rendered.engine is RenderEngine.CYCLES
+    assert rendered.device == "cuda"
+    assert rendered.evaluator is None
+    assert rendered.blender_version
+    assert Image.open(rendered.color.path).size == (64, 64)
+
+
+def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "contact-sheet.png"
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        initial = controller.request("scene.describe")["session"]
+        sheet = controller.execute(
+            RenderContactSheetCommand(
+                request_id="sheet",
+                op="render.contact_sheet",
+                output_path=str(output),
+                focus_component_ids=(target,),
+                panel_width=128,
+                panel_height=128,
+                samples=1,
+            )
+        )
+        restored = controller.request("scene.describe")["session"]
+
+    assert isinstance(sheet, ContactSheetManifest)
+    assert len(sheet.panels) == 9
+    assert [panel.index for panel in sheet.panels] == list(range(1, 10))
+    assert len({panel.render.state_sha256 for panel in sheet.panels}) >= 8
+    assert all(
+        panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
+    )
+    assert Image.open(sheet.sheet.path).size == (384, 480)
+    assert restored == initial
+
+
+def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+        controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+        cleared = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
+    assert ranking["occluders"][0]["blocked_rays"] > 0
+    assert cleared["occluders"] == []

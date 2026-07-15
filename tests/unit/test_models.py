@@ -13,9 +13,25 @@ from meshprobe.models import (
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
+    RenderManifest,
     SceneManifest,
     SensorFit,
 )
+
+
+def render_session(state_sha256: str = "b" * 64) -> dict[str, object]:
+    return {
+        "camera": {
+            "pose": {
+                "position_mm": [100, 100, 100],
+                "orientation_xyzw": [0, 0, 0, 1],
+            },
+            "projection": {"mode": "perspective", "focal_length_mm": 50},
+        },
+        "illumination": {"preset": "neutral_studio"},
+        "components": {},
+        "state_sha256": state_sha256,
+    }
 
 
 def test_pose_normalizes_quaternion() -> None:
@@ -239,3 +255,69 @@ def test_scene_rejects_warning_for_unknown_component(scene_manifest: SceneManife
     )
     with pytest.raises(ValidationError, match="warnings reference unknown"):
         SceneManifest.model_validate(payload)
+
+
+def test_render_manifest_rejects_unordered_luminance() -> None:
+    with pytest.raises(ValidationError, match="luminance values must be ordered"):
+        RenderManifest.model_validate(
+            {
+                "source_sha256": "a" * 64,
+                "state_sha256": "b" * 64,
+                "width": 512,
+                "height": 512,
+                "samples": 16,
+                "engine": "eevee",
+                "device": "graphics",
+                "blender_version": "5.2.0",
+                "session": render_session(),
+                "color": {
+                    "path": "render.png",
+                    "media_type": "image/png",
+                    "sha256": "c" * 64,
+                    "bytes": 1,
+                },
+                "luminance": {
+                    "minimum": 0.1,
+                    "median": 0.9,
+                    "maximum": 0.5,
+                    "crushed_fraction": 0,
+                    "clipped_fraction": 0,
+                },
+            }
+        )
+
+
+def test_evaluator_component_colors_must_be_unique() -> None:
+    artifact = {
+        "path": "pass.png",
+        "media_type": "image/png",
+        "sha256": "c" * 64,
+        "bytes": 1,
+    }
+    payload = {
+        "source_sha256": "a" * 64,
+        "state_sha256": "b" * 64,
+        "width": 512,
+        "height": 512,
+        "samples": 16,
+        "engine": "eevee",
+        "device": "graphics",
+        "blender_version": "5.2.0",
+        "session": render_session(),
+        "color": artifact,
+        "evaluator": {
+            "multilayer": {**artifact, "media_type": "image/x-exr"},
+            "component_ids": artifact,
+            "highlighted": artifact,
+            "component_colors": {"one": [1, 2, 3], "two": [1, 2, 3]},
+        },
+        "luminance": {
+            "minimum": 0.1,
+            "median": 0.2,
+            "maximum": 0.5,
+            "crushed_fraction": 0,
+            "clipped_fraction": 0,
+        },
+    }
+    with pytest.raises(ValidationError, match="colors must be unique"):
+        RenderManifest.model_validate(payload)

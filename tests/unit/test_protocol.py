@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     ComponentFindCommand,
+    RenderImageCommand,
     command_json_schema,
     parse_command_json,
 )
@@ -67,3 +68,40 @@ def test_orbit_rejects_nonfinite_angles(field: str) -> None:
     payload[field] = math.inf
     with pytest.raises(ValidationError):
         COMMAND_ADAPTER.validate_python(payload)
+
+
+def test_render_command_bounds_engine_and_samples() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "render",
+            "op": "render.image",
+            "output_path": "evidence.png",
+            "width": 2048,
+            "height": 1024,
+            "samples": 128,
+            "engine": "cycles",
+        }
+    )
+    assert isinstance(command, RenderImageCommand)
+    assert command.samples == 128
+    assert command.engine == "cycles"
+
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "private-pass",
+                "op": "render.image",
+                "output_path": "evidence.png",
+                "evaluator_output_dir": "private",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "oversized",
+                "op": "render.image",
+                "output_path": "evidence.png",
+                "width": 20_000,
+            }
+        )

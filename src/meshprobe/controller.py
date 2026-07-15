@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import shutil
@@ -14,16 +15,29 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self
 
-from meshprobe.models import SceneManifest
+from meshprobe.camera import orbit_camera
+from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
+from meshprobe.models import (
+    Bounds,
+    ContactSheetManifest,
+    ContactSheetPanel,
+    OrthographicProjection,
+    PerspectiveProjection,
+    Projection,
+    RenderManifest,
+    SceneManifest,
+    SessionSnapshot,
+)
 from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
     SceneOpenCommand,
 )
 from meshprobe.selectors import ComponentIndex
-from meshprobe.session import SessionSnapshot
-from meshprobe.sources import sha256_file, snapshot_source
+from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
 
 __all__ = [
     "BlenderController",
@@ -69,6 +83,7 @@ class BlenderController:
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
         self._manifest: SceneManifest | None = None
+        self._source_snapshot: SourceSnapshot | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
@@ -151,6 +166,7 @@ class BlenderController:
         self._source_path = None
         self._source_sha256 = None
         self._manifest = None
+        self._source_snapshot = None
         self._accepted_commands.clear()
         try:
             result = self.request(
@@ -171,6 +187,7 @@ class BlenderController:
         self._source_path = source
         self._source_sha256 = manifest.source_sha256
         self._manifest = manifest
+        self._source_snapshot = before
         return manifest
 
     def execute(self, command: Command) -> object:
@@ -185,6 +202,10 @@ class BlenderController:
                     component.model_dump(mode="json") for component in index.find(command.selector)
                 ]
             return index.by_id(command.component_id).model_dump(mode="json")
+        if isinstance(command, RenderImageCommand):
+            return self.render_image(command)
+        if isinstance(command, RenderContactSheetCommand):
+            return self.render_contact_sheet(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         try:
@@ -200,6 +221,304 @@ class BlenderController:
             return SessionSnapshot.model_validate(result)
         return result
 
+    def render_image(
+        self,
+        command: RenderImageCommand,
+        *,
+        evaluator_output_dir: str | Path | None = None,
+    ) -> RenderManifest:
+        if self._source_snapshot is None:
+            raise BlenderWorkerError("cannot render before a scene is open")
+        output = Path(command.output_path).expanduser().resolve()
+        source_paths = {asset.path for asset in self._source_snapshot.assets}
+        output_paths = self._render_output_paths(output, evaluator_output_dir)
+        if source_paths.intersection(output_paths):
+            raise BlenderWorkerError("render output must not overwrite a source asset")
+        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        arguments["output_path"] = str(output)
+        if evaluator_output_dir is not None:
+            arguments["evaluator_output_dir"] = str(
+                Path(evaluator_output_dir).expanduser().resolve()
+            )
+        try:
+            result = self.request(command.op, **arguments)
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._recover_session()
+            result = self.request(command.op, **arguments)
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during render")
+        manifest = RenderManifest.model_validate(result)
+        if manifest.source_sha256 != self._source_sha256:
+            raise BlenderWorkerError("render manifest source hash does not match the open scene")
+        self._verify_render_artifacts(manifest)
+        return manifest
+
+    @staticmethod
+    def _verify_render_artifacts(manifest: RenderManifest) -> None:
+        artifacts = [manifest.color]
+        if manifest.evaluator is not None:
+            artifacts.extend(
+                (
+                    manifest.evaluator.multilayer,
+                    manifest.evaluator.component_ids,
+                    manifest.evaluator.highlighted,
+                )
+            )
+        for artifact_record in artifacts:
+            path = Path(artifact_record.path)
+            if not path.is_file():
+                raise BlenderWorkerError(f"render artifact is missing: {path}")
+            if (
+                path.stat().st_size != artifact_record.bytes
+                or sha256_file(path) != artifact_record.sha256
+            ):
+                raise BlenderWorkerError(f"render artifact digest mismatch: {path}")
+
+    def render_contact_sheet(
+        self,
+        command: RenderContactSheetCommand,
+        *,
+        evaluator_output_dir: str | Path | None = None,
+    ) -> ContactSheetManifest:
+        if self._manifest is None or self._source_snapshot is None:
+            raise BlenderWorkerError("cannot render before a scene is open")
+        focus_ids = tuple(dict.fromkeys(command.focus_component_ids))
+        known_ids = {component.id for component in self._manifest.components}
+        unknown = set(focus_ids) - known_ids
+        if unknown:
+            raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
+        output = Path(command.output_path).expanduser().resolve()
+        if output.suffix.lower() != ".png":
+            raise BlenderWorkerError("contact-sheet output_path must end in .png")
+        panel_dir = output.parent / f"{output.stem}_panels"
+        panel_paths = tuple(panel_dir / f"panel-{index}.png" for index in range(1, 10))
+        source_paths = {asset.path for asset in self._source_snapshot.assets}
+        output_paths = {output, contact_sheet_staging_path(output), *panel_paths}
+        evaluator_root = None
+        if evaluator_output_dir is not None:
+            evaluator_root = Path(evaluator_output_dir).expanduser().resolve()
+            for index, panel_path in enumerate(panel_paths, start=1):
+                output_paths.update(
+                    self._render_output_paths(
+                        panel_path,
+                        evaluator_root / f"panel-{index}",
+                    )
+                )
+        if source_paths.intersection(output_paths):
+            raise BlenderWorkerError("contact-sheet output must not overwrite a source asset")
+
+        accepted_commands = list(self._accepted_commands)
+        panels: list[ContactSheetPanel] = []
+        removed_occluders: tuple[str, ...] = ()
+        try:
+            self.request("session.reset")
+            self.request("illumination.set", illumination={"preset": "neutral_studio"})
+            scene_center, scene_span = self._bounds_center_span(self._manifest.root_bounds)
+            panel_aspect = command.panel_width / command.panel_height
+            self._set_orbit(
+                scene_center,
+                scene_span,
+                45,
+                30,
+                PerspectiveProjection(),
+                panel_aspect,
+            )
+            panels.append(
+                self._render_contact_panel(
+                    command,
+                    panel_paths[0],
+                    1,
+                    "Natural isometric",
+                    evaluator_root,
+                )
+            )
+
+            self.request("component.mark", component_ids=list(focus_ids), mode="highlighted")
+            panels.append(
+                self._render_contact_panel(
+                    command,
+                    panel_paths[1],
+                    2,
+                    "Focused in context",
+                    evaluator_root,
+                )
+            )
+
+            ranking = self.request("component.occluders", component_ids=list(focus_ids))
+            removed_occluders = tuple(item["component_id"] for item in ranking.get("occluders", []))
+            if removed_occluders:
+                self.request(
+                    "component.display",
+                    component_ids=list(removed_occluders),
+                    mode="hidden",
+                )
+            panels.append(
+                self._render_contact_panel(
+                    command,
+                    panel_paths[2],
+                    3,
+                    "Occluders removed",
+                    evaluator_root,
+                )
+            )
+
+            self.request("illumination.set", illumination={"preset": "flat_diagnostic"})
+            self.request("component.display", component_ids=list(focus_ids), mode="isolated")
+            focus_bounds = self._focus_bounds(focus_ids)
+            focus_center, focus_span = self._bounds_center_span(focus_bounds)
+            directions = (
+                (0.0, 0.0, "+X"),
+                (180.0, 0.0, "-X"),
+                (90.0, 0.0, "+Y"),
+                (-90.0, 0.0, "-Y"),
+                (0.0, 90.0, "+Z"),
+                (0.0, -90.0, "-Z"),
+            )
+            for panel_index, (azimuth, elevation, caption) in enumerate(directions, start=4):
+                projection = OrthographicProjection(
+                    scale_mm=focus_span * 1.2 / min(panel_aspect, 1.0)
+                )
+                self._set_orbit(
+                    focus_center,
+                    focus_span,
+                    azimuth,
+                    elevation,
+                    projection,
+                    panel_aspect,
+                )
+                panels.append(
+                    self._render_contact_panel(
+                        command,
+                        panel_paths[panel_index - 1],
+                        panel_index,
+                        caption,
+                        evaluator_root,
+                    )
+                )
+        finally:
+            self.request("session.reset")
+            for operation, arguments in accepted_commands:
+                self.request(operation, **arguments)
+
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
+        captions = tuple((Path(panel.render.color.path), panel.caption) for panel in panels)
+        sheet = compose_contact_sheet(captions, output, command.panel_width, command.panel_height)
+        return ContactSheetManifest(
+            recipe=command.recipe,
+            focus_component_ids=focus_ids,
+            removed_occluder_ids=removed_occluders,
+            sheet=sheet,
+            panels=tuple(panels),
+        )
+
+    def _render_contact_panel(
+        self,
+        command: RenderContactSheetCommand,
+        output_path: Path,
+        index: int,
+        caption: str,
+        evaluator_root: Path | None,
+    ) -> ContactSheetPanel:
+        evaluator_dir = None
+        if evaluator_root is not None:
+            evaluator_dir = str(evaluator_root / f"panel-{index}")
+        result = self.request(
+            "render.image",
+            output_path=str(output_path),
+            width=command.panel_width,
+            height=command.panel_height,
+            samples=command.samples,
+            engine=command.engine.value,
+            evaluator_output_dir=evaluator_dir,
+        )
+        render = RenderManifest.model_validate(result)
+        self._verify_render_artifacts(render)
+        return ContactSheetPanel(index=index, caption=caption, render=render)
+
+    @staticmethod
+    def _render_output_paths(
+        output: Path,
+        evaluator_output_dir: str | Path | None,
+    ) -> set[Path]:
+        paths = {output}
+        if evaluator_output_dir is None:
+            return paths
+        evaluator_dir = Path(evaluator_output_dir).expanduser().resolve()
+        paths.update(
+            {
+                evaluator_dir / f"{output.stem}.passes.exr",
+                evaluator_dir / f"{output.stem}.components.png",
+                evaluator_dir / f"{output.stem}.highlighted.png",
+            }
+        )
+        return paths
+
+    def _set_orbit(
+        self,
+        target: tuple[float, float, float],
+        span: float,
+        azimuth: float,
+        elevation: float,
+        projection: Projection,
+        aspect_ratio: float,
+    ) -> None:
+        distance = max(span * 2, 100.0)
+        if isinstance(projection, PerspectiveProjection):
+            framing_fov = min(
+                projection.horizontal_fov_degrees(aspect_ratio),
+                projection.vertical_fov_degrees(aspect_ratio),
+            )
+            distance = max(
+                (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25,
+                100.0,
+            )
+        camera = orbit_camera(
+            target_mm=target,
+            azimuth_degrees=azimuth,
+            elevation_degrees=elevation,
+            roll_degrees=0,
+            distance_mm=distance,
+            projection=projection,
+        )
+        self.request("view.set", camera=camera.model_dump(mode="json"))
+
+    def _focus_bounds(self, focus_ids: tuple[str, ...]) -> Bounds:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot inspect bounds before a scene is open")
+        selected = [
+            component.world_bounds
+            for component in self._manifest.components
+            if component.id in focus_ids
+        ]
+        minimum = (
+            min(bounds.minimum_mm[0] for bounds in selected),
+            min(bounds.minimum_mm[1] for bounds in selected),
+            min(bounds.minimum_mm[2] for bounds in selected),
+        )
+        maximum = (
+            max(bounds.maximum_mm[0] for bounds in selected),
+            max(bounds.maximum_mm[1] for bounds in selected),
+            max(bounds.maximum_mm[2] for bounds in selected),
+        )
+        return Bounds(minimum_mm=minimum, maximum_mm=maximum)
+
+    @staticmethod
+    def _bounds_center_span(bounds: Bounds) -> tuple[tuple[float, float, float], float]:
+        minimum = bounds.minimum_mm
+        maximum = bounds.maximum_mm
+        center = (
+            (minimum[0] + maximum[0]) / 2,
+            (minimum[1] + maximum[1]) / 2,
+            (minimum[2] + maximum[2]) / 2,
+        )
+        diagonal = math.sqrt(
+            sum((high - low) ** 2 for low, high in zip(minimum, maximum, strict=True))
+        )
+        return center, max(diagonal, 1.0)
+
     def _recover_session(self) -> None:
         if self._source_path is None or self._source_sha256 is None:
             raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
@@ -214,6 +533,7 @@ class BlenderController:
             self._source_path = None
             self._source_sha256 = None
             self._manifest = None
+            self._source_snapshot = None
             raise BlenderWorkerError("source asset bundle changed since the session opened")
         self._accepted_commands = accepted_commands
         for operation, arguments in accepted_commands:

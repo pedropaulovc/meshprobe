@@ -13,6 +13,7 @@ from meshprobe.models import (
     Illumination,
     MarkMode,
     Projection,
+    RenderEngine,
     Vec3,
 )
 from meshprobe.selectors import ComponentSelector
@@ -80,13 +81,19 @@ class RenderImageCommand(CommandModel):
     output_path: str
     width: Annotated[int, Field(ge=64, le=16_384)] = 1024
     height: Annotated[int, Field(ge=64, le=16_384)] = 1024
+    samples: Annotated[int, Field(ge=1, le=4_096)] = 64
+    engine: RenderEngine = RenderEngine.EEVEE
 
 
 class RenderContactSheetCommand(CommandModel):
     op: Literal["render.contact_sheet"]
     output_path: str
-    recipe: str
+    recipe: Literal["focused_3x3"] = "focused_3x3"
     focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    panel_width: Annotated[int, Field(ge=128, le=4_096)] = 768
+    panel_height: Annotated[int, Field(ge=128, le=4_096)] = 768
+    samples: Annotated[int, Field(ge=1, le=4_096)] = 32
+    engine: RenderEngine = RenderEngine.EEVEE
 
 
 class SessionResetCommand(CommandModel):

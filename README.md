@@ -7,9 +7,10 @@ hide occluders, mark parts, and request evidence renders or contact sheets.
 
 The project is in early development. MeshProbe can start a persistent factory-clean
 Blender worker, import GLB, glTF, OBJ, or STL files, and return a validated scene
-manifest without changing the source file. The Python core also implements the public
-command schema, deterministic component selectors, visual session state, and camera
-and illumination validation. Rendering is the next slice.
+manifest without changing the source file. It can render the current inspection state
+with Eevee or CUDA-backed Cycles, emit private component/highlight masks and a
+Depth/Normal EXR for evaluators, rank line-of-sight occluders, and build a focused 3×3
+contact sheet with perspective context and six orthographic detail views.
 
 ## Try the protocol
 

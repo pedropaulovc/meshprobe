@@ -6,31 +6,15 @@ import hashlib
 import json
 from collections.abc import Iterable
 
-from pydantic import BaseModel, ConfigDict
-
 from meshprobe.models import (
     Camera,
+    ComponentVisualState,
     DisplayMode,
     Illumination,
     MarkMode,
     SceneManifest,
+    SessionSnapshot,
 )
-
-
-class ComponentVisualState(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    display: DisplayMode = DisplayMode.SHOWN
-    mark: MarkMode = MarkMode.UNMARKED
-
-
-class SessionSnapshot(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    camera: Camera
-    illumination: Illumination
-    components: dict[str, ComponentVisualState]
-    state_sha256: str
 
 
 class InspectionSession:
