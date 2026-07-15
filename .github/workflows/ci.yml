@@ -54,6 +54,16 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - name: Install Blender 5.2 LTS
-        run: choco install blender --version=5.2.0 --yes --no-progress
+        run: |
+          choco install blender --version=5.2.0 --yes --no-progress
+          $blender = Get-ChildItem `
+            "$env:ProgramFiles\Blender Foundation" `
+            -Filter blender.exe -Recurse `
+            | Select-Object -First 1
+          if ($null -eq $blender) {
+            throw "Chocolatey installed Blender without a discoverable blender.exe"
+          }
+          $blender.DirectoryName | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          & $blender.FullName --version
       - run: uv sync --locked --all-groups
       - run: uv run pytest
