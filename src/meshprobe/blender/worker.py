@@ -405,7 +405,7 @@ def build_manifest(
         "schema_version": 1,
         "source_sha256": source_sha256,
         "source_format": source_format,
-        "units": "meter",
+        "units": "millimeter",
         "root_bounds": root_bounds,
         "components": components,
         "imported_camera": camera,
