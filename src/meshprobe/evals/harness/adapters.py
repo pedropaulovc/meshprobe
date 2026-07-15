@@ -93,6 +93,7 @@ class CliJsonlAdapter:
         submission: EpisodeSubmission | None = None
         protocol_error: str | None = None
         timed_out = False
+        startup_closed = False
         initialization = {
             "type": "episode",
             "protocol_version": 1,
@@ -110,7 +111,7 @@ class CliJsonlAdapter:
             timed_out = True
             protocol_error = "agent exceeded the episode wall-time budget"
         except (BrokenPipeError, OSError):
-            protocol_error = "agent exited before accepting the episode envelope"
+            startup_closed = True
         try:
             while submission is None and protocol_error is None:
                 remaining = deadline - time.monotonic()
@@ -119,7 +120,11 @@ class CliJsonlAdapter:
                     protocol_error = "agent exceeded the episode wall-time budget"
                     break
                 if process.poll() is not None and streams.drained:
-                    protocol_error = "agent exited before submitting an answer"
+                    protocol_error = (
+                        "agent exited before accepting the episode envelope"
+                        if startup_closed
+                        else "agent exited before submitting an answer"
+                    )
                     break
                 event = streams.read(timeout=min(remaining, 0.25))
                 if event is None:
