@@ -342,7 +342,8 @@ def camera_object() -> bpy.types.Object:
         (obj for obj in bpy.context.scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name
     )
     if cameras:
-        camera = cameras[0]
+        active_camera = bpy.context.scene.camera
+        camera = active_camera if active_camera in cameras else cameras[0]
         bpy.context.scene.camera = camera
         return camera
     data = bpy.data.cameras.new("MeshProbeCamera")
