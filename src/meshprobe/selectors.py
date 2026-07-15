@@ -34,7 +34,7 @@ class ComponentIndex:
     """A deterministic, renderer-independent index over a scene manifest."""
 
     def __init__(self, manifest: SceneManifest) -> None:
-        self._components = manifest.components
+        self._components = tuple(sorted(manifest.components, key=lambda component: component.path))
         self._by_id = {component.id: component for component in manifest.components}
 
     def by_id(self, component_id: str) -> Component:

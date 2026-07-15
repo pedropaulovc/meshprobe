@@ -23,6 +23,14 @@ def test_exact_name_returns_all_candidates(scene_manifest: SceneManifest) -> Non
     assert [match.path for match in matches] == ["assembly/drive/idler"]
 
 
+def test_selector_results_are_sorted_by_stable_path(scene_manifest: SceneManifest) -> None:
+    reordered = scene_manifest.model_copy(update={"components": scene_manifest.components[::-1]})
+    matches = ComponentIndex(reordered).find(
+        ComponentSelector(kind=SelectorKind.GLOB, pattern="assembly/**")
+    )
+    assert [match.path for match in matches] == sorted(match.path for match in matches)
+
+
 def test_glob_matches_hierarchy(scene_manifest: SceneManifest) -> None:
     index = ComponentIndex(scene_manifest)
     matches = index.find(ComponentSelector(kind=SelectorKind.GLOB, pattern="assembly/**/i*"))
