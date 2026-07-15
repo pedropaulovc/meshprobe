@@ -5,14 +5,26 @@ from pathlib import Path
 
 import pytest
 
-from meshprobe.evals.factory import build_corpus, validate_corpus
+from meshprobe.evals.factory import (
+    _prepare_staging,
+    _read_checkpoint,
+    _validate_operation_class_coverage,
+    build_corpus,
+    generator_source_sha256,
+    validate_corpus,
+)
 from meshprobe.evals.generators import (
     GeneratorFamily,
     build_model,
     generate_episodes,
     publish_model,
 )
-from meshprobe.evals.leakage import LeakageError, validate_public_episode
+from meshprobe.evals.leakage import (
+    LeakageError,
+    scan_error_message,
+    validate_public_directory,
+    validate_public_episode,
+)
 
 
 def test_factory_atomically_publishes_checkpointed_public_and_private_trees(
@@ -59,6 +71,35 @@ def test_factory_rejects_existing_version_with_different_recipe(tmp_path: Path) 
             seeds=(0,),
         )
 
+    with pytest.raises(RuntimeError, match="different generator seeds"):
+        build_corpus(
+            tmp_path,
+            corpus_version="test-v1",
+            families=(GeneratorFamily.HIDDEN_CLIP,),
+            seeds=(1,),
+        )
+
+
+def test_factory_rejects_existing_version_from_stale_generator(tmp_path: Path) -> None:
+    build = build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    manifest_path = build.root / "public" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["generator_sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="different generator"):
+        build_corpus(
+            tmp_path,
+            corpus_version="test-v1",
+            families=(GeneratorFamily.HIDDEN_CLIP,),
+            seeds=(0,),
+        )
+
 
 def test_validation_rejects_tampered_model(tmp_path: Path) -> None:
     build = build_corpus(
@@ -86,6 +127,131 @@ def test_validation_rejects_unmanifested_episode(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="do not exactly match"):
         validate_corpus(build.root)
+
+
+def test_validation_rejects_missing_private_truth(tmp_path: Path) -> None:
+    build = build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    next((build.root / "private" / "ground_truth").glob("*.json")).unlink()
+
+    with pytest.raises(RuntimeError, match="private ground-truth files"):
+        validate_corpus(build.root)
+
+
+def test_validation_rejects_tampered_episode_and_unreferenced_model(tmp_path: Path) -> None:
+    build = build_corpus(
+        tmp_path,
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    episode = next((build.root / "public" / "episodes").glob("*.json"))
+    episode.write_text(episode.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="episode hash mismatch"):
+        validate_corpus(build.root)
+
+    rebuilt = build_corpus(
+        tmp_path,
+        corpus_version="test-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    (rebuilt.root / "public" / "models" / "unreferenced.glb").write_bytes(b"model")
+    with pytest.raises(RuntimeError, match="not referenced exactly"):
+        validate_corpus(rebuilt.root)
+
+
+def test_checkpoint_validation_and_recovery_paths(tmp_path: Path) -> None:
+    generator_hash = generator_source_sha256()
+    staging = tmp_path / ".corpus.building"
+    staging.mkdir()
+    _prepare_staging(staging, generator_hash)
+    checkpoint = staging / "checkpoint.json"
+    assert checkpoint.is_file()
+
+    checkpoint.write_text(
+        json.dumps({"generator_sha256": generator_hash, "completed": "invalid"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="invalid completed-model"):
+        _read_checkpoint(staging, generator_hash)
+
+    checkpoint.write_text(
+        json.dumps({"generator_sha256": "0" * 64, "completed": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="different generator revision"):
+        _read_checkpoint(staging, generator_hash)
+    _prepare_staging(staging, generator_hash)
+    assert _read_checkpoint(staging, generator_hash) == set()
+
+
+def test_completed_checkpoint_cannot_publish_missing_artifacts(tmp_path: Path) -> None:
+    staging = tmp_path / ".broken-v1.building"
+    staging.mkdir()
+    checkpoint = {
+        "generator_sha256": generator_source_sha256(),
+        "completed": [f"{GeneratorFamily.HIDDEN_CLIP}:0"],
+    }
+    (staging / "checkpoint.json").write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="publication count"):
+        build_corpus(
+            tmp_path,
+            corpus_version="broken-v1",
+            families=(GeneratorFamily.HIDDEN_CLIP,),
+            seeds=(0,),
+        )
+
+
+def test_operation_coverage_validator_rejects_incomplete_classes(tmp_path: Path) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
+    path = tmp_path / "episode.json"
+    path.write_text(generate_episodes(model)[0].spec.model_dump_json(), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="operation class coverage"):
+        _validate_operation_class_coverage([path])
+
+
+def test_leakage_guards_reject_mismatches_paths_and_errors(tmp_path: Path) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
+    episode = generate_episodes(model)[0]
+    wrong_truth = episode.ground_truth.model_copy(update={"episode_id": "different_case"})
+    with pytest.raises(LeakageError, match="same case"):
+        validate_public_episode(episode.spec, wrong_truth)
+
+    wrong_operations = episode.ground_truth.model_copy(
+        update={"required_operations": (episode.ground_truth.required_operations[0],)}
+    )
+    with pytest.raises(LeakageError, match="required operations"):
+        validate_public_episode(episode.spec, wrong_operations)
+
+    prompt_leak = episode.spec.model_copy(
+        update={"prompt": episode.spec.prompt + " " + episode.spec.episode_id}
+    )
+    with pytest.raises(LeakageError, match="opaque evaluator identifier"):
+        validate_public_episode(prompt_leak, episode.ground_truth)
+
+    with pytest.raises(LeakageError, match="tool error leaked"):
+        scan_error_message(model.component_ids["idler"], episode.ground_truth)
+
+    public = tmp_path / "served"
+    public.mkdir()
+    private = public / "private"
+    private.mkdir()
+    with pytest.raises(LeakageError, match="must not be under"):
+        validate_public_directory(public, private)
+
+    external_private = tmp_path / "evaluator-owned"
+    external_private.mkdir()
+    forbidden = public / "ground_truth"
+    forbidden.write_text("leak", encoding="utf-8")
+    with pytest.raises(LeakageError, match="private path name"):
+        validate_public_directory(public, external_private)
 
 
 def test_public_episode_rejects_private_component_id_leak(tmp_path: Path) -> None:
