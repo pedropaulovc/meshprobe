@@ -10,7 +10,7 @@ import typer
 from pydantic import ValidationError
 
 from meshprobe.camera import orbit_camera
-from meshprobe.controller import BlenderController, BlenderWorkerError
+from meshprobe.controller import BlenderWorkerError
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
     Command,
@@ -27,6 +27,7 @@ from meshprobe.protocol import (
     parse_command_json,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
+from meshprobe.service import MeshProbeService
 from meshprobe.session import InspectionSession
 
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
@@ -58,12 +59,42 @@ def open_scene(
 ) -> None:
     """Open a model in a factory-clean Blender worker and print its manifest."""
 
+    command = parse_command_json(
+        json.dumps({"request_id": "open", "op": "scene.open", "source_path": str(source)})
+    )
     try:
-        with BlenderController(executable=blender, timeout_seconds=timeout_seconds) as controller:
-            manifest = controller.open_scene(source)
+        with MeshProbeService(blender=blender, timeout_seconds=timeout_seconds) as service:
+            manifest = service.execute(command).result
     except (BlenderWorkerError, OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
     _emit(manifest)
+
+
+@app.command("run")
+def run_commands(
+    commands: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    blender: Annotated[str | None, typer.Option("--blender")] = None,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+) -> None:
+    """Execute JSONL commands in one persistent Blender session."""
+
+    results: list[dict[str, object]] = []
+    try:
+        with MeshProbeService(blender=blender, timeout_seconds=timeout_seconds) as service:
+            for line_number, line in enumerate(
+                commands.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if not line.strip():
+                    continue
+                try:
+                    command = parse_command_json(line)
+                    response = service.execute(command)
+                except (ValidationError, ValueError) as error:
+                    raise typer.BadParameter(f"line {line_number}: {error}") from error
+                results.append(response.model_dump(mode="json"))
+    except BlenderWorkerError as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit({"results": results})
 
 
 @app.command("validate-manifest")
