@@ -107,5 +107,6 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
             "gates": {gate.gate: gate.details for gate in report.gates if gate.status == "fail"},
         }
 
-    assert not failures, failures
+    if failures:
+        raise AssertionError(json.dumps(failures, indent=2, sort_keys=True))
     assert result.report.passed_thresholds, result.report.threshold_failures
