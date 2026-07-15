@@ -2,8 +2,8 @@
   "schema_version": 1,
   "tier": "nightly",
   "corpus_version": "qualification-v2",
-  "corpus_manifest_sha256": "0099cad0548bcdba46b2e3d1c3036f1273be43ca8d272a57f776256e1f387035",
-  "generator_sha256": "de38a367969f1df91860f221c92dd5a87ff28136be26a939c5bfe92b17774572",
+  "corpus_manifest_sha256": "ae41486c1212b4c9460348d5f762be91b783b5bb0bf472707e4b9d046dbe9bb0",
+  "generator_sha256": "74662b95f38acdb8ec45302c54db8aede67ad2d33c37c7e36b864e0794913e06",
   "runtime": {
     "meshprobe_version": "0.1.0.dev0",
     "protocol_version": 1,
