@@ -334,7 +334,9 @@ Python generators create models with exact ground truth. They randomize:
 - distractor components whose names or silhouettes resemble the target.
 
 Each released generator has held-out seeds. Private qualification also contains
-generator families that do not appear in the development split.
+generator families that do not appear in the development split. Their implementations
+and source assets stay in evaluator-owned storage outside the public repository; the
+public tree contains only the opaque, hash-pinned tier manifest.
 
 ### Curated assemblies
 
@@ -412,6 +414,13 @@ Each episode runs in a fresh directory with no network access. The agent can
 read the assigned model and its own public artifacts. It cannot read generator
 parameters, evaluator masks, answer manifests, other episodes, or source code
 used to construct the model.
+
+Linux launches the agent through Bubblewrap with a read-only input bind, a writable
+artifact bind, an empty network namespace, and POSIX resource limits. Windows launches
+the agent in a per-episode AppContainer with no network capabilities and explicit ACLs
+for the input, runtime, and artifact roots. A non-breakaway Job Object enforces CPU,
+memory, process-count, and lifetime limits. Both backends fail closed when the host
+cannot create the required isolation; there is no unsandboxed qualification mode.
 
 Prompts and served filenames use opaque episode IDs. The harness records the
 mapping in an evaluator-owned directory. It scans prompts, public manifests, and
@@ -629,8 +638,11 @@ MeshProbe is ready for its first release when:
   represented in state, manifests, traces, and evaluation oracles;
 - the persistent worker survives the recovery suite;
 - source immutability is proven on every integration and evaluation run;
+- Linux and Windows run the same sandbox contract tests, Blender integration tests,
+  agent adapters, and pinned-tier validation;
 - the 2,000-episode release suite is reproducible from its pinned manifest;
 - every operation family and the full-stack track meet separately published pass
   thresholds;
-- a clean machine can install, run the smoke suite, and reproduce its report with
-  `uv`, Blender, and Bubblewrap configured for the host's user-namespace policy.
+- a clean machine can install, run the smoke suite, and reproduce its report with `uv`,
+  Blender, and either Bubblewrap configured for the Linux host's user-namespace policy
+  or the native Windows AppContainer backend.

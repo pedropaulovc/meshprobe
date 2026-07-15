@@ -14,10 +14,10 @@ and six orthographic detail views.
 
 ## Install
 
-MeshProbe uses Python 3.12 or newer, `uv`, and Blender 5.2 LTS. The qualification
-harness also requires Bubblewrap on Linux. On Ubuntu 24.04 or newer, load the distro's
-AppArmor profile. It grants Bubblewrap the namespace permissions needed by the harness
-and keeps user-namespace hardening enabled:
+MeshProbe uses Python 3.12 or newer, `uv`, and Blender 5.2 LTS on Linux and Windows.
+The qualification harness uses Bubblewrap on Linux. On Ubuntu 24.04 or newer, load the
+distro's AppArmor profile. It grants Bubblewrap the namespace permissions needed by the
+harness and keeps user-namespace hardening enabled:
 
 ```bash
 sudo apt-get install apparmor-profiles bubblewrap
@@ -25,6 +25,14 @@ sudo cp \
   /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
   /etc/apparmor.d/bwrap-userns-restrict
 sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+Windows needs no additional sandbox package. MeshProbe creates a fresh AppContainer
+profile for each episode and puts the agent in a constrained Job Object. Install the
+pinned Blender release from an elevated PowerShell prompt:
+
+```powershell
+choco install blender --version=5.2.0 --yes
 ```
 
 Install the locked Python environment and run the test suite:
@@ -73,23 +81,25 @@ uv run meshprobe-mcp
 
 ## Qualification harness
 
-The evaluation harness runs each agent in a Bubblewrap sandbox with no network, a
-read-only assigned model, a writable artifact directory, and evaluator-owned traces and
-render passes. It supports a JSONL command-line protocol and an MCP stdio protocol. Both
-adapters use the same prompt, command schema, budgets, broker, and answer contract.
+The evaluation harness runs each agent without network access, with a read-only assigned
+model, a writable artifact directory, and evaluator-owned traces and render passes. It
+uses Bubblewrap on Linux and AppContainer plus Job Object limits on Windows. It supports
+a JSONL command-line protocol and an MCP stdio protocol. Both adapters use the same
+prompt, command schema, budgets, broker, and answer contract.
 
 Build the released 512-model procedural corpus and the 160-model curated track, then
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v1
+uv run meshprobe eval generate .corpora --version procedural-v2
 uv run meshprobe eval curated-generate \
-  evals/curated/catalog.json .cache/meshprobe-curated .corpora
+  evals/curated/catalog.json .cache/meshprobe-curated .corpora \
+  --corpus-version curated-tasks-v2
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v1 .corpora/curated-tasks-v1 \
-  --version qualification-v1
+  .corpora/procedural-v2 .corpora/curated-tasks-v2 \
+  --version qualification-v2
 uv run meshprobe eval pin \
-  .corpora/qualification-v1 .corpora/manifests
+  .corpora/qualification-v2 .corpora/manifests
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -103,8 +113,9 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v1 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v2 evals/manifests/public/smoke.json .runs \
   --adapter cli \
+  --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
 ```
 
@@ -113,6 +124,8 @@ structured `submission`. With `--adapter mcp`, the agent speaks MCP as a client 
 standard streams and calls the `meshprobe` and `submit` tools. Runs checkpoint after each
 episode and publish JSON plus Markdown reports split by operation, task family,
 difficulty, projection, focal-length band, illumination, model source, and failure gate.
+On Linux the episode envelope uses `/workspace/input` and `/workspace/artifacts` paths;
+on Windows it uses the assigned absolute paths granted to the AppContainer.
 
 The approved implementation and evaluation design is in [docs/plan.md](docs/plan.md).
 

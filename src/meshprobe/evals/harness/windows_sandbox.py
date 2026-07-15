@@ -264,10 +264,12 @@ def spawn_windows(
     resolved_command = (str(Path(executable).resolve(strict=True)), *command[1:])
     profile_name = f"MeshProbe.Agent.{uuid.uuid4().hex}"
     appcontainer_sid = _create_profile(profile_name)
-    sid_string = _sid_string(appcontainer_sid)
-    acl_roots = _runtime_roots(Path(executable))
+    sid_string: str | None = None
     granted: list[Path] = []
     try:
+        sid_string = _sid_string(appcontainer_sid)
+        profile_root = _profile_folder(sid_string)
+        acl_roots = _runtime_roots(Path(executable))
         for root in (input_root, *acl_roots):
             _grant_acl(root, sid_string, "RX")
             granted.append(root)
@@ -277,12 +279,16 @@ def spawn_windows(
             resolved_command,
             appcontainer_sid=appcontainer_sid,
             artifact_root=artifact_root,
+            profile_root=profile_root,
             environment=environment,
             limits=limits,
             cleanup=lambda: _cleanup_profile(profile_name, sid_string, granted),
         )
     except BaseException:
-        _cleanup_profile(profile_name, sid_string, granted)
+        if sid_string is None:
+            _userenv.DeleteAppContainerProfile(profile_name)
+        else:
+            _cleanup_profile(profile_name, sid_string, granted)
         raise
     finally:
         _advapi32.FreeSid(appcontainer_sid)
@@ -294,6 +300,7 @@ def _create_process(
     *,
     appcontainer_sid: int,
     artifact_root: Path,
+    profile_root: Path,
     environment: Mapping[str, str],
     limits: IsolationLimits,
     cleanup: Callable[[], None],
@@ -323,7 +330,7 @@ def _create_process(
         startup.StartupInfo.hStdError = handles[2]
         startup.lpAttributeList = ctypes.cast(attribute_buffer, wintypes.LPVOID)
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
-        env_block = _environment_block(command[0], artifact_root, environment)
+        env_block = _environment_block(command[0], artifact_root, profile_root, environment)
         flags = (
             _CREATE_SUSPENDED
             | _CREATE_UNICODE_ENVIRONMENT
@@ -492,6 +499,20 @@ def _sid_string(sid: int) -> str:
         _kernel32.LocalFree(value)
 
 
+def _profile_folder(sid: str) -> Path:
+    value = wintypes.LPWSTR()
+    result = _userenv.GetAppContainerFolderPath(sid, ctypes.byref(value))
+    if result != 0:
+        error = result & 0xFFFF
+        raise OSError(error, f"GetAppContainerFolderPath: {_format_error(error)}")
+    try:
+        if value.value is None:
+            raise RuntimeError("GetAppContainerFolderPath returned no path")
+        return Path(value.value).resolve(strict=True)
+    finally:
+        _ole32.CoTaskMemFree(value)
+
+
 def _grant_acl(path: Path, sid: str, rights: str) -> None:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -536,21 +557,26 @@ def _runtime_roots(executable: Path) -> tuple[Path, ...]:
 
 
 def _environment_block(
-    executable: str, artifact_root: Path, configured: Mapping[str, str]
+    executable: str,
+    artifact_root: Path,
+    profile_root: Path,
+    configured: Mapping[str, str],
 ) -> object:
     system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
     drive = artifact_root.drive.upper()
     values = {
         f"={drive}": str(artifact_root),
+        "APPDATA": str(profile_root),
         "COMSPEC": os.environ.get("COMSPEC", str(Path(system_root) / "System32" / "cmd.exe")),
         "HOME": str(artifact_root),
         "LANG": "C.UTF-8",
+        "LOCALAPPDATA": str(profile_root),
         "PATH": os.pathsep.join(
             (str(Path(executable).parent), str(Path(system_root) / "System32"))
         ),
         "SystemRoot": system_root,
-        "TEMP": str(artifact_root),
-        "TMP": str(artifact_root),
+        "TEMP": str(profile_root / "Temp"),
+        "TMP": str(profile_root / "Temp"),
         "USERPROFILE": str(artifact_root),
     }
     for name, value in configured.items():
@@ -603,6 +629,7 @@ def _signed_exit_code(value: int) -> int:
 _kernel32: Any
 _advapi32: Any
 _userenv: Any
+_ole32: Any
 
 if os.name == "nt":
     if _win_dll is None:
@@ -610,6 +637,7 @@ if os.name == "nt":
     _kernel32 = _win_dll("kernel32", use_last_error=True)
     _advapi32 = _win_dll("advapi32", use_last_error=True)
     _userenv = _win_dll("userenv", use_last_error=True)
+    _ole32 = _win_dll("ole32", use_last_error=True)
 
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
@@ -686,7 +714,15 @@ if os.name == "nt":
     _userenv.CreateAppContainerProfile.restype = ctypes.c_long
     _userenv.DeleteAppContainerProfile.argtypes = [wintypes.LPCWSTR]
     _userenv.DeleteAppContainerProfile.restype = ctypes.c_long
+    _userenv.GetAppContainerFolderPath.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    _userenv.GetAppContainerFolderPath.restype = ctypes.c_long
+    _ole32.CoTaskMemFree.argtypes = [wintypes.LPVOID]
+    _ole32.CoTaskMemFree.restype = None
 else:
     _kernel32 = None
     _advapi32 = None
     _userenv = None
+    _ole32 = None
