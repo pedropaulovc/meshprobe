@@ -77,6 +77,11 @@ def test_normalized_quaternion_has_unit_length() -> None:
     assert math.sqrt(sum(value**2 for value in pose.orientation_xyzw)) == pytest.approx(1)
 
 
+def test_normalized_quaternion_handles_largest_finite_values() -> None:
+    pose = Pose(position_mm=(0, 0, 0), orientation_xyzw=(1e308, -1e308, 1e308, -1e308))
+    assert pose.orientation_xyzw == pytest.approx((0.5, -0.5, 0.5, -0.5))
+
+
 def test_light_quaternion_is_normalized_and_zero_is_rejected() -> None:
     light = AreaLight(
         id="key",
@@ -113,6 +118,27 @@ def test_scene_rejects_component_cycle(scene_manifest: SceneManifest) -> None:
     payload["components"][0]["parent_id"] = idler_id
     payload["components"][2]["child_ids"].append(root_id)
     with pytest.raises(ValidationError, match="contains a cycle"):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_component_id_not_derived_from_source_and_path(
+    scene_manifest: SceneManifest,
+) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    old_id = payload["components"][0]["id"]
+    replacement = "cmp_000000000000000000000000"
+    payload["components"][0]["id"] = replacement
+    for component in payload["components"]:
+        if component["parent_id"] == old_id:
+            component["parent_id"] = replacement
+    with pytest.raises(ValidationError, match="stable derivation"):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_duplicate_child_ids(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    payload["components"][0]["child_ids"].append(payload["components"][0]["child_ids"][0])
+    with pytest.raises(ValidationError, match="child ids must be unique"):
         SceneManifest.model_validate(payload)
 
 

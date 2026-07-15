@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
+from meshprobe.camera import orbit_camera
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
     Command,
@@ -19,6 +20,7 @@ from meshprobe.protocol import (
     IlluminationSetCommand,
     SceneDescribeCommand,
     SessionResetCommand,
+    ViewOrbitCommand,
     ViewSetCommand,
     command_json_schema,
     parse_command_json,
@@ -122,6 +124,16 @@ def _apply_one(
         return index.by_id(command.component_id).model_dump(mode="json")
     if isinstance(command, ViewSetCommand):
         return session.set_camera(command.camera).model_dump(mode="json")
+    if isinstance(command, ViewOrbitCommand):
+        camera = orbit_camera(
+            target_mm=command.target_mm,
+            azimuth_degrees=command.azimuth_degrees,
+            elevation_degrees=command.elevation_degrees,
+            roll_degrees=command.roll_degrees,
+            distance_mm=command.distance_mm,
+            projection=command.projection,
+        )
+        return session.set_camera(camera).model_dump(mode="json")
     if isinstance(command, IlluminationSetCommand):
         return session.set_illumination(command.illumination).model_dump(mode="json")
     if isinstance(command, ComponentDisplayCommand):

@@ -65,6 +65,15 @@ def test_apply_exercises_renderer_independent_operations(
             },
         },
         {
+            "request_id": "orbit",
+            "op": "view.orbit",
+            "target_mm": [0, 0, 0],
+            "azimuth_degrees": 0,
+            "elevation_degrees": 0,
+            "distance_mm": 250,
+            "projection": {"mode": "perspective", "focal_length_mm": 85},
+        },
+        {
             "request_id": "light",
             "op": "illumination.set",
             "illumination": {"preset": "raking_left"},
@@ -96,6 +105,7 @@ def test_apply_exercises_renderer_independent_operations(
         "find",
         "inspect",
         "camera",
+        "orbit",
         "light",
         "display",
         "mark",

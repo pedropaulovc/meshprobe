@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import re
 from collections.abc import Callable
 from enum import StrEnum
@@ -11,7 +10,10 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
+from meshprobe.identity import stable_component_id
 from meshprobe.models import Component, SceneManifest
+
+__all__ = ["ComponentIndex", "ComponentSelector", "SelectorKind", "stable_component_id"]
 
 
 class SelectorKind(StrEnum):
@@ -26,13 +28,6 @@ class ComponentSelector(BaseModel):
 
     kind: SelectorKind
     pattern: Annotated[str, StringConstraints(min_length=1, max_length=512)]
-
-
-def stable_component_id(source_sha256: str, instance_path: str) -> str:
-    """Derive an ID from immutable source identity and the hierarchy path."""
-
-    digest = hashlib.sha256(f"{source_sha256}\0{instance_path}".encode()).hexdigest()
-    return f"cmp_{digest[:24]}"
 
 
 class ComponentIndex:

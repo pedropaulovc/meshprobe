@@ -16,6 +16,8 @@ from pydantic import (
     model_validator,
 )
 
+from meshprobe.identity import stable_component_id
+
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 PositiveFiniteFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
@@ -25,10 +27,12 @@ type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
 
 
 def normalize_quaternion(value: Quaternion) -> Quaternion:
-    norm = math.sqrt(sum(component * component for component in value))
-    if norm <= 1e-12:
+    scale = max(abs(component) for component in value)
+    if scale <= 1e-12:
         raise ValueError("quaternion must have non-zero magnitude")
-    return cast(Quaternion, tuple(component / norm for component in value))
+    scaled = tuple(component / scale for component in value)
+    norm = math.sqrt(sum(component * component for component in scaled))
+    return cast(Quaternion, tuple(component / scale / norm for component in value))
 
 
 type UnitQuaternion = Annotated[Quaternion, AfterValidator(normalize_quaternion)]
@@ -284,6 +288,13 @@ class SceneManifest(ContractModel):
         if len(paths) != len(self.components):
             raise ValueError("component paths must be unique")
         for component in self.components:
+            expected_id = stable_component_id(self.source_sha256, component.path)
+            if component.id != expected_id:
+                raise ValueError(
+                    f"component {component.path} id must equal stable derivation {expected_id}"
+                )
+            if len(component.child_ids) != len(set(component.child_ids)):
+                raise ValueError(f"component {component.id} child ids must be unique")
             if component.parent_id is not None and component.parent_id not in by_id:
                 raise ValueError(f"unknown parent id: {component.parent_id}")
             if (
