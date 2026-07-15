@@ -26,15 +26,15 @@ exist. Counts and test names refer to the current branch.
 | Worker crash recovery and accepted-state replay | Complete | import and state replay integration tests |
 | Focused 3x3 contact sheet | Complete | nine manifested panels, component-mask visibility, iterative blocker peeling, stop metrics, callouts, and legend |
 | Custom sheet recipes | Complete | per-panel absolute/orbit cameras, projection, focal length, illumination, fixed-pose studies, and dolly zoom |
-| Bounded request budgets | Partial | operation/render/pixel/output accounting exists; reserve output bytes before render |
+| Bounded request budgets | Complete | broker reserves call, render, pixel, and worst-case output bytes before dispatch; overruns are discarded and tested |
 | Procedural and curated eval corpus | Complete | 672 public models and 2,528 public episodes; private manifest remains separately generated |
-| Deterministic semantic, state, evidence, safety, and budget gates | Partial | gates exist; require same-render state conjunctions and family-specific evidence combinations |
-| Metamorphic variants and channel ablations | Partial | variants exist; add transition-level ablations beyond whole-operation removal |
+| Deterministic semantic, state, evidence, safety, and budget gates | Complete | grouped predicates must hold in one accepted state-changing snapshot and an accepted render with the identical state hash; private masks enforce target, absence, highlight, contrast, projection, lens, and illumination combinations |
+| Metamorphic variants and channel ablations | Complete | all declared variants have relation tests; every required operation, state predicate, grouped render, and evidence combination has a failing ablation |
 | Isolated Linux and Windows runners | Complete | namespaces/cgroups on Linux, AppContainer/Job Object on Windows; both CI paths execute Blender |
-| Golden image and exact mask regression suite | Missing | Add bounded perceptual/edge goldens and exact component-mask fixtures |
-| Truncated protocol and render-crash recovery tests | Partial | process crash and replay are covered; add truncated response and render-phase crash cases |
+| Golden image and exact mask regression suite | Complete | `test_render_goldens.py` enforces bounded Delta E and edge drift plus exact semantic component masks |
+| Truncated protocol and render-crash recovery tests | Complete | controller rejects truncated worker output; real Blender render-phase crash restarts, replays accepted state, and preserves the source |
 | Release-scale threshold proof | Missing | Run a declared agent adapter on the pinned public and private release tiers and publish reports |
-| Clean-install smoke report | Partial | CI installs from the repository and runs smoke tests; publish a release artifact report |
+| Clean-install smoke report | Partial | CI builds and installs wheels into clean uv environments on Linux and Windows; `tools/clean_install_smoke.py` reproduces a pinned tier from that wheel; publish its smoke report |
 
 The completion gate is the conjunction of every row above being complete, the
 full Linux and Windows suites passing on the same commit, and the pinned release

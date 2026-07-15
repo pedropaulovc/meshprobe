@@ -30,6 +30,14 @@ jobs:
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: uv sync --locked --all-groups
+      - name: Verify clean wheel install
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/meshprobe-wheel"
+          uv venv --python "${{ matrix.python-version }}" "$RUNNER_TEMP/meshprobe-clean"
+          uv pip install \
+            --python "$RUNNER_TEMP/meshprobe-clean/bin/python" \
+            "$RUNNER_TEMP"/meshprobe-wheel/meshprobe-*.whl
+          "$RUNNER_TEMP/meshprobe-clean/bin/meshprobe" --help
       - run: uv run pytest
 
   linux:
@@ -85,6 +93,14 @@ jobs:
           echo "$RUNNER_TEMP/blender-5.2.0-linux-x64" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/blender-5.2.0-linux-x64/blender" --version
       - run: uv sync --locked --all-groups
+      - name: Verify clean wheel install
+        run: |
+          uv build --wheel --out-dir "$RUNNER_TEMP/meshprobe-wheel"
+          uv venv --python 3.12 "$RUNNER_TEMP/meshprobe-clean"
+          uv pip install \
+            --python "$RUNNER_TEMP/meshprobe-clean/bin/python" \
+            "$RUNNER_TEMP"/meshprobe-wheel/meshprobe-*.whl
+          "$RUNNER_TEMP/meshprobe-clean/bin/meshprobe" --help
       - run: uv run pytest --cov --cov-report=term-missing
 
   quality:
@@ -154,4 +170,16 @@ jobs:
           $blender.DirectoryName | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
           & $blender.FullName --version
       - run: uv sync --locked --all-groups
+      - name: Verify clean wheel install
+        shell: pwsh
+        run: |
+          $wheelRoot = Join-Path $env:RUNNER_TEMP "meshprobe-wheel"
+          $environment = Join-Path $env:RUNNER_TEMP "meshprobe-clean"
+          uv build --wheel --out-dir $wheelRoot
+          uv venv --python 3.12 $environment
+          $python = Join-Path $environment "Scripts/python.exe"
+          $meshprobe = Join-Path $environment "Scripts/meshprobe.exe"
+          $wheel = (Get-ChildItem $wheelRoot -Filter "meshprobe-*.whl").FullName
+          uv pip install --python $python $wheel
+          & $meshprobe --help
       - run: uv run pytest
