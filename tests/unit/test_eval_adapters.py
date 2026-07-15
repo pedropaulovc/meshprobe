@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,11 +18,20 @@ from meshprobe.evals.generators import (
 )
 from meshprobe.evals.harness.adapters import CliJsonlAdapter, McpStdioAdapter
 from meshprobe.evals.harness.broker import EvaluationBroker
+from meshprobe.evals.harness.sandbox import visible_input_path
 from meshprobe.evals.schemas import EpisodeBudgets
 from meshprobe.protocol import Command
 from meshprobe.service import CommandResponse
 
-pytestmark = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is required")
+pytestmark = pytest.mark.skipif(
+    os.name != "nt" and shutil.which("bwrap") is None,
+    reason="a platform sandbox is required",
+)
+
+
+def agent_command(script: Path) -> tuple[str, str]:
+    executable = sys.executable if os.name == "nt" else "/usr/bin/python3"
+    return executable, visible_input_path(script)
 
 
 class AdapterService:
@@ -70,7 +81,7 @@ def test_cli_adapter_runs_interactive_tool_calls_and_submission(tmp_path: Path) 
         budgets=episode.spec.budgets,
     )
 
-    run = CliJsonlAdapter(("/usr/bin/python3", "/workspace/input/agent.py")).run(
+    run = CliJsonlAdapter(agent_command(script)).run(
         spec=episode.spec,
         broker=broker,
         input_root=public,
@@ -100,7 +111,7 @@ def test_cli_adapter_reports_invalid_protocol_without_tool_execution(tmp_path: P
         budgets=episode.spec.budgets,
     )
 
-    run = CliJsonlAdapter(("/usr/bin/python3", "/workspace/input/invalid.py")).run(
+    run = CliJsonlAdapter(agent_command(script)).run(
         spec=episode.spec,
         broker=broker,
         input_root=public,
@@ -150,7 +161,7 @@ def test_mcp_adapter_serves_same_broker_contract_and_accepts_submission(tmp_path
         budgets=episode.spec.budgets,
     )
 
-    run = McpStdioAdapter(("/usr/bin/python3", "/workspace/input/mcp_agent.py")).run(
+    run = McpStdioAdapter(agent_command(script)).run(
         spec=episode.spec,
         broker=broker,
         input_root=public,
@@ -300,7 +311,7 @@ def test_agent_adapters_reject_empty_commands_and_enforce_wall_timeout(tmp_path:
         budgets=spec.budgets,
     )
 
-    run = CliJsonlAdapter(("/usr/bin/python3", "/workspace/input/slow.py")).run(
+    run = CliJsonlAdapter(agent_command(script)).run(
         spec=spec,
         broker=broker,
         input_root=public,

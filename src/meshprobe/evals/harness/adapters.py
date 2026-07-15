@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-import selectors
+import queue
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import IO, Annotated, Literal
 
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import LATEST_PROTOCOL_VERSION
@@ -98,6 +100,8 @@ class CliJsonlAdapter:
             process.stdin.flush()
         except (BrokenPipeError, OSError):
             process.wait(timeout=1)
+            if process.returncode is None:
+                raise RuntimeError("agent process ended without a return code") from None
             stderr = process.stderr.read(_MAX_STREAM_BYTES)
             stdout = process.stdout.read(_MAX_STREAM_BYTES).encode("utf-8", errors="replace")
             _remainder, messages = _complete_lines(stdout)
@@ -119,9 +123,7 @@ class CliJsonlAdapter:
                 timed_out=False,
                 protocol_error=startup_error,
             )
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        streams = _PipeStreams(process.stdout, process.stderr)
         stdout_buffer = b""
         stderr_buffer = b""
         submission: EpisodeSubmission | None = None
@@ -135,33 +137,32 @@ class CliJsonlAdapter:
                     timed_out = True
                     protocol_error = "agent exceeded the episode wall-time budget"
                     break
-                if process.poll() is not None and not selector.select(timeout=0):
+                if process.poll() is not None and streams.drained:
                     protocol_error = "agent exited before submitting an answer"
                     break
-                ready = selector.select(timeout=min(remaining, 0.25))
-                for key, _ in ready:
-                    chunk = os.read(key.fd, 4096)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    if key.data == "stderr":
-                        stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
-                        continue
-                    stdout_buffer += chunk
-                    if len(stdout_buffer) > _MAX_STREAM_BYTES:
-                        protocol_error = "agent protocol line exceeded 1000000 bytes"
+                event = streams.read(timeout=min(remaining, 0.25))
+                if event is None:
+                    continue
+                kind, chunk = event
+                if chunk is None:
+                    continue
+                if kind == "stderr":
+                    stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
+                    continue
+                stdout_buffer += chunk
+                if len(stdout_buffer) > _MAX_STREAM_BYTES:
+                    protocol_error = "agent protocol line exceeded 1000000 bytes"
+                    break
+                stdout_buffer, messages = _complete_lines(stdout_buffer)
+                for raw_message in messages:
+                    submission, protocol_error = self._handle_message(
+                        raw_message,
+                        process.stdin,
+                        broker,
+                    )
+                    if submission is not None or protocol_error is not None:
                         break
-                    stdout_buffer, messages = _complete_lines(stdout_buffer)
-                    for raw_message in messages:
-                        submission, protocol_error = self._handle_message(
-                            raw_message,
-                            process.stdin,
-                            broker,
-                        )
-                        if submission is not None or protocol_error is not None:
-                            break
         finally:
-            selector.close()
             if process.stdin is not None:
                 process.stdin.close()
             if process.poll() is None:
@@ -169,9 +170,12 @@ class CliJsonlAdapter:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     isolated.terminate()
-            if process.stderr is not None:
-                remainder = process.stderr.read(_MAX_STREAM_BYTES).encode("utf-8", errors="replace")
-                stderr_buffer = (stderr_buffer + remainder)[-_MAX_STREAM_BYTES:]
+            streams.join()
+            for kind, chunk in streams.pending():
+                if chunk is not None and kind == "stderr":
+                    stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
+        if process.returncode is None:
+            raise RuntimeError("agent process ended without a return code")
         return AdapterRun(
             submission=submission,
             returncode=process.returncode,
@@ -246,9 +250,7 @@ class McpStdioAdapter:
         if process.stdin is None or process.stdout is None or process.stderr is None:
             isolated.terminate()
             raise RuntimeError("isolated process did not expose standard streams")
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        streams = _PipeStreams(process.stdout, process.stderr)
         stdout_buffer = b""
         stderr_buffer = b""
         submission: EpisodeSubmission | None = None
@@ -263,36 +265,35 @@ class McpStdioAdapter:
                     timed_out = True
                     protocol_error = "agent exceeded the episode wall-time budget"
                     break
-                if process.poll() is not None and not selector.select(timeout=0):
+                if process.poll() is not None and streams.drained:
                     protocol_error = "agent exited before submitting an answer"
                     break
-                ready = selector.select(timeout=min(remaining, 0.25))
-                for key, _ in ready:
-                    chunk = os.read(key.fd, 4096)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    if key.data == "stderr":
-                        stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
-                        continue
-                    stdout_buffer += chunk
-                    if len(stdout_buffer) > _MAX_STREAM_BYTES:
-                        protocol_error = "agent protocol line exceeded 1000000 bytes"
+                event = streams.read(timeout=min(remaining, 0.25))
+                if event is None:
+                    continue
+                kind, chunk = event
+                if chunk is None:
+                    continue
+                if kind == "stderr":
+                    stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
+                    continue
+                stdout_buffer += chunk
+                if len(stdout_buffer) > _MAX_STREAM_BYTES:
+                    protocol_error = "agent protocol line exceeded 1000000 bytes"
+                    break
+                stdout_buffer, messages = _complete_lines(stdout_buffer)
+                for raw_message in messages:
+                    submission, message_error, initialized = self._handle_message(
+                        raw_message,
+                        process.stdin,
+                        broker,
+                        spec,
+                        initialized,
+                    )
+                    protocol_error = message_error
+                    if submission is not None or protocol_error is not None:
                         break
-                    stdout_buffer, messages = _complete_lines(stdout_buffer)
-                    for raw_message in messages:
-                        submission, message_error, initialized = self._handle_message(
-                            raw_message,
-                            process.stdin,
-                            broker,
-                            spec,
-                            initialized,
-                        )
-                        protocol_error = message_error
-                        if submission is not None or protocol_error is not None:
-                            break
         finally:
-            selector.close()
             if process.stdin is not None:
                 process.stdin.close()
             if process.poll() is None:
@@ -300,9 +301,12 @@ class McpStdioAdapter:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     isolated.terminate()
-            if process.stderr is not None:
-                remainder = process.stderr.read(_MAX_STREAM_BYTES).encode("utf-8", errors="replace")
-                stderr_buffer = (stderr_buffer + remainder)[-_MAX_STREAM_BYTES:]
+            streams.join()
+            for kind, chunk in streams.pending():
+                if chunk is not None and kind == "stderr":
+                    stderr_buffer = (stderr_buffer + chunk)[-_MAX_STREAM_BYTES:]
+        if process.returncode is None:
+            raise RuntimeError("agent process ended without a return code")
         return AdapterRun(
             submission=submission,
             returncode=process.returncode,
@@ -471,6 +475,66 @@ def _write_rpc(stream: object, payload: object) -> None:
         raise RuntimeError("agent stdin became unavailable")
     stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
     stream.flush()
+
+
+type _StreamEvent = tuple[Literal["stdout", "stderr"], bytes | None]
+
+
+class _PipeStreams:
+    """Read subprocess pipes on threads so Windows and POSIX share one loop."""
+
+    def __init__(self, stdout: IO[str], stderr: IO[str]) -> None:
+        self._events: queue.Queue[_StreamEvent] = queue.Queue()
+        self._open = {"stdout", "stderr"}
+        self._lock = threading.Lock()
+        self._threads = (
+            threading.Thread(target=self._pump, args=("stdout", stdout), daemon=True),
+            threading.Thread(target=self._pump, args=("stderr", stderr), daemon=True),
+        )
+        for thread in self._threads:
+            thread.start()
+
+    @property
+    def drained(self) -> bool:
+        with self._lock:
+            return not self._open and self._events.empty()
+
+    def read(self, timeout: float) -> _StreamEvent | None:
+        try:
+            event = self._events.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        self._accept(event)
+        return event
+
+    def pending(self) -> tuple[_StreamEvent, ...]:
+        events: list[_StreamEvent] = []
+        while True:
+            try:
+                event = self._events.get_nowait()
+            except queue.Empty:
+                return tuple(events)
+            self._accept(event)
+            events.append(event)
+
+    def join(self) -> None:
+        for thread in self._threads:
+            thread.join(timeout=2)
+
+    def _pump(self, kind: Literal["stdout", "stderr"], stream: IO[str]) -> None:
+        try:
+            with contextlib.suppress(OSError):
+                while chunk := os.read(stream.fileno(), 4096):
+                    self._events.put((kind, chunk))
+        finally:
+            self._events.put((kind, None))
+
+    def _accept(self, event: _StreamEvent) -> None:
+        kind, chunk = event
+        if chunk is not None:
+            return
+        with self._lock:
+            self._open.discard(kind)
 
 
 def _complete_lines(buffer: bytes) -> tuple[bytes, tuple[bytes, ...]]:

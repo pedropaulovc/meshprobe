@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
 
 from meshprobe.controller import BlenderWorkerError
+from meshprobe.evals.harness.sandbox import visible_input_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceEvent, TraceStatus
 from meshprobe.protocol import (
     Command,
@@ -104,7 +105,7 @@ class EvaluationBroker:
 
     @property
     def visible_model_path(self) -> str:
-        return f"/workspace/input/{self._model_path.name}"
+        return visible_input_path(self._model_path)
 
     @property
     def events(self) -> tuple[TraceEvent, ...]:
@@ -220,7 +221,7 @@ class EvaluationBroker:
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise _RejectedCommand(
                 "broker.output_path",
-                "render output must be a relative path under /workspace/artifacts",
+                "render output must be a relative path under the assigned artifact directory",
             )
         resolved = (self._artifact_root / Path(*relative.parts)).resolve()
         if not resolved.is_relative_to(self._artifact_root):
@@ -294,5 +295,7 @@ def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) 
         raise ValueError("private evaluator path appeared in a public result")
     if candidate.is_absolute() and candidate.is_relative_to(artifact_root):
         relative = candidate.relative_to(artifact_root).as_posix()
+        if os.name == "nt":
+            return str(candidate)
         return f"/workspace/artifacts/{relative}"
     return value

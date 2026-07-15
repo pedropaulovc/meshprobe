@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -823,6 +824,10 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     assert snapshot_source(source) == before
 
 
+@pytest.mark.skipif(
+    os.name == "nt" and shutil.which("nvidia-smi") is None,
+    reason="the Windows CI runner has no CUDA device",
+)
 def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     output = tmp_path / "cycles.png"

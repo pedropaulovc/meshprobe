@@ -1,19 +1,41 @@
-"""Linux process isolation for untrusted evaluation agents."""
+"""Platform process isolation for untrusted evaluation agents."""
 
 from __future__ import annotations
 
 import os
-import resource
 import shutil
 import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, Protocol
+
+if os.name == "posix":
+    import resource
 
 
 class SandboxUnavailable(RuntimeError):
     """The host cannot provide the required network and filesystem isolation."""
+
+
+class InteractiveProcess(Protocol):
+    """Process surface shared by subprocess.Popen and the Windows launcher."""
+
+    returncode: int | None
+    stdin: IO[str] | None
+    stdout: IO[str] | None
+    stderr: IO[str] | None
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def kill(self) -> None: ...
+
+    def communicate(
+        self, input: str | None = None, timeout: float | None = None
+    ) -> tuple[str, str]: ...
 
 
 @dataclass(frozen=True)
@@ -49,7 +71,7 @@ class IsolatedProcessResult:
 @dataclass(frozen=True)
 class IsolatedProcess:
     command: tuple[str, ...]
-    process: subprocess.Popen[str]
+    process: InteractiveProcess
     started_monotonic: float
     wall_seconds: float
 
@@ -58,6 +80,24 @@ class IsolatedProcess:
             return
         self.process.kill()
         self.process.wait(timeout=2)
+
+
+def visible_input_path(path: Path) -> str:
+    """Return the assigned input path as seen inside the platform sandbox."""
+
+    resolved = path.expanduser().resolve(strict=True)
+    if os.name == "nt":
+        return str(resolved)
+    return f"/workspace/input/{resolved.name}"
+
+
+def visible_artifact_path(path: Path) -> str:
+    """Return one artifact path as seen inside the platform sandbox."""
+
+    resolved = path.expanduser().resolve()
+    if os.name == "nt":
+        return str(resolved)
+    return f"/workspace/artifacts/{resolved.name}"
 
 
 def run_isolated(
@@ -88,6 +128,8 @@ def run_isolated(
         timed_out = True
         isolated.terminate()
         stdout, stderr = process.communicate()
+    if process.returncode is None:
+        raise RuntimeError("isolated process completed without a return code")
     return IsolatedProcessResult(
         command=command,
         returncode=process.returncode,
@@ -116,9 +158,29 @@ def spawn_isolated(
     if artifacts == public or artifacts.is_relative_to(public) or public.is_relative_to(artifacts):
         raise ValueError("input and artifact roots must be disjoint")
     artifacts.mkdir(parents=True, exist_ok=True)
-    executable = _bubblewrap_path(bubblewrap)
-    active_environment = environment or {}
+    active_environment = environment if environment is not None else {}
     active_limits = limits or IsolationLimits()
+    if os.name == "nt":
+        if bubblewrap is not None:
+            raise ValueError("bubblewrap cannot be configured on Windows")
+        from meshprobe.evals.harness.windows_sandbox import spawn_windows
+
+        windows_process = spawn_windows(
+            command,
+            input_root=public,
+            artifact_root=artifacts,
+            environment=active_environment,
+            limits=active_limits,
+        )
+        return IsolatedProcess(
+            command=command,
+            process=windows_process,
+            started_monotonic=time.monotonic(),
+            wall_seconds=active_limits.wall_seconds,
+        )
+    if os.name != "posix":
+        raise SandboxUnavailable(f"unsupported sandbox host: {os.name}")
+    executable = _bubblewrap_path(bubblewrap)
     existing_user_tasks = _user_task_count()
     sandbox_command = _sandbox_command(executable, command, public, artifacts, active_environment)
     started = time.monotonic()
@@ -234,6 +296,8 @@ def _user_task_count() -> int:
 
 
 def _set_limits(limits: IsolationLimits, existing_user_tasks: int) -> None:
+    if os.name != "posix":
+        raise RuntimeError("POSIX resource limits requested on a non-POSIX host")
     resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
     resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
     resource.setrlimit(resource.RLIMIT_FSIZE, (limits.output_bytes, limits.output_bytes))
