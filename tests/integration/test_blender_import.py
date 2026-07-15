@@ -440,6 +440,31 @@ def test_open_cli_reports_source_bundle_errors(tmp_path: Path) -> None:
     assert "invalid glTF JSON" in result.output
 
 
+def test_run_cli_keeps_one_session_and_preserves_source(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    before = snapshot_source(source)
+    commands = tmp_path / "inspection.jsonl"
+    commands.write_text(
+        "\n".join(
+            (
+                json.dumps({"request_id": "open", "op": "scene.open", "source_path": str(source)}),
+                json.dumps({"request_id": "describe", "op": "scene.describe"}),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["run", str(commands)])
+
+    assert result.exit_code == 0
+    responses = json.loads(result.stdout)["results"]
+    assert [response["op"] for response in responses] == ["scene.open", "scene.describe"]
+    assert responses[0]["result"]["source_sha256"] == before.sha256
+    assert responses[1]["result"]["session"]["state_sha256"]
+    assert snapshot_source(source) == before
+
+
 @pytest.mark.parametrize("source_format", ["obj", "stl"])
 def test_worker_imports_flat_mesh_formats(tmp_path: Path, source_format: str) -> None:
     source = build_flat_mesh(tmp_path, source_format)

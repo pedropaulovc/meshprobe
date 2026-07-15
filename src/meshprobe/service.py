@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Self
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
 from meshprobe.controller import BlenderController
 from meshprobe.protocol import Command, SceneOpenCommand
@@ -17,7 +17,7 @@ class CommandResponse(BaseModel):
 
     request_id: str
     op: str
-    result: Any
+    result: JsonValue
 
 
 class MeshProbeService:
@@ -50,7 +50,8 @@ class MeshProbeService:
         result = self._controller.execute(command)
         if hasattr(result, "model_dump"):
             result = result.model_dump(mode="json")
-        return CommandResponse(request_id=command.request_id, op=command.op, result=result)
+        serialized: JsonValue = TypeAdapter(JsonValue).validate_python(result)
+        return CommandResponse(request_id=command.request_id, op=command.op, result=serialized)
 
     def close(self) -> None:
         self._controller.close()
