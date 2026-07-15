@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.evals.harness.adapters import AdapterRun, CliJsonlAdapter
@@ -62,6 +64,25 @@ class AnswerAdapter:
             timed_out=False,
             protocol_error=None,
         )
+
+
+class FailingAdapter:
+    command = ("test-failing-agent",)
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(
+        self,
+        *,
+        spec: EpisodeSpec,
+        broker: EvaluationBroker,
+        input_root: Path,
+        artifact_root: Path,
+    ) -> AdapterRun:
+        del spec, broker, input_root, artifact_root
+        self.calls += 1
+        raise RuntimeError("adapter failed")
 
 
 def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
@@ -127,8 +148,22 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
 
     assert first.completed == 4
     assert first.report_path.is_file()
+    assert first.report.provenance.workers == 2
     assert second == first
     assert adapter.calls == 4
+
+    failing = FailingAdapter()
+    with pytest.raises(RuntimeError, match="adapter failed"):
+        run_tier(
+            corpus_root=corpus.root,
+            tier_manifest_path=tier_path,
+            adapter=failing,
+            output_root=tmp_path / "failed-runs",
+            service_factory=NoopService,
+            runtime_provider=lambda: tier.runtime,
+            workers=2,
+        )
+    assert failing.calls <= 2
 
 
 def test_run_identity_changes_when_agent_script_changes(tmp_path: Path) -> None:
@@ -140,7 +175,9 @@ def test_run_identity_changes_when_agent_script_changes(tmp_path: Path) -> None:
     agent.write_text("print('first')", encoding="utf-8")
     adapter = CliJsonlAdapter((sys.executable, str(agent)))
     first = _run_identity(corpus_manifest, tier_manifest, adapter)
+    different_workers = _run_identity(corpus_manifest, tier_manifest, adapter, workers=2)
 
     agent.write_text("print('second')", encoding="utf-8")
 
+    assert different_workers != first
     assert _run_identity(corpus_manifest, tier_manifest, adapter) != first

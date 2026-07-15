@@ -44,6 +44,7 @@ class QualificationProvenance(ReportModel):
     thresholds: PassThresholds
     adapter: str
     adapter_identity_sha256: Sha256
+    workers: int = Field(ge=1, le=64)
 
 
 class QualificationReport(ReportModel):
@@ -143,6 +144,7 @@ def report_markdown(report: QualificationReport) -> str:
         f"Corpus: `{report.provenance.corpus_version}`",
         f"Tier manifest: `{report.provenance.tier_manifest_sha256}`",
         f"Adapter: `{report.provenance.adapter}` (`{report.provenance.adapter_identity_sha256}`)",
+        f"Workers: {report.provenance.workers}",
         f"Runtime: MeshProbe {report.provenance.runtime.meshprobe_version}, "
         f"Blender {report.provenance.runtime.blender_version}",
         "",

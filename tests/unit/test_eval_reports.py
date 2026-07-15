@@ -63,6 +63,7 @@ def provenance(thresholds: PassThresholds) -> QualificationProvenance:
         thresholds=thresholds,
         adapter="tests.ReferenceAgent",
         adapter_identity_sha256="4" * 64,
+        workers=3,
     )
 
 
@@ -97,6 +98,7 @@ def test_reports_split_every_required_dimension_and_enforce_thresholds(tmp_path:
     assert report.failure_classes == {"answer": 1}
     assert report.provenance.tier is CorpusTier.SMOKE
     assert report.provenance.adapter_identity_sha256 == "4" * 64
+    assert report.provenance.workers == 3
     assert "full_stack" in report.threshold_failures
     assert "operation:render.image" in report.threshold_failures
 

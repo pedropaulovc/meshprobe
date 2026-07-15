@@ -21,7 +21,8 @@
       "per_operation": 0.75
     },
     "adapter": "meshprobe.evals.harness.adapters.ReferenceAgentAdapter",
-    "adapter_identity_sha256": "72f3db6288a2cb73d228bc865ceea1f1fdefa73effaef01a92a80cf9c166b3ae"
+    "adapter_identity_sha256": "51e3796b77935307572f4bcd3aec0f3bf014f717d053affb1dcb94f7965f9ca8",
+    "workers": 8
   },
   "overall": {
     "episodes": 40,

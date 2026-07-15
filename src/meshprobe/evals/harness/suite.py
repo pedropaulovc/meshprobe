@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,7 +57,12 @@ def run_tier(
     run_root = output_root.expanduser().resolve() / str(tier.tier)
     run_root.mkdir(parents=True, exist_ok=True)
     checkpoint_path = run_root / "checkpoint.json"
-    identity = _run_identity(corpus.root / "public" / "manifest.json", tier_path, adapter)
+    identity = _run_identity(
+        corpus.root / "public" / "manifest.json",
+        tier_path,
+        adapter,
+        workers=workers,
+    )
     completed = _read_checkpoint(checkpoint_path, identity)
     runs_root = run_root / "episodes"
     runs_root.mkdir(exist_ok=True)
@@ -91,19 +96,40 @@ def run_tier(
         return episode_id
 
     if workers == 1:
-        finished = map(execute, pending)
-        for episode_id in finished:
+        finished_ids = map(execute, pending)
+        for episode_id in finished_ids:
             completed.add(episode_id)
             _write_checkpoint(checkpoint_path, identity, completed)
     else:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="meshprobe-tier") as pool:
-            futures: dict[Future[str], str] = {
-                pool.submit(execute, episode_id): episode_id for episode_id in pending
-            }
-            for future in as_completed(futures):
-                episode_id = future.result()
-                completed.add(episode_id)
-                _write_checkpoint(checkpoint_path, identity, completed)
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="meshprobe-tier")
+        pending_ids = iter(pending)
+        futures: dict[Future[str], str] = {}
+
+        def submit_next() -> bool:
+            episode_id = next(pending_ids, None)
+            if episode_id is None:
+                return False
+            futures[pool.submit(execute, episode_id)] = episode_id
+            return True
+
+        for _ in range(workers):
+            if not submit_next():
+                break
+        try:
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    futures.pop(future)
+                    episode_id = future.result()
+                    completed.add(episode_id)
+                    _write_checkpoint(checkpoint_path, identity, completed)
+                    submit_next()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown()
 
     cases = tuple(
         _load_scored_episode(corpus.root, runs_root, episode_id) for episode_id in tier.episodes
@@ -120,6 +146,7 @@ def run_tier(
             thresholds=tier.thresholds,
             adapter=f"{type(adapter).__module__}.{type(adapter).__qualname__}",
             adapter_identity_sha256=identity,
+            workers=workers,
         ),
     )
     report_path = run_root / "qualification-report.json"
@@ -134,7 +161,13 @@ def run_tier(
     )
 
 
-def _run_identity(corpus_manifest: Path, tier_manifest: Path, adapter: AgentAdapter) -> str:
+def _run_identity(
+    corpus_manifest: Path,
+    tier_manifest: Path,
+    adapter: AgentAdapter,
+    *,
+    workers: int = 1,
+) -> str:
     command = getattr(adapter, "command", None)
     identity_paths = list(getattr(adapter, "identity_paths", ()))
     if isinstance(command, tuple):
@@ -144,6 +177,7 @@ def _run_identity(corpus_manifest: Path, tier_manifest: Path, adapter: AgentAdap
         "tier_manifest_sha256": sha256_file(tier_manifest),
         "adapter_type": f"{type(adapter).__module__}.{type(adapter).__qualname__}",
         "adapter_command": list(command) if isinstance(command, tuple) else repr(adapter),
+        "workers": workers,
         "agent_files": {
             str(path.expanduser().resolve()): sha256_file(path.expanduser().resolve(strict=True))
             for path in sorted(set(identity_paths))
