@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from meshprobe.evals.schemas import (
     EpisodeSubmission,
     GateStatus,
     Operation,
+    StatePredicate,
     TraceEvent,
     TraceStatus,
 )
@@ -291,6 +293,30 @@ def evidence_render(
     )
 
 
+def break_state_predicate(
+    payload: object,
+    predicate: StatePredicate,
+    component_id: str | None,
+) -> object:
+    assert isinstance(payload, dict)
+    broken = deepcopy(payload)
+    if predicate is StatePredicate.PROJECTION_MODE:
+        broken["camera"]["projection"]["mode"] = "invalidated"
+    elif predicate is StatePredicate.FOCAL_LENGTH_MM:
+        broken["camera"]["projection"]["focal_length_mm"] = 17.0
+    elif predicate is StatePredicate.ILLUMINATION_PRESET:
+        broken["illumination"]["preset"] = "invalidated"
+    elif predicate is StatePredicate.COMPONENT_DISPLAY:
+        assert component_id is not None
+        broken["components"][component_id]["display"] = "shown"
+    elif predicate is StatePredicate.COMPONENT_MARK:
+        assert component_id is not None
+        broken["components"][component_id]["mark"] = "unmarked"
+    else:
+        raise AssertionError(predicate)
+    return broken
+
+
 def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) -> None:
     model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
     episode = generate_episodes(model)[1]
@@ -448,6 +474,48 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         )
         state_gate = next(gate for gate in reduced_report.gates if gate.gate == "state")
         assert state_gate.status is GateStatus.FAIL, group_name
+
+    for requirement in episode.ground_truth.state_requirements:
+        if requirement.state_group is None:
+            continue
+        state_hash = group_state_hashes[requirement.state_group]
+        component_id = (
+            model.component_ids[requirement.component_role]
+            if requirement.component_role is not None
+            else None
+        )
+        broken_trace = tuple(
+            event.model_copy(
+                update={
+                    "result": break_state_predicate(
+                        event.result,
+                        requirement.predicate,
+                        component_id,
+                    )
+                }
+            )
+            if isinstance(event.result, dict)
+            and event.result.get("state_sha256") == state_hash
+            and event.operation is not Operation.RENDER_IMAGE
+            else event
+            for event in trace
+        )
+        broken_report = score_episode(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=EpisodeSubmission(
+                    episode_id=episode.spec.episode_id,
+                    answer=episode.ground_truth.answer,
+                ),
+                trace=broken_trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                renders=(perspective, raking_left, raking_right, backlit),
+            )
+        )
+        state_gate = next(gate for gate in broken_report.gates if gate.gate == "state")
+        assert state_gate.status is GateStatus.FAIL, requirement
 
     perspective_raking_session = perspective.session.model_copy(
         update={
