@@ -46,6 +46,20 @@ class IsolatedProcessResult:
     timed_out: bool
 
 
+@dataclass(frozen=True)
+class IsolatedProcess:
+    command: tuple[str, ...]
+    process: subprocess.Popen[str]
+    started_monotonic: float
+    wall_seconds: float
+
+    def terminate(self) -> None:
+        if self.process.poll() is not None:
+            return
+        self.process.kill()
+        self.process.wait(timeout=2)
+
+
 def run_isolated(
     command: tuple[str, ...],
     *,
@@ -57,6 +71,43 @@ def run_isolated(
     bubblewrap: str | Path | None = None,
 ) -> IsolatedProcessResult:
     """Run one agent with read-only inputs, writable artifacts, and no network."""
+
+    isolated = spawn_isolated(
+        command,
+        input_root=input_root,
+        artifact_root=artifact_root,
+        environment=environment,
+        limits=limits,
+        bubblewrap=bubblewrap,
+    )
+    process = isolated.process
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(stdin, timeout=isolated.wall_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        isolated.terminate()
+        stdout, stderr = process.communicate()
+    return IsolatedProcessResult(
+        command=command,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        elapsed_seconds=time.monotonic() - isolated.started_monotonic,
+        timed_out=timed_out,
+    )
+
+
+def spawn_isolated(
+    command: tuple[str, ...],
+    *,
+    input_root: Path,
+    artifact_root: Path,
+    environment: Mapping[str, str] | None = None,
+    limits: IsolationLimits | None = None,
+    bubblewrap: str | Path | None = None,
+) -> IsolatedProcess:
+    """Start an interactive isolated process with piped standard streams."""
 
     if not command or not command[0]:
         raise ValueError("isolated command cannot be empty")
@@ -81,21 +132,13 @@ def run_isolated(
         errors="replace",
         start_new_session=True,
         preexec_fn=lambda: _set_limits(active_limits, existing_user_processes),
+        bufsize=1,
     )
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(stdin, timeout=active_limits.wall_seconds)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        process.kill()
-        stdout, stderr = process.communicate()
-    return IsolatedProcessResult(
+    return IsolatedProcess(
         command=command,
-        returncode=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-        elapsed_seconds=time.monotonic() - started,
-        timed_out=timed_out,
+        process=process,
+        started_monotonic=started,
+        wall_seconds=active_limits.wall_seconds,
     )
 
 

@@ -40,6 +40,7 @@ class OracleInputs:
     renders: tuple[RenderManifest, ...] = ()
     contact_sheets: tuple[ContactSheetManifest, ...] = ()
     public_errors: tuple[str, ...] = ()
+    wall_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -394,7 +395,8 @@ def _metrics(inputs: OracleInputs) -> EpisodeMetrics:
         artifact_bytes[sheet.sheet.path] = sheet.sheet.bytes
     starts = [event.started_monotonic for event in inputs.trace]
     ends = [event.started_monotonic + event.elapsed_seconds for event in inputs.trace]
-    wall_seconds = max(ends) - min(starts) if starts else 0.0
+    trace_wall_seconds = max(ends) - min(starts) if starts else 0.0
+    wall_seconds = inputs.wall_seconds if inputs.wall_seconds is not None else trace_wall_seconds
     return EpisodeMetrics(
         tool_calls=len(inputs.trace),
         renders=len(unique_renders),
