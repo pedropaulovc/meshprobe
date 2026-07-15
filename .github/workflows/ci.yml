@@ -64,7 +64,21 @@ jobs:
           deployment-choice: "1"
       - name: Install Blender 5.2 LTS
         run: |
-          choco install blender --version=5.2.0 --yes --no-progress
+          $installed = $false
+          foreach ($attempt in 1..3) {
+            choco install blender --version=5.2.0 --yes --no-progress
+            if ($LASTEXITCODE -eq 0) {
+              $installed = $true
+              break
+            }
+            Write-Warning "Blender install attempt $attempt failed with exit code $LASTEXITCODE"
+            if ($attempt -lt 3) {
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $installed) {
+            throw "Chocolatey failed to install Blender 5.2.0 after 3 attempts"
+          }
           $blender = Get-ChildItem `
             "$env:ProgramFiles\Blender Foundation" `
             -Filter blender.exe -Recurse `
