@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Protocol
 
-if os.name == "posix":
+if os.name == "posix":  # pragma: no cover
     import resource
 
 
@@ -86,7 +86,7 @@ def visible_input_path(path: Path) -> str:
     """Return the assigned input path as seen inside the platform sandbox."""
 
     resolved = path.expanduser().resolve(strict=True)
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover
         return str(resolved)
     return f"/workspace/input/{resolved.name}"
 
@@ -95,7 +95,7 @@ def visible_artifact_path(path: Path) -> str:
     """Return one artifact path as seen inside the platform sandbox."""
 
     resolved = path.expanduser().resolve()
-    if os.name == "nt":
+    if os.name == "nt":  # pragma: no cover
         return str(resolved)
     return f"/workspace/artifacts/{resolved.name}"
 
@@ -178,7 +178,7 @@ def spawn_isolated(
             started_monotonic=time.monotonic(),
             wall_seconds=active_limits.wall_seconds,
         )
-    if os.name != "posix":
+    if os.name != "posix":  # pragma: no cover
         raise SandboxUnavailable(f"unsupported sandbox host: {os.name}")
     executable = _bubblewrap_path(bubblewrap)
     existing_user_tasks = _user_task_count()
@@ -323,7 +323,7 @@ def _user_task_count() -> int:
 
 
 def _set_limits(limits: IsolationLimits, existing_user_tasks: int) -> None:
-    if os.name != "posix":
+    if os.name != "posix":  # pragma: no cover
         raise RuntimeError("POSIX resource limits requested on a non-POSIX host")
     resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds))
     resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))

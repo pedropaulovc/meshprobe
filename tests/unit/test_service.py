@@ -6,7 +6,12 @@ from unittest.mock import create_autospec
 import pytest
 
 from meshprobe.controller import BlenderController
-from meshprobe.protocol import RenderImageCommand, SceneDescribeCommand, SceneOpenCommand
+from meshprobe.protocol import (
+    RenderContactSheetCommand,
+    RenderImageCommand,
+    SceneDescribeCommand,
+    SceneOpenCommand,
+)
 from meshprobe.service import MeshProbeService
 
 
@@ -84,6 +89,33 @@ def test_evaluation_execution_routes_private_render_outputs(tmp_path: Path) -> N
 
     assert response.request_id == "render"
     controller.render_image.assert_called_once_with(  # type: ignore[attr-defined]
+        command,
+        evaluator_output_dir=str(tmp_path / "private"),
+    )
+
+
+def test_evaluation_execution_routes_private_contact_sheet_outputs(tmp_path: Path) -> None:
+    controller = controller_mock()
+    controller.execute.return_value = {}  # type: ignore[attr-defined]
+    controller.render_contact_sheet.return_value = {  # type: ignore[attr-defined]
+        "state_sha256": "b" * 64
+    }
+    service = MeshProbeService(controller=controller)
+    service.execute(SceneOpenCommand(request_id="open", op="scene.open", source_path="fixture.glb"))
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path=str(tmp_path / "sheet.png"),
+        focus_component_ids=("target",),
+    )
+
+    response = service.execute_for_evaluation(
+        command,
+        evaluator_output_dir=str(tmp_path / "private"),
+    )
+
+    assert response.result == {"state_sha256": "b" * 64}
+    controller.render_contact_sheet.assert_called_once_with(  # type: ignore[attr-defined]
         command,
         evaluator_output_dir=str(tmp_path / "private"),
     )
