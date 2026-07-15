@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -13,6 +14,7 @@ import pytest
 from PIL import Image
 from typer.testing import CliRunner
 
+import meshprobe.controller as controller_module
 from meshprobe.cli import app
 from meshprobe.controller import (
     DEFAULT_WORKER_TIMEOUT_SECONDS,
@@ -112,6 +114,54 @@ bpy.ops.export_scene.gltf(
         timeout=30,
     )
     return output
+
+
+def render_crash_blender_wrapper(tmp_path: Path) -> tuple[Path, Path]:
+    blender = shutil.which("blender")
+    assert blender is not None
+    worker = Path(controller_module.__file__).with_name("blender") / "worker.py"
+    patched_worker = tmp_path / "crash_once_worker.py"
+    crash_marker = tmp_path / "render-crashed-once"
+    source = worker.read_text(encoding="utf-8")
+    needle = '    if operation == "render.image":\n        require_session()\n'
+    replacement = (
+        '    if operation == "render.image":\n'
+        f"        crash_marker = Path({str(crash_marker)!r})\n"
+        "        if not crash_marker.exists():\n"
+        "            crash_marker.write_text('render crash', encoding='utf-8')\n"
+        "            os._exit(86)\n"
+        "        require_session()\n"
+    )
+    assert source.count(needle) == 1
+    patched_worker.write_text(source.replace(needle, replacement), encoding="utf-8")
+
+    launcher = tmp_path / "crash_blender_launcher.py"
+    launcher.write_text(
+        "\n".join(
+            (
+                "#!/usr/bin/env python3",
+                "import os",
+                "import sys",
+                f"blender = {blender!r}",
+                f"worker = {str(patched_worker)!r}",
+                "arguments = sys.argv[1:]",
+                "python_index = arguments.index('--python')",
+                "arguments[python_index + 1] = worker",
+                "os.execv(blender, [blender, *arguments])",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        executable = tmp_path / "crash-blender.cmd"
+        executable.write_text(
+            f'@"{sys.executable}" "{launcher}" %*\r\n',
+            encoding="utf-8",
+        )
+        return executable, crash_marker
+    launcher.chmod(0o755)
+    return launcher, crash_marker
 
 
 def build_environment_exr(tmp_path: Path) -> Path:
@@ -492,6 +542,49 @@ def test_controller_restarts_after_worker_crash(tmp_path: Path) -> None:
         recovered = controller.open_scene(source)
 
     assert recovered == expected
+
+
+def test_controller_recovers_from_real_blender_crash_during_render(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    before = snapshot_source(source)
+    executable, crash_marker = render_crash_blender_wrapper(tmp_path)
+    output = tmp_path / "recovered-render.png"
+    with BlenderController(
+        executable=executable,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        first_pid = controller.ready_event["pid"] if controller.ready_event is not None else None
+        target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="highlight",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(output),
+                width=128,
+                height=128,
+                samples=1,
+            )
+        )
+        second_pid = controller.ready_event["pid"] if controller.ready_event is not None else None
+        runtime = controller.request("session.runtime")
+
+    assert crash_marker.read_text(encoding="utf-8") == "render crash"
+    assert first_pid != second_pid
+    assert rendered.color.path == str(output)
+    assert output.is_file()
+    assert rendered.session.components[target].mark is MarkMode.HIGHLIGHTED
+    assert runtime["components"][target]["materials"] == ["MeshProbeMark-highlighted"]
+    assert snapshot_source(source) == before
 
 
 def test_open_cli_emits_valid_manifest(tmp_path: Path) -> None:

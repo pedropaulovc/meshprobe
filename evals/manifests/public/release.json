@@ -8,7 +8,7 @@
     "meshprobe_version": "0.1.0.dev0",
     "protocol_version": 1,
     "blender_version": "5.2.0 LTS",
-    "importer_sha256": "619b6bbebc3914ec69255be195bced4d21d93a45eb41767368dd9d1bb02f3adb",
+    "importer_sha256": "1580a8171fbd4765e5a7ff32c448f99dae9d6080d1c92d8a8b62ef0c31e8b4bd",
     "render_engines": [
       "eevee",
       "cycles"

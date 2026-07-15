@@ -1224,10 +1224,12 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
     original_look = scene.view_settings.look
     original_exposure = scene.view_settings.exposure
     original_gamma = scene.view_settings.gamma
+    original_dither = scene.render.dither_intensity
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     scene.view_settings.exposure = 0.0
     scene.view_settings.gamma = 1.0
+    scene.render.dither_intensity = 0.0
     scene.render.engine = eevee_engine()
     try:
         for obj in other_visibility:
@@ -1264,6 +1266,7 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         scene.view_settings.look = original_look
         scene.view_settings.exposure = original_exposure
         scene.view_settings.gamma = original_gamma
+        scene.render.dither_intensity = original_dither
 
 
 def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) -> int:

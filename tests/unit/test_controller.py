@@ -77,6 +77,10 @@ for line in sys.stdin:
             "result": 1,
         }), flush=True)
         continue
+    if command["op"] == "protocol.truncated":
+        sys.stdout.write('{"request_id":"' + command["request_id"])
+        sys.stdout.flush()
+        os._exit(23)
     result = {"operation": command["op"]}
     print(json.dumps({
         "request_id": command["request_id"],
@@ -174,6 +178,15 @@ def test_worker_nonobject_result_is_rejected(tmp_path: Path) -> None:
         pytest.raises(BlenderWorkerError, match="non-object"),
     ):
         controller.request("protocol.scalar")
+
+
+def test_truncated_worker_response_fails_as_a_crash(tmp_path: Path) -> None:
+    with (
+        BlenderController(executable=make_fake_blender(tmp_path)) as controller,
+        pytest.raises(BlenderWorkerCrashed, match="exited with code 23"),
+    ):
+        controller.request("protocol.truncated")
+    assert any(line.startswith('{"request_id":') for line in controller.logs)
 
 
 def test_open_scene_validates_hash_and_manifest(
