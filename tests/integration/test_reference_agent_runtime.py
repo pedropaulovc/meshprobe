@@ -87,13 +87,18 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
     )
 
     assert result.completed == 3
-    assert result.report.passed_thresholds
+    failures: dict[str, dict[str, object]] = {}
     for episode_id in selected:
         report = EpisodeReport.model_validate_json(
             (result.root / "episodes" / episode_id / "evaluator" / "report.json").read_text(
                 encoding="utf-8"
             )
         )
-        assert report.passed, {
+        if report.passed:
+            continue
+        failures[episode_id] = {
             gate.gate: gate.details for gate in report.gates if gate.status == "fail"
         }
+
+    assert not failures, failures
+    assert result.report.passed_thresholds, result.report.threshold_failures
