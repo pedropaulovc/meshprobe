@@ -62,22 +62,32 @@ jobs:
           version: "26.1.3"
           build-type: release-msvc
           deployment-choice: "1"
-      - name: Install Blender 5.2 LTS
+      - name: Install Blender 5.2 LTS from official release
         run: |
-          $installed = $false
-          foreach ($attempt in 1..3) {
-            choco install blender --version=5.2.0 --yes --no-progress
-            if ($LASTEXITCODE -eq 0) {
-              $installed = $true
-              break
-            }
-            Write-Warning "Blender install attempt $attempt failed with exit code $LASTEXITCODE"
-            if ($attempt -lt 3) {
-              Start-Sleep -Seconds 10
-            }
+          $installer = Join-Path $env:RUNNER_TEMP "blender-5.2.0-windows-x64.msi"
+          curl.exe `
+            --fail `
+            --location `
+            --retry 3 `
+            --retry-all-errors `
+            --retry-delay 10 `
+            --output $installer `
+            "https://download.blender.org/release/Blender5.2/blender-5.2.0-windows-x64.msi"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Official Blender download failed with curl exit code $LASTEXITCODE"
           }
-          if (-not $installed) {
-            throw "Chocolatey failed to install Blender 5.2.0 after 3 attempts"
+          $expected = "8ba59aed79dfc35d65c5e9e0ccc828d618796499483ccdeee0b534a915140606"
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Blender installer checksum mismatch: expected $expected, got $actual"
+          }
+          $installation = Start-Process `
+            msiexec.exe `
+            -ArgumentList @("/i", $installer, "/quiet", "/norestart") `
+            -Wait `
+            -PassThru
+          if ($installation.ExitCode -notin @(0, 1641, 3010)) {
+            throw "Blender installer exited with code $($installation.ExitCode)"
           }
           $blender = Get-ChildItem `
             "$env:ProgramFiles\Blender Foundation" `
