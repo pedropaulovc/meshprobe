@@ -6,12 +6,8 @@ from pathlib import Path
 import pytest
 
 from meshprobe.evals.factory import build_corpus
-from meshprobe.evals.generators import (
-    PRIVATE_GENERATOR_FAMILIES,
-    PUBLIC_GENERATOR_FAMILIES,
-    GeneratorFamily,
-)
-from meshprobe.evals.schemas import CorpusTier, ModelSource, RuntimePin
+from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.evals.schemas import CorpusManifest, CorpusTier, ModelSource, RuntimePin
 from meshprobe.evals.tiers import (
     current_runtime_pin,
     pin_private_tier,
@@ -28,6 +24,15 @@ def runtime_pin() -> RuntimePin:
         importer_sha256="a" * 64,
         render_engines=("eevee", "cycles"),
     )
+
+
+def add_opaque_family(corpus_root: Path) -> None:
+    manifest_path = corpus_root / "public" / "manifest.json"
+    manifest = CorpusManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    updated = manifest.model_copy(
+        update={"generator_families": (*manifest.generator_families, "opaque_family_v2")}
+    )
+    manifest_path.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
 
 
 def test_standard_tiers_are_nested_exact_and_hash_validated(tmp_path: Path) -> None:
@@ -97,18 +102,18 @@ def test_standard_tiers_are_nested_exact_and_hash_validated(tmp_path: Path) -> N
     private_corpus = build_corpus(
         tmp_path / "private-corpus",
         corpus_version="private-v1",
-        families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
         seeds=range(32, 64),
         model_source=ModelSource.PRIVATE,
     )
+    add_opaque_family(private_corpus.root)
     private = pin_private_tier(
         private_corpus.root,
         tmp_path / "private-manifest",
         runtime=runtime_pin(),
     )
     assert private.tier is CorpusTier.PRIVATE
-    assert len(private.episodes) == 2_560
-    assert len(private.model_sha256) == 640
+    assert len(private.episodes) == 2_048
+    assert len(private.model_sha256) == 512
 
 
 def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
@@ -122,32 +127,32 @@ def test_tier_minimums_reject_tiny_corpora(tmp_path: Path) -> None:
         pin_standard_tiers(corpus.root, tmp_path / "standard", runtime=runtime_pin())
     with pytest.raises(ValueError, match="evaluator-private"):
         pin_private_tier(corpus.root, tmp_path / "wrong-source", runtime=runtime_pin())
-    wrong_family = build_corpus(
+    public_only = build_corpus(
         tmp_path / "wrong-family",
         corpus_version="wrong-family-v1",
         families=(GeneratorFamily.HIDDEN_CLIP,),
-        seeds=(0,),
+        seeds=(32,),
         model_source=ModelSource.PRIVATE,
     )
-    with pytest.raises(ValueError, match="released and held-out"):
-        pin_private_tier(wrong_family.root, tmp_path / "wrong-family-pin", runtime=runtime_pin())
+    with pytest.raises(ValueError, match="opaque held-out"):
+        pin_private_tier(public_only.root, tmp_path / "wrong-family-pin", runtime=runtime_pin())
     overlapping = build_corpus(
         tmp_path / "overlapping",
         corpus_version="overlapping-v1",
-        families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
         seeds=(0,),
         model_source=ModelSource.PRIVATE,
     )
+    add_opaque_family(overlapping.root)
     with pytest.raises(ValueError, match="must not overlap"):
         pin_private_tier(overlapping.root, tmp_path / "overlapping-pin", runtime=runtime_pin())
     with pytest.raises(ValueError, match="at least 500 full-stack"):
         private_corpus = build_corpus(
             tmp_path / "private-corpus",
             corpus_version="tiny-private-v1",
-            families=(*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES),
             seeds=(32,),
             model_source=ModelSource.PRIVATE,
         )
+        add_opaque_family(private_corpus.root)
         pin_private_tier(private_corpus.root, tmp_path / "private", runtime=runtime_pin())
 
 

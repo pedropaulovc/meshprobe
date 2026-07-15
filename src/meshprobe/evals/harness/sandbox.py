@@ -8,7 +8,7 @@ import subprocess
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import IO, Protocol
 
 if os.name == "posix":
@@ -220,6 +220,7 @@ def _sandbox_command(
     artifact_root: Path,
     environment: Mapping[str, str],
 ) -> tuple[str, ...]:
+    runtime_root, translated_command = _sandbox_agent_command(command)
     args = [
         str(bubblewrap),
         "--unshare-all",
@@ -266,12 +267,38 @@ def _sandbox_command(
         "LANG",
         "C.UTF-8",
     ]
+    if runtime_root is not None:
+        mount = PurePosixPath("/opt/meshprobe-agent")
+        executable_parent = str(PurePosixPath(translated_command[0]).parent)
+        args.extend(("--ro-bind", str(runtime_root), str(mount)))
+        args.extend(("--setenv", "PATH", f"{executable_parent}:/usr/bin:/bin"))
     for name, value in sorted(environment.items()):
         if not name or "=" in name or "\x00" in name or "\x00" in value:
             raise ValueError(f"invalid sandbox environment entry: {name!r}")
         args.extend(("--setenv", name, value))
-    args.extend(("--", *command))
+    args.extend(("--", *translated_command))
     return tuple(args)
+
+
+def _sandbox_agent_command(command: tuple[str, ...]) -> tuple[Path | None, tuple[str, ...]]:
+    resolved_name = shutil.which(command[0])
+    if resolved_name is None:
+        raise FileNotFoundError(f"agent executable not found: {command[0]}")
+    executable = Path(resolved_name).absolute()
+    try:
+        executable.relative_to("/usr")
+    except ValueError:
+        pass
+    else:
+        return None, (str(executable), *command[1:])
+    runtime_root = executable.parent
+    if runtime_root.name == "bin" and (runtime_root.parent / "pyvenv.cfg").is_file():
+        runtime_root = runtime_root.parent
+    relative_executable = executable.relative_to(runtime_root)
+    translated = PurePosixPath("/opt/meshprobe-agent") / PurePosixPath(
+        relative_executable.as_posix()
+    )
+    return runtime_root, (str(translated), *command[1:])
 
 
 def _user_task_count() -> int:

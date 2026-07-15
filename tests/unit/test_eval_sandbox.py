@@ -98,6 +98,21 @@ def test_sandbox_timeout_terminates_agent(tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_binds_agent_virtualenv_or_checkout_directory(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    runtime = tmp_path / "agent-runtime"
+    runtime.mkdir()
+    agent = runtime / "agent"
+    agent.write_text("#!/usr/bin/python3\nprint('bound-agent')\n", encoding="utf-8")
+    agent.chmod(0o755)
+
+    result = run_isolated((str(agent),), input_root=public, artifact_root=artifacts)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "bound-agent"
+
+
 def test_sandbox_rejects_missing_bubblewrap_and_overlapping_roots(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
     if os.name == "nt":

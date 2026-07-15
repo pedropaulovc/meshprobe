@@ -125,7 +125,13 @@ def test_eval_orchestration_commands_emit_compact_summaries(
         report_path=tmp_path / "report.json",
         report=fake_report,
     )
-    monkeypatch.setattr("meshprobe.cli.run_tier", lambda **kwargs: fake_run)
+    run_arguments: dict[str, object] = {}
+
+    def fake_run_tier(**kwargs: object) -> object:
+        run_arguments.update(kwargs)
+        return fake_run
+
+    monkeypatch.setattr("meshprobe.cli.run_tier", fake_run_tier)
     run = runner.invoke(
         app,
         [
@@ -138,10 +144,16 @@ def test_eval_orchestration_commands_emit_compact_summaries(
             "mcp",
             "--agent-command-json",
             '["/bin/true"]',
+            "--blender",
+            "pinned-blender",
         ],
     )
     assert run.exit_code == 0
     assert json.loads(run.stdout)["passed_thresholds"] is True
+    runtime_provider = run_arguments["runtime_provider"]
+    service_factory = run_arguments["service_factory"]
+    assert callable(runtime_provider)
+    assert callable(service_factory)
 
 
 def test_open_reports_missing_blender(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -57,10 +57,6 @@ class GeneratorFamily(StrEnum):
     COPLANAR_MARKER = "coplanar_marker"
     MISSING_MATERIAL = "missing_material"
     AMBIGUOUS_TWIN = "ambiguous_twin"
-    INTERNAL_BAFFLE = "internal_baffle"
-    ASYMMETRIC_TWIN = "asymmetric_twin"
-    RECESSED_MARK = "recessed_mark"
-    NESTED_SHELL = "nested_shell"
 
 
 PUBLIC_GENERATOR_FAMILIES = (
@@ -81,14 +77,6 @@ PUBLIC_GENERATOR_FAMILIES = (
     GeneratorFamily.MISSING_MATERIAL,
     GeneratorFamily.AMBIGUOUS_TWIN,
 )
-PRIVATE_GENERATOR_FAMILIES = (
-    GeneratorFamily.INTERNAL_BAFFLE,
-    GeneratorFamily.ASYMMETRIC_TWIN,
-    GeneratorFamily.RECESSED_MARK,
-    GeneratorFamily.NESTED_SHELL,
-)
-
-
 class MetamorphicVariant(StrEnum):
     RENAME = "rename"
     RIGID_TRANSFORM = "rigid_transform"
@@ -144,10 +132,6 @@ FAMILY_TASKS: dict[GeneratorFamily, TaskFamily] = {
     GeneratorFamily.COPLANAR_MARKER: TaskFamily.SURFACE_DETAIL,
     GeneratorFamily.MISSING_MATERIAL: TaskFamily.NEGATIVE_AMBIGUOUS,
     GeneratorFamily.AMBIGUOUS_TWIN: TaskFamily.NEGATIVE_AMBIGUOUS,
-    GeneratorFamily.INTERNAL_BAFFLE: TaskFamily.HIDDEN_GEOMETRY,
-    GeneratorFamily.ASYMMETRIC_TWIN: TaskFamily.SPATIAL_RELATIONSHIP,
-    GeneratorFamily.RECESSED_MARK: TaskFamily.SURFACE_DETAIL,
-    GeneratorFamily.NESTED_SHELL: TaskFamily.OCCLUSION_REASONING,
 }
 
 _ADJECTIVES = (
@@ -215,7 +199,6 @@ def build_model(
     if family in {
         GeneratorFamily.DUPLICATE_NAME,
         GeneratorFamily.AMBIGUOUS_TWIN,
-        GeneratorFamily.ASYMMETRIC_TWIN,
     }:
         names["distractor"] = names["idler"]
 
@@ -352,8 +335,6 @@ def build_model(
         )
     )
     cover_y = -1.15 if family is not GeneratorFamily.AXIAL_GAP else -0.75
-    if family is GeneratorFamily.INTERNAL_BAFFLE:
-        cover_y = -0.45
     scene.add(
         ComponentSpec(
             "cover",
@@ -377,8 +358,6 @@ def build_model(
     arrow_depth = 0.002 if family is GeneratorFamily.COPLANAR_MARKER else 0.015
     if family in {GeneratorFamily.STAMPED_ARROW, GeneratorFamily.LOW_CONTRAST_RELIEF}:
         arrow_depth = 0.007
-    if family is GeneratorFamily.RECESSED_MARK:
-        arrow_depth = 0.003
     scene.add(
         ComponentSpec(
             "arrow",
@@ -428,8 +407,6 @@ def build_model(
         )
     )
     distractor_scale = 0.08 if family is GeneratorFamily.EXTREME_SCALE else 0.42
-    if family is GeneratorFamily.ASYMMETRIC_TWIN:
-        distractor_scale = 0.74
     scene.add(
         ComponentSpec(
             "distractor",
@@ -443,7 +420,6 @@ def build_model(
     if (
         selected_variant is MetamorphicVariant.EXTRA_OCCLUDER
         or family is GeneratorFamily.OCCLUDED_FASTENER
-        or family in {GeneratorFamily.INTERNAL_BAFFLE, GeneratorFamily.NESTED_SHELL}
     ):
         scene.add(
             ComponentSpec(
@@ -451,10 +427,8 @@ def build_model(
                 names["extra_occluder"],
                 box((1.4, 0.25, 2.0)),
                 dark,
-                "idler" if family is GeneratorFamily.NESTED_SHELL else "housing",
-                (0.0, -1.0, 0.0)
-                if family is GeneratorFamily.NESTED_SHELL
-                else (idler_x, -1.55, 1.4),
+                "housing",
+                (idler_x, -1.55, 1.4),
             )
         )
 

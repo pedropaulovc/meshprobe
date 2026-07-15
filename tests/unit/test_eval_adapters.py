@@ -123,6 +123,63 @@ def test_cli_adapter_reports_invalid_protocol_without_tool_execution(tmp_path: P
     assert broker.events == ()
 
 
+def test_cli_adapter_scores_agent_that_closes_before_tool_result(tmp_path: Path) -> None:
+    public = tmp_path / "public"
+    public.mkdir()
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), public)
+    episode = generate_episodes(model)[0]
+    script = public / "closed.py"
+    script.write_text(
+        "import json\n"
+        "print(json.dumps({'type':'tool_call','command':{"
+        "'request_id':'open','op':'scene.open','source_path':'wrong'}}), flush=True)\n",
+        encoding="utf-8",
+    )
+    broker = EvaluationBroker(
+        service=AdapterService(),
+        model_path=model.path,
+        artifact_root=tmp_path / "agent-artifacts",
+        evaluator_root=tmp_path / "evaluator" / "passes",
+        trace_path=tmp_path / "evaluator" / "trace.jsonl",
+        budgets=episode.spec.budgets,
+    )
+
+    run = CliJsonlAdapter(agent_command(script)).run(
+        spec=episode.spec,
+        broker=broker,
+        input_root=public,
+        artifact_root=tmp_path / "agent-artifacts",
+    )
+
+    assert run.submission is None
+    assert run.protocol_error is not None
+    assert run.returncode == 0
+
+    class ClosedStream:
+        def write(self, value: str) -> None:
+            del value
+            raise BrokenPipeError
+
+        def flush(self) -> None:
+            pass
+
+    message = json.dumps(
+        {
+            "type": "tool_call",
+            "command": {
+                "request_id": "describe",
+                "op": "scene.describe",
+            },
+        }
+    ).encode()
+    _submission, closed_error = CliJsonlAdapter._handle_message(
+        message,
+        ClosedStream(),
+        broker,
+    )
+    assert closed_error == "agent closed stdin before accepting the tool result"
+
+
 def test_mcp_adapter_serves_same_broker_contract_and_accepts_submission(tmp_path: Path) -> None:
     public = tmp_path / "public"
     public.mkdir()

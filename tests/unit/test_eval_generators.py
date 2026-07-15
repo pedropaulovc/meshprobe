@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from meshprobe.evals.generators import (
-    PRIVATE_GENERATOR_FAMILIES,
     PUBLIC_GENERATOR_FAMILIES,
     GeneratorFamily,
     MetamorphicVariant,
@@ -18,11 +17,9 @@ from meshprobe.evals.schemas import EpisodeClass, Operation, TaskFamily
 from meshprobe.evals.variants import verify_relation
 
 
-def test_public_and_held_out_generator_families_are_disjoint() -> None:
+def test_public_generator_surface_contains_only_released_families() -> None:
     assert len(PUBLIC_GENERATOR_FAMILIES) == 16
-    assert len(PRIVATE_GENERATOR_FAMILIES) == 4
-    assert set(PUBLIC_GENERATOR_FAMILIES).isdisjoint(PRIVATE_GENERATOR_FAMILIES)
-    assert set(PUBLIC_GENERATOR_FAMILIES + PRIVATE_GENERATOR_FAMILIES) == set(GeneratorFamily)
+    assert set(PUBLIC_GENERATOR_FAMILIES) == set(GeneratorFamily)
 
 
 def test_seeded_model_and_episodes_are_deterministic(tmp_path: Path) -> None:
@@ -54,20 +51,6 @@ def test_seed_rotation_covers_every_metamorphic_variant() -> None:
         for seed in range(len(MetamorphicVariant))
     }
     assert variants == set(MetamorphicVariant)
-
-
-def test_held_out_families_encode_distinct_unseen_geometry_patterns() -> None:
-    asymmetric = build_model(GeneratorFamily.ASYMMETRIC_TWIN, 0)
-    assert asymmetric.target_name == next(
-        component.name
-        for component in asymmetric.scene.components
-        if component.role == "distractor"
-    )
-
-    internal_paths = build_model(GeneratorFamily.INTERNAL_BAFFLE, 0).scene.component_paths()
-    nested_paths = build_model(GeneratorFamily.NESTED_SHELL, 0).scene.component_paths()
-    assert internal_paths["extra_occluder"].startswith(internal_paths["housing"] + "/")
-    assert nested_paths["extra_occluder"].startswith(nested_paths["idler"] + "/")
 
 
 @pytest.mark.parametrize("variant", tuple(MetamorphicVariant))

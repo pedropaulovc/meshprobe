@@ -130,6 +130,24 @@ def test_coverage_rejects_a_find_call_that_missed_the_target(tmp_path: Path) -> 
     assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.FAIL
 
 
+def test_coverage_uses_curated_target_role(tmp_path: Path) -> None:
+    inputs = discovery_inputs(tmp_path)
+    target = inputs.truth.component_roles["idler"]
+    curated_truth = inputs.truth.model_copy(
+        update={"component_roles": {"target": target, "reference": "reference"}}
+    )
+    missed = inputs.trace[2].model_copy(update={"result": []})
+    report = score_episode(
+        replace(
+            inputs,
+            truth=curated_truth,
+            trace=(*inputs.trace[:2], missed, inputs.trace[3]),
+        )
+    )
+
+    assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.FAIL
+
+
 def test_answer_gate_rejects_plausible_but_wrong_values(tmp_path: Path) -> None:
     inputs = discovery_inputs(tmp_path)
     wrong = inputs.submission.model_copy(

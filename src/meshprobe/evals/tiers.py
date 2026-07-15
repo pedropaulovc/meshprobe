@@ -10,7 +10,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from meshprobe.evals.factory import CorpusBuild, validate_corpus
-from meshprobe.evals.generators import PRIVATE_GENERATOR_FAMILIES, PUBLIC_GENERATOR_FAMILIES
+from meshprobe.evals.generators import PUBLIC_GENERATOR_FAMILIES
 from meshprobe.evals.schemas import (
     CorpusTier,
     EpisodeSpec,
@@ -110,11 +110,10 @@ def pin_private_tier(
     sources = {spec.model_source for spec in specs.values()}
     if sources != {ModelSource.PRIVATE}:
         raise ValueError("private qualification accepts only evaluator-private models")
-    required_families = {
-        family.value for family in (*PUBLIC_GENERATOR_FAMILIES, *PRIVATE_GENERATOR_FAMILIES)
-    }
-    if set(corpus.manifest.generator_families) != required_families:
-        raise ValueError("private qualification requires released and held-out generator families")
+    public_families = {family.value for family in PUBLIC_GENERATOR_FAMILIES}
+    held_out_families = set(corpus.manifest.generator_families) - public_families
+    if not public_families.issubset(corpus.manifest.generator_families) or not held_out_families:
+        raise ValueError("private qualification requires released and opaque held-out families")
     if any(seed < 32 for seed in corpus.manifest.generator_seeds):
         raise ValueError("private qualification seeds must not overlap released seeds 0 through 31")
     full_stack = sum(spec.family is TaskFamily.FULL_INVESTIGATION for spec in specs.values())

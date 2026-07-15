@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from meshprobe.evals.factory import build_corpus
@@ -108,6 +109,10 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
         service_factory=NoopService,
         runtime_provider=lambda: tier.runtime,
     )
+    checkpoint = first.root / "checkpoint.json"
+    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    checkpoint_payload["completed"].pop()
+    checkpoint.write_text(json.dumps(checkpoint_payload), encoding="utf-8")
     second = run_tier(
         corpus_root=corpus.root,
         tier_manifest_path=tier_path,

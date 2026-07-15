@@ -281,7 +281,9 @@ def _coverage_gate(inputs: OracleInputs) -> GateResult:
             if event.state_before_sha256 is not None and event.state_after_sha256 is not None
         ):
             failures.append(f"{operation} was accepted but did not change state")
-    target_id = inputs.truth.component_roles.get("idler")
+    target_id = inputs.truth.component_roles.get("idler") or inputs.truth.component_roles.get(
+        "target"
+    )
     if target_id is not None:
         if Operation.COMPONENT_FIND in inputs.truth.required_operations and not any(
             _result_contains_component(event.result, target_id)

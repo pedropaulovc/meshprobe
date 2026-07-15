@@ -33,6 +33,7 @@ from meshprobe.evals.curated_tasks import (
 )
 from meshprobe.evals.curated_tasks import (
     build_curated_corpus,
+    curated_task_generator_sha256,
     generate_curated_episodes,
     resolve_curated_truth,
 )
@@ -513,6 +514,26 @@ def test_curated_task_role_and_checkpoint_validation_errors(
     )
     with pytest.raises(RuntimeError, match="invalid completed-model"):
         read_task_checkpoint(staging, "a" * 64)
+
+
+def test_curated_task_hash_includes_blender_importer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build_root = tmp_path / "build"
+    (build_root / "public").mkdir(parents=True)
+    (build_root / "public" / "manifest.json").write_text("{}\n", encoding="utf-8")
+    build = CuratedBuild(root=build_root, model_sha256={}, model_count=0)
+    hashed: list[Path] = []
+
+    def record(path: Path) -> str:
+        hashed.append(path)
+        return "a" * 64
+
+    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_file", record)
+
+    curated_task_generator_sha256(build)
+
+    assert any(path.name == "worker.py" for path in hashed)
 
 
 def _manifest_with_source(manifest: SceneManifest, source_sha256: str) -> SceneManifest:

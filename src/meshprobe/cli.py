@@ -19,7 +19,6 @@ from meshprobe.evals.factory import CorpusBuild, build_corpus, merge_corpora, va
 from meshprobe.evals.generators import PUBLIC_GENERATOR_FAMILIES, GeneratorFamily
 from meshprobe.evals.harness.adapters import CliJsonlAdapter, McpStdioAdapter
 from meshprobe.evals.harness.suite import run_tier
-from meshprobe.evals.schemas import ModelSource
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
@@ -75,7 +74,6 @@ def generate_eval_corpus(
     families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
     seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
     seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
-    model_source: Annotated[ModelSource, typer.Option("--model-source")] = ModelSource.PROCEDURAL,
 ) -> None:
     """Generate an atomic, checkpointed procedural evaluation corpus."""
 
@@ -86,7 +84,6 @@ def generate_eval_corpus(
             corpus_version=corpus_version,
             families=selected_families,
             seeds=range(seed_start, seed_start + seed_count),
-            model_source=model_source,
         )
     except (OSError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error)) from error
@@ -195,6 +192,7 @@ def run_eval_tier(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     agent_command_json: Annotated[str, typer.Option("--agent-command-json")],
     adapter_kind: Annotated[AgentAdapterKind, typer.Option("--adapter")] = AgentAdapterKind.CLI,
+    blender: Annotated[str, typer.Option("--blender")] = "blender",
 ) -> None:
     """Run an isolated agent over every episode in an exact pinned tier."""
 
@@ -215,6 +213,8 @@ def run_eval_tier(
             tier_manifest_path=tier_manifest,
             adapter=adapter,
             output_root=output_root,
+            service_factory=lambda: MeshProbeService(blender=blender),
+            runtime_provider=lambda: current_runtime_pin(blender),
         )
     except (json.JSONDecodeError, OSError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error)) from error

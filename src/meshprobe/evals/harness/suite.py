@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,15 @@ def run_tier(
             report_path = runs_root / episode_id / "evaluator" / "report.json"
             EpisodeReport.model_validate_json(report_path.read_text(encoding="utf-8"))
             continue
+        episode_root = runs_root / episode_id
+        report_path = episode_root / "evaluator" / "report.json"
+        if report_path.is_file():
+            EpisodeReport.model_validate_json(report_path.read_text(encoding="utf-8"))
+            completed.add(episode_id)
+            _write_checkpoint(checkpoint_path, identity, completed)
+            continue
+        if episode_root.exists():
+            shutil.rmtree(episode_root)
         run_episode(
             corpus_root=corpus.root,
             episode_id=episode_id,
@@ -70,10 +80,7 @@ def run_tier(
             service_factory=service_factory,
         )
         completed.add(episode_id)
-        _write_json(
-            checkpoint_path,
-            {"identity_sha256": identity, "completed": sorted(completed)},
-        )
+        _write_checkpoint(checkpoint_path, identity, completed)
 
     cases = tuple(
         _load_scored_episode(corpus.root, runs_root, episode_id) for episode_id in tier.episodes
@@ -114,6 +121,10 @@ def _read_checkpoint(path: Path, identity: str) -> set[str]:
     if not isinstance(completed, list) or not all(isinstance(item, str) for item in completed):
         raise RuntimeError("suite checkpoint has an invalid completed-episode list")
     return set(completed)
+
+
+def _write_checkpoint(path: Path, identity: str, completed: set[str]) -> None:
+    _write_json(path, {"identity_sha256": identity, "completed": sorted(completed)})
 
 
 def _load_scored_episode(

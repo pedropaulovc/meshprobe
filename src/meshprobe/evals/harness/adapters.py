@@ -213,8 +213,11 @@ class CliJsonlAdapter:
             }
         if not hasattr(agent_stdin, "write") or not hasattr(agent_stdin, "flush"):
             return None, "agent stdin became unavailable"
-        agent_stdin.write(json.dumps(response, separators=(",", ":")) + "\n")
-        agent_stdin.flush()
+        try:
+            agent_stdin.write(json.dumps(response, separators=(",", ":")) + "\n")
+            agent_stdin.flush()
+        except (BrokenPipeError, OSError):
+            return None, "agent closed stdin before accepting the tool result"
         return None, None
 
 
