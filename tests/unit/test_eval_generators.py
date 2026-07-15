@@ -31,6 +31,22 @@ def test_seeded_model_and_episodes_are_deterministic(tmp_path: Path) -> None:
     assert generate_episodes(first) == generate_episodes(second)
 
 
+def test_component_names_and_node_order_do_not_encode_roles() -> None:
+    models = [build_model(GeneratorFamily.HIDDEN_CLIP, seed) for seed in range(12)]
+    role_suffixes: dict[str, set[str]] = {}
+    for model in models:
+        assert model.role_order is not None
+        assert set(model.role_order) == {component.role for component in model.scene.components}
+        names = {component.role: component.name for component in model.scene.components}
+        for role, name in names.items():
+            role_suffixes.setdefault(role, set()).add(name.rsplit("-", 1)[-1])
+
+    assert all(
+        len(suffixes) > 1 for role, suffixes in role_suffixes.items() if role != "extra_occluder"
+    )
+    assert len({model.role_order for model in models}) > 1
+
+
 @pytest.mark.parametrize("family", tuple(GeneratorFamily))
 def test_every_family_generates_four_operation_aware_episodes(
     tmp_path: Path, family: GeneratorFamily

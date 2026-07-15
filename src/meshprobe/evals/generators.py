@@ -434,9 +434,10 @@ def build_model(
             )
         )
 
-    role_order = None
+    order_seed = _seed_int(family, seed) ^ 0xA11CE5EED
     if selected_variant is MetamorphicVariant.REORDER_HIERARCHY:
-        role_order = _random_topological_order(scene, rng)
+        order_seed ^= 0x5EED0F00D
+    role_order = _random_topological_order(scene, random.Random(order_seed))
     semantic_answers: dict[str, str | float | int] = {
         "contacted_shaft": contacted_shaft,
         "clip_side": "positive" if clip_sign > 0 else "negative",
@@ -947,10 +948,14 @@ def _component_names(rng: random.Random) -> dict[str, str]:
     )
     pairs = [(adjective, noun) for adjective in _ADJECTIVES for noun in _NOUNS]
     rng.shuffle(pairs)
+    suffixes = rng.sample(range(10, 100), len(roles))
     return {
-        role: f"{adjective}-{noun}-{index:02d}"
-        for index, (role, (adjective, noun)) in enumerate(
-            zip(roles, pairs[: len(roles)], strict=True)
+        role: f"{adjective}-{noun}-{suffix:02d}"
+        for role, (adjective, noun), suffix in zip(
+            roles,
+            pairs[: len(roles)],
+            suffixes,
+            strict=True,
         )
     }
 
