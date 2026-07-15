@@ -650,9 +650,7 @@ class BlenderController:
             raise BlenderWorkerError("custom orbit is not available")
         orbit = spec.orbit
         bounds = (
-            self._focus_bounds(focus_ids)
-            if orbit.target == "focus"
-            else self._manifest.root_bounds
+            self._focus_bounds(focus_ids) if orbit.target == "focus" else self._manifest.root_bounds
         )
         target, _ = self._bounds_center_span(bounds)
         distance = orbit.distance_mm
@@ -660,10 +658,7 @@ class BlenderController:
             projection = orbit.projection
             if not isinstance(projection, PerspectiveProjection):
                 raise BlenderWorkerError("dolly_zoom requires perspective projection")
-            if (
-                orbit.reference_focal_length_mm is None
-                or orbit.reference_distance_mm is None
-            ):
+            if orbit.reference_focal_length_mm is None or orbit.reference_distance_mm is None:
                 raise BlenderWorkerError("dolly_zoom reference is incomplete")
             distance = (
                 orbit.reference_distance_mm
@@ -823,9 +818,7 @@ class BlenderController:
     ) -> tuple[ContactSheetCallout, ...]:
         if self._manifest is None:
             raise BlenderWorkerError("cannot build callouts before a scene is open")
-        labels = {
-            component.id: component.display_name for component in self._manifest.components
-        }
+        labels = {component.id: component.display_name for component in self._manifest.components}
         callouts: list[ContactSheetCallout] = []
         for number, component_id in enumerate(dict.fromkeys(focus_component_ids), start=1):
             bounds = render.session.camera_diagnostics.projected_bounds.get(component_id)

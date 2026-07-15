@@ -429,8 +429,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             event
             for event in trace
             if not (
-                isinstance(event.result, dict)
-                and event.result.get("state_sha256") == state_hash
+                isinstance(event.result, dict) and event.result.get("state_sha256") == state_hash
             )
         )
         reduced_report = score_episode(
@@ -521,9 +520,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
                 )
             )
         )
-        evidence_gate = next(
-            gate for gate in reduced_report.gates if gate.gate == "evidence"
-        )
+        evidence_gate = next(gate for gate in reduced_report.gates if gate.gate == "evidence")
         assert evidence_gate.status is GateStatus.FAIL
 
 

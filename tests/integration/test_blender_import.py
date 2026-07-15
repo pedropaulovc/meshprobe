@@ -390,9 +390,10 @@ def test_persistent_worker_imports_glb_without_source_changes(tmp_path: Path) ->
     assert manifest.normalized_geometry is not None
     assert normalized_path.read_bytes()[:4] == b"glTF"
     assert manifest.normalized_geometry.bytes == normalized_path.stat().st_size
-    assert manifest.normalized_geometry.sha256 == hashlib.sha256(
-        normalized_path.read_bytes()
-    ).hexdigest()
+    assert (
+        manifest.normalized_geometry.sha256
+        == hashlib.sha256(normalized_path.read_bytes()).hexdigest()
+    )
     assert normalized_path.stat().st_mtime_ns == normalized_stat.st_mtime_ns
     assert manifest.capabilities.hierarchy == "preserved"
     assert manifest.capabilities.textures == "absent"

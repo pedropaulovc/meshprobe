@@ -568,18 +568,14 @@ class ContactSheetPanelSpec(ContractModel):
         if (self.camera is None) == (self.orbit is None):
             raise ValueError("custom panel must declare exactly one of camera or orbit")
         if self.experiment == "fixed_pose_focal_study" and (
-            self.camera is None
-            or not isinstance(self.camera.projection, PerspectiveProjection)
+            self.camera is None or not isinstance(self.camera.projection, PerspectiveProjection)
         ):
             raise ValueError("fixed_pose_focal_study requires a perspective camera")
         if self.experiment != "dolly_zoom":
             return self
         if self.orbit is None or not isinstance(self.orbit.projection, PerspectiveProjection):
             raise ValueError("dolly_zoom requires a perspective orbit")
-        if (
-            self.orbit.reference_focal_length_mm is None
-            or self.orbit.reference_distance_mm is None
-        ):
+        if self.orbit.reference_focal_length_mm is None or self.orbit.reference_distance_mm is None:
             raise ValueError("dolly_zoom requires reference focal length and distance")
         return self
 

@@ -62,9 +62,7 @@ def compose_contact_sheet(
             anchor="lm",
         )
         if callouts:
-            legend = " | ".join(
-                f"{callout.number} {callout.label}" for callout in callouts
-            )
+            legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
             caption_draw.text(
                 (10, caption_height * 2 // 3),
                 legend,

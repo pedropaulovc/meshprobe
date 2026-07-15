@@ -559,9 +559,7 @@ def scene_center_mm() -> list[float]:
 
 
 def focus_center_mm(focus_ids: set[str]) -> list[float]:
-    components = {
-        component["id"]: component for component in require_session()["components"]
-    }
+    components = {component["id"]: component for component in require_session()["components"]}
     minimum = [
         min(
             components[component_id]["world_bounds"]["minimum_mm"][axis]
@@ -767,9 +765,7 @@ def configure_world(
     texture_coordinates = nodes.new("ShaderNodeTexCoord")
     mapping = nodes.new("ShaderNodeMapping")
     mapping.vector_type = "POINT"
-    mapping.inputs["Rotation"].default_value[2] = math.radians(
-        environment_map["rotation_degrees"]
-    )
+    mapping.inputs["Rotation"].default_value[2] = math.radians(environment_map["rotation_degrees"])
     texture = nodes.new("ShaderNodeTexEnvironment")
     texture.name = "MeshProbeEnvironment"
     texture.projection = "EQUIRECTANGULAR"
@@ -985,11 +981,7 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def session_snapshot() -> dict[str, Any]:
-    if (
-        CURRENT_CAMERA is None
-        or CURRENT_CAMERA_DIAGNOSTICS is None
-        or CURRENT_ILLUMINATION is None
-    ):
+    if CURRENT_CAMERA is None or CURRENT_CAMERA_DIAGNOSTICS is None or CURRENT_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
     state = {
         "camera": CURRENT_CAMERA,
@@ -1286,7 +1278,6 @@ def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) ->
         return count
     finally:
         bpy.data.images.remove(image)
-
 
 
 def component_visibility(command: dict[str, Any]) -> dict[str, Any]:

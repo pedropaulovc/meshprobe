@@ -735,9 +735,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         if operation == "component.occluders":
             return {
                 "sample_count": 6,
-                "occluders": [
-                    {"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}
-                ],
+                "occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}],
             }
         if operation == "component.visibility":
             fraction = next(visibility_measurements)
