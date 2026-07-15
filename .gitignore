@@ -12,3 +12,4 @@ dist/
 artifacts/
 .cache/
 .corpora/
+.runs/
