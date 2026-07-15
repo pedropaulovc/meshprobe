@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,9 +42,12 @@ def run_tier(
     output_root: Path,
     service_factory: Callable[[], EvaluationSession] = MeshProbeService,
     runtime_provider: Callable[[], RuntimePin] = current_runtime_pin,
+    workers: int = 1,
 ) -> TierRun:
     """Run every pinned episode exactly once and resume from validated reports."""
 
+    if workers < 1 or workers > 64:
+        raise ValueError("tier workers must be between 1 and 64")
     corpus_path = corpus_root.expanduser().resolve(strict=True)
     tier_path = tier_manifest_path.expanduser().resolve(strict=True)
     corpus = validate_corpus(corpus_path)
@@ -57,6 +61,7 @@ def run_tier(
     runs_root = run_root / "episodes"
     runs_root.mkdir(exist_ok=True)
 
+    pending: list[str] = []
     for episode_id in tier.episodes:
         if episode_id in completed:
             report_path = runs_root / episode_id / "evaluator" / "report.json"
@@ -71,6 +76,9 @@ def run_tier(
             continue
         if episode_root.exists():
             shutil.rmtree(episode_root)
+        pending.append(episode_id)
+
+    def execute(episode_id: str) -> str:
         run_episode(
             corpus_root=corpus.root,
             episode_id=episode_id,
@@ -79,8 +87,22 @@ def run_tier(
             validated_corpus=corpus,
             service_factory=service_factory,
         )
-        completed.add(episode_id)
-        _write_checkpoint(checkpoint_path, identity, completed)
+        return episode_id
+
+    if workers == 1:
+        finished = map(execute, pending)
+        for episode_id in finished:
+            completed.add(episode_id)
+            _write_checkpoint(checkpoint_path, identity, completed)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="meshprobe-tier") as pool:
+            futures: dict[Future[str], str] = {
+                pool.submit(execute, episode_id): episode_id for episode_id in pending
+            }
+            for future in as_completed(futures):
+                episode_id = future.result()
+                completed.add(episode_id)
+                _write_checkpoint(checkpoint_path, identity, completed)
 
     cases = tuple(
         _load_scored_episode(corpus.root, runs_root, episode_id) for episode_id in tier.episodes

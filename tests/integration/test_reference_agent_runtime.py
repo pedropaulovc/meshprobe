@@ -9,8 +9,17 @@ import pytest
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily, build_model
 from meshprobe.evals.harness.adapters import ReferenceAgentAdapter
-from meshprobe.evals.harness.runner import run_episode
-from meshprobe.evals.schemas import Difficulty, EpisodeSpec
+from meshprobe.evals.harness.suite import run_tier
+from meshprobe.evals.schemas import (
+    CorpusTier,
+    Difficulty,
+    EpisodeReport,
+    EpisodeSpec,
+    PassThresholds,
+    TierManifest,
+)
+from meshprobe.evals.tiers import current_runtime_pin
+from meshprobe.sources import sha256_file
 
 pytestmark = pytest.mark.skipif(
     shutil.which("blender") is None or (os.name != "nt" and shutil.which("bwrap") is None),
@@ -31,6 +40,7 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
         seed: build_model(GeneratorFamily.HIDDEN_CLIP, seed).target_name for seed in range(3)
     }
     selected: list[str] = []
+    specs: dict[str, EpisodeSpec] = {}
     for episode_id in corpus.manifest.episodes:
         spec = EpisodeSpec.model_validate_json(
             (corpus.root / "public" / "episodes" / f"{episode_id}.json").read_text(encoding="utf-8")
@@ -44,18 +54,46 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
         )
         if full_stack_base or transformed_intermediate:
             selected.append(episode_id)
+            specs[episode_id] = spec
 
     assert len(selected) == 3
-    for episode_id in selected:
-        run = run_episode(
-            corpus_root=corpus.root,
-            episode_id=episode_id,
-            adapter=ReferenceAgentAdapter(),
-            output_root=tmp_path / "runs",
-            validated_corpus=corpus,
-        )
+    runtime = current_runtime_pin()
+    tier = TierManifest(
+        tier=CorpusTier.SMOKE,
+        corpus_version=corpus.manifest.corpus_version,
+        corpus_manifest_sha256=sha256_file(corpus.root / "public" / "manifest.json"),
+        generator_sha256=corpus.manifest.generator_sha256,
+        runtime=runtime,
+        thresholds=PassThresholds(overall=1, full_stack=1, per_operation=1),
+        episodes=tuple(selected),
+        episode_sha256={
+            episode_id: corpus.manifest.episode_sha256[episode_id] for episode_id in selected
+        },
+        model_sha256={
+            spec.model_file: corpus.manifest.model_sha256[spec.model_file]
+            for spec in specs.values()
+        },
+    )
+    tier_path = tmp_path / "smoke.json"
+    tier_path.write_text(tier.model_dump_json(), encoding="utf-8")
 
-        assert run.adapter.protocol_error is None
-        assert run.report.passed, {
-            gate.gate: gate.details for gate in run.report.gates if gate.status == "fail"
+    result = run_tier(
+        corpus_root=corpus.root,
+        tier_manifest_path=tier_path,
+        adapter=ReferenceAgentAdapter(),
+        output_root=tmp_path / "runs",
+        runtime_provider=lambda: runtime,
+        workers=2,
+    )
+
+    assert result.completed == 3
+    assert result.report.passed_thresholds
+    for episode_id in selected:
+        report = EpisodeReport.model_validate_json(
+            (result.root / "episodes" / episode_id / "evaluator" / "report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert report.passed, {
+            gate.gate: gate.details for gate in report.gates if gate.status == "fail"
         }

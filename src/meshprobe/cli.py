@@ -198,6 +198,7 @@ def run_eval_tier(
     agent_command_json: Annotated[str | None, typer.Option("--agent-command-json")] = None,
     adapter_kind: Annotated[AgentAdapterKind, typer.Option("--adapter")] = AgentAdapterKind.CLI,
     blender: Annotated[str, typer.Option("--blender")] = "blender",
+    workers: Annotated[int, typer.Option("--workers", min=1, max=64)] = 1,
 ) -> None:
     """Run an isolated agent over every episode in an exact pinned tier."""
 
@@ -228,6 +229,7 @@ def run_eval_tier(
             output_root=output_root,
             service_factory=lambda: MeshProbeService(blender=blender),
             runtime_provider=lambda: current_runtime_pin(blender),
+            workers=workers,
         )
     except (json.JSONDecodeError, OSError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error)) from error

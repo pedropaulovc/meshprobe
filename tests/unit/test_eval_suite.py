@@ -109,6 +109,7 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
         output_root=tmp_path / "runs",
         service_factory=NoopService,
         runtime_provider=lambda: tier.runtime,
+        workers=2,
     )
     checkpoint = first.root / "checkpoint.json"
     checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
@@ -121,6 +122,7 @@ def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
         output_root=tmp_path / "runs",
         service_factory=NoopService,
         runtime_provider=lambda: tier.runtime,
+        workers=2,
     )
 
     assert first.completed == 4
