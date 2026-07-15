@@ -17,6 +17,7 @@ from meshprobe.evals.schemas import (
     EpisodeReport,
     EpisodeSpec,
     PassThresholds,
+    TaskFamily,
     TierManifest,
 )
 from meshprobe.evals.tiers import current_runtime_pin
@@ -28,18 +29,21 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
+def test_reference_agent_passes_transforms_and_rescaled_raking_evidence(
     tmp_path: Path,
 ) -> None:
+    transformed_seeds = (0, 1, 18)
     corpus = build_corpus(
         tmp_path / "corpora",
         corpus_version="reference-integration-v1",
-        families=(GeneratorFamily.HIDDEN_CLIP,),
-        seeds=range(3),
+        families=(GeneratorFamily.HIDDEN_CLIP, GeneratorFamily.STAMPED_ARROW),
+        seeds=transformed_seeds,
     )
     target_names = {
-        seed: build_model(GeneratorFamily.HIDDEN_CLIP, seed).target_name for seed in range(3)
+        seed: build_model(GeneratorFamily.HIDDEN_CLIP, seed).target_name
+        for seed in transformed_seeds
     }
+    stamped_arrow_name = build_model(GeneratorFamily.STAMPED_ARROW, 18).target_name
     selected: list[str] = []
     specs: dict[str, EpisodeSpec] = {}
     for episode_id in corpus.manifest.episodes:
@@ -50,14 +54,18 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
             target_names[0] in spec.prompt and spec.difficulty is Difficulty.FULL_STACK
         )
         transformed_intermediate = (
-            any(target_names[seed] in spec.prompt for seed in (1, 2))
+            any(target_names[seed] in spec.prompt for seed in (1, 18))
             and spec.difficulty is Difficulty.INTERMEDIATE
         )
-        if full_stack_base or transformed_intermediate:
+        rescaled_raking_evidence = (
+            stamped_arrow_name in spec.prompt
+            and spec.family is TaskFamily.SURFACE_DETAIL
+        )
+        if full_stack_base or transformed_intermediate or rescaled_raking_evidence:
             selected.append(episode_id)
             specs[episode_id] = spec
 
-    assert len(selected) == 3
+    assert len(selected) == 4
     runtime = current_runtime_pin()
     tier = TierManifest(
         tier=CorpusTier.SMOKE,
@@ -87,7 +95,7 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
         workers=2,
     )
 
-    assert result.completed == 3
+    assert result.completed == 4
     failures: dict[str, dict[str, object]] = {}
     for episode_id in selected:
         report = EpisodeReport.model_validate_json(

@@ -540,7 +540,7 @@ def _run_procedural(
     arrow_horizontal = _axis(arrow, 0)
     arrow_vertical = _axis(arrow, 2)
     left_direction = tuple(
-        normal + horizontal + 0.27 * vertical
+        normal + 2 * horizontal + 0.27 * vertical
         for normal, horizontal, vertical in zip(
             arrow_normal, arrow_horizontal, arrow_vertical, strict=True
         )
@@ -556,7 +556,7 @@ def _run_procedural(
     evidence.append(_render(client, "surface-left.png"))
     client.call("illumination.set", illumination={"preset": "raking_right"})
     right_direction = tuple(
-        normal - horizontal + 0.27 * vertical
+        normal - 2 * horizontal + 0.27 * vertical
         for normal, horizontal, vertical in zip(
             arrow_normal, arrow_horizontal, arrow_vertical, strict=True
         )
