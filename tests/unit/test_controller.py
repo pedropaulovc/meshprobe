@@ -21,6 +21,7 @@ from meshprobe.models import (
     Camera,
     DisplayMode,
     MarkMode,
+    PerspectiveProjection,
     PresetIllumination,
     RenderManifest,
     SceneManifest,
@@ -610,11 +611,10 @@ def test_render_rejects_evaluator_output_that_overwrites_source_dependency(
         request_id="render",
         op="render.image",
         output_path=str(tmp_path / "evidence.png"),
-        evaluator_output_dir=str(tmp_path),
     )
 
     with pytest.raises(BlenderWorkerError, match="must not overwrite"):
-        controller.render_image(command)
+        controller.render_image(command, evaluator_output_dir=tmp_path)
 
 
 def test_render_validates_worker_artifact_digests(
@@ -758,3 +758,48 @@ def test_contact_sheet_validates_scene_focus_and_output(
     )
     with pytest.raises(BlenderWorkerError, match=r"must end in \.png"):
         controller.render_contact_sheet(command)
+
+
+def test_contact_sheet_rejects_staging_path_that_overwrites_source_dependency(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+) -> None:
+    output = tmp_path / "contact.png"
+    staging = tmp_path / ".contact.png.part"
+    staging.write_bytes(b"source dependency")
+    source = tmp_path / "fixture.gltf"
+    source.write_text(
+        json.dumps({"asset": {"version": "2.0"}, "images": [{"uri": staging.name}]}),
+        encoding="utf-8",
+    )
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path=str(output),
+        focus_component_ids=(scene_manifest.components[-1].id,),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_contact_sheet(command)
+
+
+def test_perspective_orbit_framing_uses_limiting_panel_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    cameras: list[Camera] = []
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        cameras.append(Camera.model_validate(arguments["camera"]))
+        return {}
+
+    monkeypatch.setattr(controller, "request", request)
+    projection = PerspectiveProjection()
+    controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 2.0)
+    controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 0.5)
+
+    distances = [sum(value**2 for value in camera.pose.position_mm) ** 0.5 for camera in cameras]
+    assert distances[1] > distances[0]

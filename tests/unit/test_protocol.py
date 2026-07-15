@@ -80,12 +80,21 @@ def test_render_command_bounds_engine_and_samples() -> None:
             "height": 1024,
             "samples": 128,
             "engine": "cycles",
-            "evaluator_output_dir": "private",
         }
     )
     assert isinstance(command, RenderImageCommand)
     assert command.samples == 128
     assert command.engine == "cycles"
+
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "private-pass",
+                "op": "render.image",
+                "output_path": "evidence.png",
+                "evaluator_output_dir": "private",
+            }
+        )
 
     with pytest.raises(ValidationError):
         COMMAND_ADAPTER.validate_python(

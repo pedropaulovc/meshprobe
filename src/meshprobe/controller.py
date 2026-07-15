@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.camera import orbit_camera
-from meshprobe.contact_sheet import compose_contact_sheet
+from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
     ContactSheetManifest,
@@ -221,16 +221,25 @@ class BlenderController:
             return SessionSnapshot.model_validate(result)
         return result
 
-    def render_image(self, command: RenderImageCommand) -> RenderManifest:
+    def render_image(
+        self,
+        command: RenderImageCommand,
+        *,
+        evaluator_output_dir: str | Path | None = None,
+    ) -> RenderManifest:
         if self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         output = Path(command.output_path).expanduser().resolve()
         source_paths = {asset.path for asset in self._source_snapshot.assets}
-        output_paths = self._render_output_paths(output, command.evaluator_output_dir)
+        output_paths = self._render_output_paths(output, evaluator_output_dir)
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("render output must not overwrite a source asset")
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         arguments["output_path"] = str(output)
+        if evaluator_output_dir is not None:
+            arguments["evaluator_output_dir"] = str(
+                Path(evaluator_output_dir).expanduser().resolve()
+            )
         try:
             result = self.request(command.op, **arguments)
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
@@ -266,7 +275,12 @@ class BlenderController:
             ):
                 raise BlenderWorkerError(f"render artifact digest mismatch: {path}")
 
-    def render_contact_sheet(self, command: RenderContactSheetCommand) -> ContactSheetManifest:
+    def render_contact_sheet(
+        self,
+        command: RenderContactSheetCommand,
+        *,
+        evaluator_output_dir: str | Path | None = None,
+    ) -> ContactSheetManifest:
         if self._manifest is None or self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         focus_ids = tuple(dict.fromkeys(command.focus_component_ids))
@@ -280,9 +294,10 @@ class BlenderController:
         panel_dir = output.parent / f"{output.stem}_panels"
         panel_paths = tuple(panel_dir / f"panel-{index}.png" for index in range(1, 10))
         source_paths = {asset.path for asset in self._source_snapshot.assets}
-        output_paths = {output, *panel_paths}
-        if command.evaluator_output_dir is not None:
-            evaluator_root = Path(command.evaluator_output_dir).expanduser().resolve()
+        output_paths = {output, contact_sheet_staging_path(output), *panel_paths}
+        evaluator_root = None
+        if evaluator_output_dir is not None:
+            evaluator_root = Path(evaluator_output_dir).expanduser().resolve()
             for index, panel_path in enumerate(panel_paths, start=1):
                 output_paths.update(
                     self._render_output_paths(
@@ -300,14 +315,34 @@ class BlenderController:
             self.request("session.reset")
             self.request("illumination.set", illumination={"preset": "neutral_studio"})
             scene_center, scene_span = self._bounds_center_span(self._manifest.root_bounds)
-            self._set_orbit(scene_center, scene_span, 45, 30, PerspectiveProjection())
+            panel_aspect = command.panel_width / command.panel_height
+            self._set_orbit(
+                scene_center,
+                scene_span,
+                45,
+                30,
+                PerspectiveProjection(),
+                panel_aspect,
+            )
             panels.append(
-                self._render_contact_panel(command, panel_paths[0], 1, "Natural isometric")
+                self._render_contact_panel(
+                    command,
+                    panel_paths[0],
+                    1,
+                    "Natural isometric",
+                    evaluator_root,
+                )
             )
 
             self.request("component.mark", component_ids=list(focus_ids), mode="highlighted")
             panels.append(
-                self._render_contact_panel(command, panel_paths[1], 2, "Focused in context")
+                self._render_contact_panel(
+                    command,
+                    panel_paths[1],
+                    2,
+                    "Focused in context",
+                    evaluator_root,
+                )
             )
 
             ranking = self.request("component.occluders", component_ids=list(focus_ids))
@@ -319,7 +354,13 @@ class BlenderController:
                     mode="hidden",
                 )
             panels.append(
-                self._render_contact_panel(command, panel_paths[2], 3, "Occluders removed")
+                self._render_contact_panel(
+                    command,
+                    panel_paths[2],
+                    3,
+                    "Occluders removed",
+                    evaluator_root,
+                )
             )
 
             self.request("illumination.set", illumination={"preset": "flat_diagnostic"})
@@ -335,11 +376,24 @@ class BlenderController:
                 (0.0, -90.0, "-Z"),
             )
             for panel_index, (azimuth, elevation, caption) in enumerate(directions, start=4):
-                projection = OrthographicProjection(scale_mm=focus_span * 1.2)
-                self._set_orbit(focus_center, focus_span, azimuth, elevation, projection)
+                projection = OrthographicProjection(
+                    scale_mm=focus_span * 1.2 / min(panel_aspect, 1.0)
+                )
+                self._set_orbit(
+                    focus_center,
+                    focus_span,
+                    azimuth,
+                    elevation,
+                    projection,
+                    panel_aspect,
+                )
                 panels.append(
                     self._render_contact_panel(
-                        command, panel_paths[panel_index - 1], panel_index, caption
+                        command,
+                        panel_paths[panel_index - 1],
+                        panel_index,
+                        caption,
+                        evaluator_root,
                     )
                 )
         finally:
@@ -366,12 +420,11 @@ class BlenderController:
         output_path: Path,
         index: int,
         caption: str,
+        evaluator_root: Path | None,
     ) -> ContactSheetPanel:
         evaluator_dir = None
-        if command.evaluator_output_dir is not None:
-            evaluator_dir = str(
-                Path(command.evaluator_output_dir).expanduser().resolve() / f"panel-{index}"
-            )
+        if evaluator_root is not None:
+            evaluator_dir = str(evaluator_root / f"panel-{index}")
         result = self.request(
             "render.image",
             output_path=str(output_path),
@@ -410,13 +463,16 @@ class BlenderController:
         azimuth: float,
         elevation: float,
         projection: Projection,
+        aspect_ratio: float,
     ) -> None:
         distance = max(span * 2, 100.0)
         if isinstance(projection, PerspectiveProjection):
+            framing_fov = min(
+                projection.horizontal_fov_degrees(aspect_ratio),
+                projection.vertical_fov_degrees(aspect_ratio),
+            )
             distance = max(
-                (span / 2)
-                / math.tan(math.radians(projection.vertical_fov_degrees(1.0) / 2))
-                * 1.25,
+                (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25,
                 100.0,
             )
         camera = orbit_camera(

@@ -754,23 +754,37 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
                 mode=MarkMode.HIGHLIGHTED,
             )
         )
-        rendered = controller.execute(
-            RenderImageCommand(
-                request_id="render",
-                op="render.image",
-                output_path=str(output),
-                width=256,
-                height=192,
-                samples=1,
-                engine=RenderEngine.EEVEE,
-                evaluator_output_dir=str(evaluator_dir),
+        command = RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path=str(output),
+            width=256,
+            height=192,
+            samples=1,
+            engine=RenderEngine.EEVEE,
+        )
+        first = controller.render_image(command, evaluator_output_dir=evaluator_dir)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="move",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=120,
+                elevation_degrees=25,
+                distance_mm=5_000,
+                projection=PerspectiveProjection(),
             )
         )
+        rendered = controller.render_image(command, evaluator_output_dir=evaluator_dir)
+        runtime = controller.request("session.runtime")
 
     assert isinstance(rendered, RenderManifest)
     assert rendered.width == 256
     assert rendered.height == 192
     assert rendered.evaluator is not None
+    assert first.evaluator is not None
+    assert first.evaluator.multilayer.sha256 != rendered.evaluator.multilayer.sha256
+    assert runtime["render"]["eevee_samples"] == 1
     assert rendered.evaluator.component_colors.keys() == {
         component.id for component in manifest.components
     }
@@ -804,6 +818,7 @@ def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
     assert isinstance(rendered, RenderManifest)
     assert rendered.engine is RenderEngine.CYCLES
     assert rendered.device == "cuda"
+    assert rendered.evaluator is None
     assert rendered.blender_version
     assert Image.open(rendered.color.path).size == (64, 64)
 

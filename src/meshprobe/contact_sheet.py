@@ -10,6 +10,10 @@ from meshprobe.models import ImageArtifact
 from meshprobe.sources import sha256_file
 
 
+def contact_sheet_staging_path(output_path: Path) -> Path:
+    return output_path.with_name(f".{output_path.name}.part")
+
+
 def compose_contact_sheet(
     panels: tuple[tuple[Path, str], ...],
     output_path: Path,
@@ -40,7 +44,7 @@ def compose_contact_sheet(
         )
         sheet.paste(caption_layer, (left, top + panel_height))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    staging = output_path.with_name(f".{output_path.name}.part")
+    staging = contact_sheet_staging_path(output_path)
     sheet.save(staging, format="PNG", optimize=True)
     staging.replace(output_path)
     return ImageArtifact(

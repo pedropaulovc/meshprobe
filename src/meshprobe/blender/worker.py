@@ -15,7 +15,6 @@ import shlex
 import struct
 import sys
 import traceback
-from array import array
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
@@ -40,6 +39,7 @@ IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
 OVERRIDE_MATERIALS: dict[str, bpy.types.Material] = {}
+EMISSION_MATERIALS: dict[str, bpy.types.Material] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -807,6 +807,10 @@ def runtime_diagnostics() -> dict[str, Any]:
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+        "render": {
+            "engine": bpy.context.scene.render.engine,
+            "eevee_samples": eevee_render_samples(),
+        },
     }
 
 
@@ -825,6 +829,7 @@ def configure_render(command: dict[str, Any]) -> str:
     if engine == "cycles":
         configure_cycles_gpu(command["samples"])
         return "cuda"
+    configure_eevee_samples(command["samples"])
     return "graphics"
 
 
@@ -837,6 +842,26 @@ def eevee_engine() -> str:
     if "BLENDER_EEVEE_NEXT" in identifiers:
         return "BLENDER_EEVEE_NEXT"
     raise RuntimeError(f"Blender exposes no Eevee render engine: {sorted(identifiers)}")
+
+
+def configure_eevee_samples(samples: int) -> None:
+    settings = bpy.context.scene.eevee
+    if hasattr(settings, "taa_render_samples"):
+        settings.taa_render_samples = samples
+        return
+    if hasattr(settings, "taa_samples"):
+        settings.taa_samples = samples
+        return
+    raise RuntimeError("Blender exposes no supported Eevee render sample setting")
+
+
+def eevee_render_samples() -> int:
+    settings = bpy.context.scene.eevee
+    if hasattr(settings, "taa_render_samples"):
+        return int(settings.taa_render_samples)
+    if hasattr(settings, "taa_samples"):
+        return int(settings.taa_samples)
+    raise RuntimeError("Blender exposes no supported Eevee render sample setting")
 
 
 def configure_cycles_gpu(samples: int) -> None:
@@ -870,17 +895,17 @@ def luminance_summary(path: Path) -> dict[str, float]:
     try:
         if image.size[0] == 0 or image.size[1] == 0:
             raise RuntimeError("render result has no pixels")
-        pixel_count = image.size[0] * image.size[1]
-        pixels = array("f", [0.0]) * (pixel_count * 4)
-        image.pixels.foreach_get(pixels)
-        stride = max(1, pixel_count // 262_144)
+        width, height = image.size
+        x_stride = max(1, math.ceil(width / 512))
+        y_stride = max(1, math.ceil(height / 512))
         values: list[float] = []
-        for pixel_index in range(0, pixel_count, stride):
-            offset = pixel_index * 4
-            value = (
-                0.2126 * pixels[offset] + 0.7152 * pixels[offset + 1] + 0.0722 * pixels[offset + 2]
-            )
-            values.append(min(1.0, max(0.0, value)))
+        for y in range(0, height, y_stride):
+            row_start = y * width * 4
+            row = image.pixels[row_start : row_start + width * 4]
+            for x in range(0, width, x_stride):
+                offset = x * 4
+                value = 0.2126 * row[offset] + 0.7152 * row[offset + 1] + 0.0722 * row[offset + 2]
+                values.append(min(1.0, max(0.0, value)))
         return {
             "minimum": min(values),
             "median": median(values),
@@ -893,7 +918,10 @@ def luminance_summary(path: Path) -> dict[str, float]:
 
 
 def emission_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
-    material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    material = EMISSION_MATERIALS.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        EMISSION_MATERIALS[name] = material
     material.use_nodes = True
     nodes = material.node_tree.nodes
     nodes.clear()
@@ -1003,12 +1031,14 @@ def render_evaluator_passes(output_dir: Path, stem: str) -> dict[str, Any]:
     pass_output.file_output_items.new("VECTOR", "Normal")
     group.links.new(render_layers.outputs["Depth"], pass_output.inputs["Depth"])
     group.links.new(render_layers.outputs["Normal"], pass_output.inputs["Normal"])
+    prefix = f"{stem}.passes"
+    before = {path: file_version(path) for path in output_dir.glob(f"{prefix}*.exr")}
     try:
         bpy.ops.render.render()
     finally:
         scene.compositing_node_group = original_group
         bpy.data.node_groups.remove(group)
-    multilayer_path = published_compositor_path(output_dir, f"{stem}.passes")
+    multilayer_path = published_compositor_path(output_dir, prefix, before)
 
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_depth = "8"
@@ -1045,15 +1075,30 @@ def compositor_file_output(
     return node
 
 
-def published_compositor_path(output_dir: Path, prefix: str) -> Path:
+def file_version(path: Path) -> tuple[int, int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+
+def published_compositor_path(
+    output_dir: Path,
+    prefix: str,
+    before: dict[Path, tuple[int, int, int]],
+) -> Path:
     expected = output_dir / f"{prefix}.exr"
-    if expected.is_file():
-        return expected
-    candidates = sorted(output_dir.glob(f"{prefix}*.exr"))
+    candidates = [
+        path
+        for path in output_dir.glob(f"{prefix}*.exr")
+        if path not in before or file_version(path) != before[path]
+    ]
     if len(candidates) != 1:
-        names = [path.name for path in candidates]
-        raise RuntimeError(f"expected one compositor output for {prefix}, found {names}")
-    candidates[0].replace(expected)
+        names = sorted(path.name for path in candidates)
+        raise RuntimeError(f"expected one fresh compositor output for {prefix}, found {names}")
+    candidate = candidates[0]
+    if candidate == expected:
+        return expected
+    expected.unlink(missing_ok=True)
+    candidate.replace(expected)
     return expected
 
 
@@ -1139,7 +1184,8 @@ def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
 def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
-    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS, OVERRIDE_MATERIALS
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
+    global OVERRIDE_MATERIALS, EMISSION_MATERIALS
 
     MANIFEST = manifest
     objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
@@ -1172,6 +1218,7 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
     MARK_OBJECTS = {}
     OVERRIDE_MATERIALS = {}
+    EMISSION_MATERIALS = {}
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 
