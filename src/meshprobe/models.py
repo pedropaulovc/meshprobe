@@ -178,6 +178,8 @@ class ProjectedComponentBounds(ContractModel):
 
 class CameraDiagnostics(ContractModel):
     aspect_ratio: PositiveFiniteFloat
+    horizontal_fov_degrees: Annotated[float, Field(gt=0, lt=180, allow_inf_nan=False)] | None
+    vertical_fov_degrees: Annotated[float, Field(gt=0, lt=180, allow_inf_nan=False)] | None
     right: Vec3
     up: Vec3
     forward: Vec3
@@ -259,11 +261,20 @@ class PresetIllumination(ContractModel):
     preset: IlluminationPreset
 
 
+class EnvironmentMap(ContractModel):
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    strength: PositiveFiniteFloat = 1.0
+    rotation_degrees: FiniteFloat = 0.0
+    projection: Literal["equirectangular"] = "equirectangular"
+
+
 class CustomIllumination(ContractModel):
     preset: Literal["custom"] = "custom"
     background_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat]
     ambient_strength: NonNegativeFiniteFloat
-    lights: tuple[Light, ...] = Field(min_length=1, max_length=32)
+    lights: tuple[Light, ...] = Field(default=(), max_length=32)
+    environment_map: EnvironmentMap | None = None
 
     @field_validator("lights")
     @classmethod
@@ -276,12 +287,13 @@ class CustomIllumination(ContractModel):
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
         background_contributes = self.ambient_strength > 0 and any(self.background_rgb)
+        environment_contributes = self.environment_map is not None
         light_contributes = any(
             light.color_temperature_k is not None
             or (light.linear_rgb is not None and any(light.linear_rgb))
             for light in self.lights
         )
-        if not background_contributes and not light_contributes:
+        if not background_contributes and not light_contributes and not environment_contributes:
             raise ValueError("custom illumination must have non-zero light output")
         return self
 
@@ -346,6 +358,8 @@ class SceneCapabilities(ContractModel):
     component_names: Literal["source", "generated"]
     materials: Literal["preserved", "partial", "absent"]
     textures: Literal["preserved", "partial", "absent"]
+    animations: Literal["absent", "static_pose"] = "absent"
+    procedural_materials: Literal["absent", "unsupported"] = "absent"
 
 
 class NormalizedGeometryArtifact(ContractModel):

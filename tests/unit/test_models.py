@@ -10,6 +10,7 @@ from meshprobe.models import (
     AreaLight,
     Bounds,
     CustomIllumination,
+    EnvironmentMap,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
@@ -27,6 +28,17 @@ def render_session(state_sha256: str = "b" * 64) -> dict[str, object]:
                 "orientation_xyzw": [0, 0, 0, 1],
             },
             "projection": {"mode": "perspective", "focal_length_mm": 50},
+        },
+        "camera_diagnostics": {
+            "aspect_ratio": 1,
+            "horizontal_fov_degrees": 40,
+            "vertical_fov_degrees": 40,
+            "right": [1, 0, 0],
+            "up": [0, 1, 0],
+            "forward": [0, 0, -1],
+            "frustum_corners_mm": [[0, 0, 0]] * 8,
+            "target_depth_mm": 100,
+            "projected_bounds": {},
         },
         "illumination": {"preset": "neutral_studio"},
         "components": {},
@@ -137,6 +149,31 @@ def test_custom_illumination_accepts_effective_background() -> None:
         lights=(black_light,),
     )
     assert illumination.ambient_strength == 0.5
+
+
+def test_custom_illumination_accepts_content_addressed_environment_only() -> None:
+    illumination = CustomIllumination(
+        background_rgb=(0, 0, 0),
+        ambient_strength=0,
+        environment_map=EnvironmentMap(
+            path="studio.exr",
+            sha256="a" * 64,
+            strength=1.5,
+            rotation_degrees=45,
+        ),
+    )
+
+    assert illumination.lights == ()
+    assert illumination.environment_map is not None
+    assert illumination.environment_map.projection == "equirectangular"
+
+
+def test_custom_illumination_rejects_no_lights_background_or_environment() -> None:
+    with pytest.raises(ValidationError, match="non-zero light output"):
+        CustomIllumination(
+            background_rgb=(0, 0, 0),
+            ambient_strength=0,
+        )
 
 
 def test_normalized_quaternion_has_unit_length() -> None:

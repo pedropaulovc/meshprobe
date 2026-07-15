@@ -28,6 +28,27 @@ PROTOCOL_VERSION = 1
 MILLIMETERS_PER_METER = 1_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
+SUPPORTED_GLTF_EXTENSIONS = {
+    "EXT_mesh_gpu_instancing",
+    "KHR_draco_mesh_compression",
+    "KHR_lights_punctual",
+    "KHR_materials_anisotropy",
+    "KHR_materials_clearcoat",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_ior",
+    "KHR_materials_iridescence",
+    "KHR_materials_pbrSpecularGlossiness",
+    "KHR_materials_sheen",
+    "KHR_materials_specular",
+    "KHR_materials_transmission",
+    "KHR_materials_unlit",
+    "KHR_materials_variants",
+    "KHR_materials_volume",
+    "KHR_mesh_quantization",
+    "KHR_texture_basisu",
+    "KHR_texture_transform",
+    "KHR_xmp_json_ld",
+}
 MANIFEST: dict[str, Any] | None = None
 COMPONENT_OBJECTS: dict[str, bpy.types.Object] = {}
 ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
@@ -495,8 +516,11 @@ def camera_diagnostics(
         )
         for component_id in sorted(focus_ids)
     }
+    horizontal_fov, vertical_fov = camera_fov_degrees(camera.data, aspect_ratio)
     return {
         "aspect_ratio": aspect_ratio,
+        "horizontal_fov_degrees": horizontal_fov,
+        "vertical_fov_degrees": vertical_fov,
         "right": list(right),
         "up": list(up),
         "forward": list(forward),
@@ -504,6 +528,26 @@ def camera_diagnostics(
         "target_depth_mm": -target_camera.z * MILLIMETERS_PER_METER,
         "projected_bounds": projected,
     }
+
+
+def camera_fov_degrees(
+    camera: bpy.types.Camera,
+    aspect_ratio: float,
+) -> tuple[float | None, float | None]:
+    if camera.type == "ORTHO":
+        return None, None
+    sensor_fit = camera.sensor_fit
+    if sensor_fit == "AUTO":
+        sensor_fit = "HORIZONTAL" if aspect_ratio >= 1 else "VERTICAL"
+    sensor_width = camera.sensor_width
+    sensor_height = camera.sensor_height
+    if sensor_fit == "VERTICAL":
+        sensor_width = sensor_height * aspect_ratio
+    else:
+        sensor_height = sensor_width / aspect_ratio
+    horizontal = math.degrees(2 * math.atan(sensor_width / (2 * camera.lens)))
+    vertical = math.degrees(2 * math.atan(sensor_height / (2 * camera.lens)))
+    return horizontal, vertical
 
 
 def scene_center_mm() -> list[float]:
@@ -697,13 +741,51 @@ def preset_lights(preset: str) -> dict[str, Any]:
     }
 
 
-def configure_world(background_rgb: list[float], ambient_strength: float) -> None:
+def configure_world(
+    background_rgb: list[float],
+    ambient_strength: float,
+    environment_map: dict[str, Any] | None,
+) -> None:
     world = bpy.context.scene.world or bpy.data.worlds.new("MeshProbeWorld")
     bpy.context.scene.world = world
     world.use_nodes = True
-    background = world.node_tree.nodes.get("Background")
-    background.inputs["Color"].default_value = (*background_rgb, 1.0)
-    background.inputs["Strength"].default_value = ambient_strength
+    nodes = world.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputWorld")
+    ambient = nodes.new("ShaderNodeBackground")
+    ambient.name = "MeshProbeAmbient"
+    ambient.inputs["Color"].default_value = (*background_rgb, 1.0)
+    ambient.inputs["Strength"].default_value = ambient_strength
+    if environment_map is None:
+        world.node_tree.links.new(ambient.outputs["Background"], output.inputs["Surface"])
+        return
+
+    path = Path(environment_map["path"]).expanduser().resolve(strict=True)
+    if sha256_file(path) != environment_map["sha256"]:
+        raise ValueError("environment map hash does not match its declared content")
+    texture_coordinates = nodes.new("ShaderNodeTexCoord")
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.vector_type = "POINT"
+    mapping.inputs["Rotation"].default_value[2] = math.radians(
+        environment_map["rotation_degrees"]
+    )
+    texture = nodes.new("ShaderNodeTexEnvironment")
+    texture.name = "MeshProbeEnvironment"
+    texture.projection = "EQUIRECTANGULAR"
+    image = bpy.data.images.load(str(path), check_existing=False)
+    image.name = f"MeshProbeEnvironment-{environment_map['sha256'][:16]}"
+    texture.image = image
+    environment = nodes.new("ShaderNodeBackground")
+    environment.name = "MeshProbeEnvironmentBackground"
+    environment.inputs["Strength"].default_value = environment_map["strength"]
+    add = nodes.new("ShaderNodeAddShader")
+    links = world.node_tree.links
+    links.new(texture_coordinates.outputs["Generated"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    links.new(texture.outputs["Color"], environment.inputs["Color"])
+    links.new(ambient.outputs["Background"], add.inputs[0])
+    links.new(environment.outputs["Background"], add.inputs[1])
+    links.new(add.outputs["Shader"], output.inputs["Surface"])
 
 
 def create_light(spec: dict[str, Any]) -> None:
@@ -740,7 +822,11 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
         else illumination
     )
     clear_lights()
-    configure_world(runtime["background_rgb"], runtime["ambient_strength"])
+    configure_world(
+        runtime["background_rgb"],
+        runtime["ambient_strength"],
+        runtime.get("environment_map"),
+    )
     for light in runtime["lights"]:
         create_light(light)
     global CURRENT_ILLUMINATION
@@ -909,7 +995,11 @@ def session_snapshot() -> dict[str, Any]:
         "illumination": CURRENT_ILLUMINATION,
         "components": {key: COMPONENT_STATES[key] for key in sorted(COMPONENT_STATES)},
     }
-    canonical = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    hashed_state = deepcopy(state)
+    environment = hashed_state["illumination"].get("environment_map")
+    if environment is not None:
+        environment.pop("path", None)
+    canonical = json.dumps(hashed_state, sort_keys=True, separators=(",", ":")).encode()
     return {
         **deepcopy(state),
         "camera_diagnostics": deepcopy(CURRENT_CAMERA_DIAGNOSTICS),
@@ -937,6 +1027,8 @@ def reset_session() -> dict[str, Any]:
 
 def runtime_diagnostics() -> dict[str, Any]:
     camera = camera_object()
+    world_nodes = bpy.context.scene.world.node_tree.nodes
+    environment = world_nodes.get("MeshProbeEnvironment")
     return {
         "components": {
             component_id: {
@@ -963,6 +1055,14 @@ def runtime_diagnostics() -> dict[str, Any]:
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+        "environment_map": (
+            {
+                "path": environment.image.filepath,
+                "projection": environment.projection,
+            }
+            if environment is not None and environment.image is not None
+            else None
+        ),
         "render": {
             "engine": bpy.context.scene.render.engine,
             "eevee_samples": eevee_render_samples(),
@@ -1504,6 +1604,21 @@ def build_manifest(
     camera, camera_warning = imported_camera(root_bounds)
     illumination, illumination_warnings = imported_illumination()
     source_format = source_path.suffix.lower().removeprefix(".")
+    document = gltf_document(source_path) if source_format in {"glb", "gltf"} else {}
+    animations = document.get("animations", [])
+    has_animations = isinstance(animations, list) and bool(animations)
+    extensions = document.get("extensionsUsed", [])
+    extension_names = (
+        {name for name in extensions if isinstance(name, str)}
+        if isinstance(extensions, list)
+        else set()
+    )
+    unverified_extensions = sorted(extension_names - SUPPORTED_GLTF_EXTENSIONS)
+    procedural_extensions = [
+        name
+        for name in unverified_extensions
+        if "procedural" in name.casefold() or "materialx" in name.casefold()
+    ]
     hierarchy_flattened = source_format == "stl" or has_unaddressable_hierarchy(objects)
     warnings = [*import_warnings, *illumination_warnings]
     if hierarchy_flattened and not any(
@@ -1521,6 +1636,40 @@ def build_manifest(
         )
     if camera_warning is not None:
         warnings.append(camera_warning)
+
+    if has_animations:
+        warnings.append(
+            {
+                "code": "animation.static_pose",
+                "message": (
+                    "The source contains animation data; MeshProbe inspects the imported "
+                    "rest state and does not evaluate animation timelines."
+                ),
+                "component_ids": [],
+            }
+        )
+    if unverified_extensions:
+        warnings.append(
+            {
+                "code": "extension.unverified",
+                "message": (
+                    "The source declares glTF extensions outside MeshProbe's verified import "
+                    f"set: {', '.join(unverified_extensions)}."
+                ),
+                "component_ids": [],
+            }
+        )
+    if procedural_extensions:
+        warnings.append(
+            {
+                "code": "material.procedural_unsupported",
+                "message": (
+                    "Procedural material extensions are not evaluated: "
+                    f"{', '.join(procedural_extensions)}."
+                ),
+                "component_ids": [],
+            }
+        )
 
     if source_format in {"glb", "gltf"} and camera_warning is None:
         warnings.append(
@@ -1555,6 +1704,8 @@ def build_manifest(
             "component_names": "source" if names_preserved else "generated",
             "materials": material_capability,
             "textures": texture_capability,
+            "animations": "static_pose" if has_animations else "absent",
+            "procedural_materials": "unsupported" if procedural_extensions else "absent",
         },
         "warnings": warnings,
     }

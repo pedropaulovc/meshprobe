@@ -79,6 +79,16 @@ def test_camera_diagnostics_return_basis_frustum_and_target_depth(
     assert diagnostics.forward == pytest.approx((-1, 0, 0))
     assert diagnostics.target_depth_mm == pytest.approx(500)
     assert len(diagnostics.frustum_corners_mm) == 8
+    if isinstance(projection, PerspectiveProjection):
+        assert diagnostics.horizontal_fov_degrees == pytest.approx(
+            projection.horizontal_fov_degrees(16 / 9)
+        )
+        assert diagnostics.vertical_fov_degrees == pytest.approx(
+            projection.vertical_fov_degrees(16 / 9)
+        )
+    else:
+        assert diagnostics.horizontal_fov_degrees is None
+        assert diagnostics.vertical_fov_degrees is None
     near_depths = [500 - corner[0] for corner in diagnostics.frustum_corners_mm[:4]]
     far_depths = [500 - corner[0] for corner in diagnostics.frustum_corners_mm[4:]]
     assert near_depths == pytest.approx([1] * 4)

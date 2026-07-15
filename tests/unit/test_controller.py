@@ -21,7 +21,9 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
+    CustomIllumination,
     DisplayMode,
+    EnvironmentMap,
     MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
@@ -553,6 +555,8 @@ def render_manifest_for(
             },
             "camera_diagnostics": {
                 "aspect_ratio": 1,
+                "horizontal_fov_degrees": 40,
+                "vertical_fov_degrees": 40,
                 "right": [1, 0, 0],
                 "up": [0, 1, 0],
                 "forward": [0, 0, -1],
@@ -837,3 +841,38 @@ def test_perspective_orbit_framing_uses_limiting_panel_dimension(
     controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 0.5)
 
     assert distances[1] > distances[0]
+
+
+def test_environment_maps_are_verified_and_copied_into_content_cache(tmp_path: Path) -> None:
+    source = tmp_path / "studio.exr"
+    source.write_bytes(b"declared environment content")
+    source_hash = sha256_file(source)
+    controller = BlenderController(artifact_cache_root=tmp_path / "cache")
+    illumination = CustomIllumination(
+        background_rgb=(0, 0, 0),
+        ambient_strength=0,
+        environment_map=EnvironmentMap(path=str(source), sha256=source_hash),
+    )
+
+    cached = controller._cache_environment_map(illumination)
+
+    assert isinstance(cached, CustomIllumination)
+    assert cached.environment_map is not None
+    cached_path = Path(cached.environment_map.path)
+    assert cached_path != source
+    assert cached_path.read_bytes() == source.read_bytes()
+    assert cached.environment_map.sha256 == source_hash
+
+
+def test_environment_map_declaration_must_match_file_hash(tmp_path: Path) -> None:
+    source = tmp_path / "studio.hdr"
+    source.write_bytes(b"actual")
+    controller = BlenderController(artifact_cache_root=tmp_path / "cache")
+    illumination = CustomIllumination(
+        background_rgb=(0, 0, 0),
+        ambient_strength=0,
+        environment_map=EnvironmentMap(path=str(source), sha256="a" * 64),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="hash does not match"):
+        controller._cache_environment_map(illumination)

@@ -25,6 +25,7 @@ from meshprobe.models import (
     ContactSheetManifest,
     CustomIllumination,
     DisplayMode,
+    EnvironmentMap,
     IlluminationPreset,
     MarkMode,
     OrthographicProjection,
@@ -111,6 +112,32 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_environment_exr(tmp_path: Path) -> Path:
+    output = tmp_path / "studio.exr"
+    script = tmp_path / "build_environment.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+image = bpy.data.images.new('studio', width=8, height=4, float_buffer=True)
+image.pixels = [0.8, 0.4, 0.2, 1.0] * (8 * 4)
+bpy.context.scene.render.image_settings.file_format = 'OPEN_EXR'
+bpy.context.scene.render.image_settings.color_depth = '32'
+image.save_render(filepath={json.dumps(str(output))}, scene=bpy.context.scene)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_flat_mesh(tmp_path: Path, source_format: str, cube_size: float = 1.0) -> Path:
     output = tmp_path / f"fixture.{source_format}"
     script = tmp_path / f"build_{source_format}.py"
@@ -163,6 +190,15 @@ bpy.ops.export_scene.gltf(
         timeout=30,
     )
     return output
+
+
+def build_unverified_capabilities_gltf(tmp_path: Path) -> Path:
+    source = build_external_gltf(tmp_path)
+    document = json.loads(source.read_text(encoding="utf-8"))
+    document["animations"] = [{"name": "inspection-motion", "channels": [], "samplers": []}]
+    document["extensionsUsed"] = ["VENDOR_procedural_material"]
+    source.write_text(json.dumps(document), encoding="utf-8")
+    return source
 
 
 def build_duplicate_name_gltf(tmp_path: Path) -> Path:
@@ -408,6 +444,23 @@ def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) ->
     assert snapshot_source(source) == before
 
 
+def test_import_reports_animation_and_procedural_extension_limits(tmp_path: Path) -> None:
+    source = build_unverified_capabilities_gltf(tmp_path)
+
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+
+    assert manifest.capabilities.animations == "static_pose"
+    assert manifest.capabilities.procedural_materials == "unsupported"
+    warning_codes = {warning.code for warning in manifest.warnings}
+    assert "animation.static_pose" in warning_codes
+    assert "extension.unverified" in warning_codes
+    assert "material.procedural_unsupported" in warning_codes
+
+
 def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
     tmp_path: Path,
 ) -> None:
@@ -540,7 +593,12 @@ def test_component_paths_escape_separator_characters(tmp_path: Path) -> None:
 
 def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    environment_path = build_environment_exr(tmp_path)
+    environment_hash = hashlib.sha256(environment_path.read_bytes()).hexdigest()
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
         manifest = controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("scene.describe")["session"])
         target = manifest.components[-1].id
@@ -690,6 +748,38 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert isinstance(custom, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
 
+        environment_lit = controller.execute(
+            IlluminationSetCommand(
+                request_id="environment-light",
+                op="illumination.set",
+                illumination=CustomIllumination(
+                    background_rgb=(0, 0, 0),
+                    ambient_strength=0,
+                    environment_map=EnvironmentMap(
+                        path=str(environment_path),
+                        sha256=environment_hash,
+                        strength=1.25,
+                        rotation_degrees=30,
+                    ),
+                ),
+            )
+        )
+        assert isinstance(environment_lit, SessionSnapshot)
+        assert isinstance(environment_lit.illumination, CustomIllumination)
+        cached_environment = environment_lit.illumination.environment_map
+        assert cached_environment is not None
+        assert cached_environment.path != str(environment_path)
+        environment_runtime = controller.request("session.runtime")["environment_map"]
+        assert environment_runtime["path"] == cached_environment.path
+        assert environment_runtime["projection"] == "EQUIRECTANGULAR"
+        assert hashlib.sha256(environment_path.read_bytes()).hexdigest() == environment_hash
+        original_path_spec = environment_lit.illumination.model_dump(mode="json")
+        original_path_spec["environment_map"]["path"] = str(environment_path)
+        same_content_state = SessionSnapshot.model_validate(
+            controller.request("illumination.set", illumination=original_path_spec)
+        )
+        assert same_content_state.state_sha256 == environment_lit.state_sha256
+
         before_invalid_mode = controller.request("scene.describe")["session"]
         with pytest.raises(BlenderWorkerError, match="unknown display mode"):
             controller.request(
@@ -732,6 +822,12 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
         assert diagnostics.aspect_ratio == pytest.approx(16 / 9)
         assert diagnostics.forward == pytest.approx((-1, 0, 0))
         assert diagnostics.target_depth_mm == pytest.approx(2_000)
+        assert diagnostics.horizontal_fov_degrees == pytest.approx(
+            PerspectiveProjection(focal_length_mm=85).horizontal_fov_degrees(16 / 9)
+        )
+        assert diagnostics.vertical_fov_degrees == pytest.approx(
+            PerspectiveProjection(focal_length_mm=85).vertical_fov_degrees(16 / 9)
+        )
         assert len(diagnostics.frustum_corners_mm) == 8
         projected = diagnostics.projected_bounds[camera_focus]
         assert projected.projection_status == "in_front"

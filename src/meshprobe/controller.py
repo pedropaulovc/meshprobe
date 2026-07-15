@@ -21,6 +21,9 @@ from meshprobe.models import (
     Bounds,
     ContactSheetManifest,
     ContactSheetPanel,
+    CustomIllumination,
+    EnvironmentMap,
+    Illumination,
     NormalizedGeometryArtifact,
     OrthographicProjection,
     PerspectiveProjection,
@@ -33,6 +36,7 @@ from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -288,6 +292,10 @@ class BlenderController:
             return self.render_contact_sheet(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        if isinstance(command, IlluminationSetCommand):
+            arguments["illumination"] = self._cache_environment_map(
+                command.illumination
+            ).model_dump(mode="json")
         try:
             result = self.request(operation, **arguments)
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
@@ -300,6 +308,46 @@ class BlenderController:
             self._accepted_commands.append((operation, arguments))
             return SessionSnapshot.model_validate(result)
         return result
+
+    def _cache_environment_map(
+        self,
+        illumination: Illumination,
+    ) -> Illumination:
+        if not isinstance(illumination, CustomIllumination):
+            return illumination
+        environment = illumination.environment_map
+        if environment is None:
+            return illumination
+        source = Path(environment.path).expanduser().resolve(strict=True)
+        if not source.is_file():
+            raise BlenderWorkerError(f"environment map is not a file: {source}")
+        before = sha256_file(source)
+        if before != environment.sha256:
+            raise BlenderWorkerError("environment map hash does not match its declaration")
+        suffix = source.suffix.lower()
+        if suffix not in {".hdr", ".exr"}:
+            raise BlenderWorkerError("environment map must be an HDR or EXR image")
+
+        def write_output(payload: Path) -> None:
+            shutil.copyfile(source, payload / f"environment{suffix}")
+
+        entry = self._artifact_cache.publish(
+            environment.sha256,
+            "meshprobe-environment-v1",
+            {"extension": suffix, "projection": environment.projection},
+            write_output,
+        )
+        if sha256_file(source) != before:
+            raise BlenderWorkerError("environment map changed while it was cached")
+        output = entry.outputs[0]
+        cached_environment = EnvironmentMap(
+            path=str(entry.output_path(output.relative_path)),
+            sha256=output.sha256,
+            strength=environment.strength,
+            rotation_degrees=environment.rotation_degrees,
+            projection=environment.projection,
+        )
+        return illumination.model_copy(update={"environment_map": cached_environment})
 
     def render_image(
         self,

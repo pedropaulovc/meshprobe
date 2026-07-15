@@ -111,6 +111,16 @@ def camera_diagnostics(
     )
     return CameraDiagnostics(
         aspect_ratio=aspect_ratio,
+        horizontal_fov_degrees=(
+            None
+            if isinstance(projection, OrthographicProjection)
+            else projection.horizontal_fov_degrees(aspect_ratio)
+        ),
+        vertical_fov_degrees=(
+            None
+            if isinstance(projection, OrthographicProjection)
+            else projection.vertical_fov_degrees(aspect_ratio)
+        ),
         right=right,
         up=up,
         forward=forward,
