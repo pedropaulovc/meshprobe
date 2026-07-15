@@ -212,6 +212,30 @@ def test_broker_mediates_custom_environment_map_paths(tmp_path: Path) -> None:
     assert rejected.error is not None
     assert rejected.error.code == "broker.input_path"
 
+    missing = active.execute(
+        IlluminationSetCommand.model_validate(
+            {
+                "request_id": "missing-environment",
+                "op": "illumination.set",
+                "illumination": {
+                    "preset": "custom",
+                    "background_rgb": [1, 1, 1],
+                    "ambient_strength": 1,
+                    "environment_map": {
+                        "path": (
+                            str((tmp_path / "input" / "missing.hdr").resolve())
+                            if os.name == "nt"
+                            else "/workspace/input/missing.hdr"
+                        ),
+                        "sha256": "a" * 64,
+                    },
+                },
+            }
+        )
+    )
+    assert missing.error is not None
+    assert missing.error.code == "broker.input_path"
+
 
 def test_broker_rejects_wrong_model_output_escape_duplicates_and_budgets(tmp_path: Path) -> None:
     active = broker(

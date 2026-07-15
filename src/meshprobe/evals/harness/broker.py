@@ -288,7 +288,18 @@ class EvaluationBroker:
             host_candidate = Path(visible_path)
             if not host_candidate.is_absolute():
                 raise _RejectedCommand("broker.input_path", "environment map path must be absolute")
-            resolved = host_candidate.resolve(strict=True)
+            assigned_roots = (input_root, self._artifact_root)
+            if not any(host_candidate.is_relative_to(root) for root in assigned_roots):
+                raise _RejectedCommand(
+                    "broker.input_path",
+                    "environment map must be under the assigned input or artifact directory",
+                )
+            try:
+                resolved = host_candidate.resolve(strict=True)
+            except OSError as error:
+                raise _RejectedCommand(
+                    "broker.input_path", "environment map is unavailable"
+                ) from error
         else:
             sandbox_candidate = PurePosixPath(visible_path)
             prefixes = {
@@ -304,7 +315,12 @@ class EvaluationBroker:
                     raise _RejectedCommand(
                         "broker.input_path", "environment map escapes assigned storage"
                     )
-                resolved = (root / Path(*relative.parts)).resolve(strict=True)
+                try:
+                    resolved = (root / Path(*relative.parts)).resolve(strict=True)
+                except OSError as error:
+                    raise _RejectedCommand(
+                        "broker.input_path", "environment map is unavailable"
+                    ) from error
                 break
             else:
                 raise _RejectedCommand(
