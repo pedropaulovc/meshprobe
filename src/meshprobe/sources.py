@@ -26,6 +26,10 @@ class SourceSnapshot:
     sha256: str
 
 
+class _InvalidGlb(ValueError):
+    """The binary container cannot be inspected for external dependencies."""
+
+
 def snapshot_source(source_path: Path) -> SourceSnapshot:
     """Discover every imported sidecar and fingerprint its content and metadata."""
 
@@ -70,7 +74,10 @@ def _snapshot_asset(logical_path: str, path: Path) -> SourceAsset:
 
 
 def _gltf_dependencies(source: Path) -> tuple[tuple[str, Path], ...]:
-    document = _gltf_document(source)
+    try:
+        document = _gltf_document(source)
+    except _InvalidGlb:
+        return ()
 
     dependencies: list[tuple[str, Path]] = []
     for collection_name in ("buffers", "images"):
@@ -108,17 +115,17 @@ def _gltf_document(source: Path) -> dict[str, object]:
 def _glb_document(source: Path) -> dict[str, object]:
     payload = source.read_bytes()
     if len(payload) < 20 or payload[:4] != b"glTF":
-        raise ValueError("invalid GLB header")
+        raise _InvalidGlb("invalid GLB header")
     version, declared_length = struct.unpack_from("<II", payload, 4)
     if version != 2 or declared_length != len(payload):
-        raise ValueError("invalid GLB version or declared length")
+        raise _InvalidGlb("invalid GLB version or declared length")
     offset = 12
     while offset + 8 <= len(payload):
         chunk_length, chunk_type = struct.unpack_from("<II", payload, offset)
         offset += 8
         chunk_end = offset + chunk_length
         if chunk_end > len(payload):
-            raise ValueError("GLB chunk exceeds the declared file length")
+            raise _InvalidGlb("GLB chunk exceeds the declared file length")
         chunk = payload[offset:chunk_end]
         offset = chunk_end
         if chunk_type != 0x4E4F534A:
@@ -126,11 +133,11 @@ def _glb_document(source: Path) -> dict[str, object]:
         try:
             document = json.loads(chunk.rstrip(b"\x00 \t\r\n").decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(f"invalid GLB JSON: {error}") from error
+            raise _InvalidGlb(f"invalid GLB JSON: {error}") from error
         if not isinstance(document, dict):
-            raise ValueError("GLB JSON document must be an object")
+            raise _InvalidGlb("GLB JSON document must be an object")
         return document
-    raise ValueError("GLB has no JSON chunk")
+    raise _InvalidGlb("GLB has no JSON chunk")
 
 
 def _obj_dependencies(source: Path) -> tuple[tuple[str, Path], ...]:

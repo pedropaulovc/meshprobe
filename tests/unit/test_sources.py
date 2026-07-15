@@ -44,6 +44,16 @@ def test_embedded_gltf_keeps_single_file_content_hash(tmp_path: Path) -> None:
     assert snapshot.sha256 == sha256_file(source)
 
 
+def test_invalid_glb_still_snapshots_its_primary_file(tmp_path: Path) -> None:
+    source = tmp_path / "invalid.glb"
+    source.write_bytes(b"invalid container")
+
+    snapshot = snapshot_source(source)
+
+    assert tuple(asset.path for asset in snapshot.assets) == (source,)
+    assert snapshot.sha256 == sha256_file(source)
+
+
 @pytest.mark.parametrize(
     ("document", "message"),
     [
