@@ -30,6 +30,61 @@ jobs:
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
       - run: uv sync --locked --all-groups
+      - run: uv run pytest
+
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      GALLIUM_DRIVER: llvmpipe
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install Bubblewrap sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor-profiles bubblewrap
+          sudo cp \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+      - name: Install Blender 5.2 LTS from official release
+        run: |
+          archive="$RUNNER_TEMP/blender-5.2.0-linux-x64.tar.xz"
+          checksums="$RUNNER_TEMP/blender-5.2.0.sha256"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --output "$archive" \
+            "https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --output "$checksums" \
+            "https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256"
+          expected=$(awk '$2 == "blender-5.2.0-linux-x64.tar.xz" {print $1}' "$checksums")
+          if [ -z "$expected" ]; then
+            echo "Official checksum file has no Linux x64 entry" >&2
+            exit 1
+          fi
+          actual=$(sha256sum "$archive" | awk '{print $1}')
+          if [ "$actual" != "$expected" ]; then
+            echo "Blender archive checksum mismatch: expected $expected, got $actual" >&2
+            exit 1
+          fi
+          tar --extract --file "$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/blender-5.2.0-linux-x64" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/blender-5.2.0-linux-x64/blender" --version
+      - run: uv sync --locked --all-groups
       - run: uv run pytest --cov --cov-report=term-missing
 
   quality:
