@@ -46,7 +46,7 @@ jobs:
       - name: Install Bubblewrap sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --yes apparmor-profiles bubblewrap
+          sudo apt-get install --yes apparmor-profiles bubblewrap libegl1
           sudo cp \
             /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
             /etc/apparmor.d/bwrap-userns-restrict
