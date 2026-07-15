@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.models import SceneManifest
+from meshprobe.protocol import Command
+from meshprobe.session import SessionSnapshot
 from meshprobe.sources import sha256_file, snapshot_source
 
 __all__ = [
@@ -24,6 +26,14 @@ __all__ = [
     "BlenderWorkerTimeout",
     "sha256_file",
 ]
+
+STATE_OPERATIONS = {
+    "view.set",
+    "view.orbit",
+    "illumination.set",
+    "component.display",
+    "component.mark",
+}
 
 
 class BlenderWorkerError(RuntimeError):
@@ -50,6 +60,8 @@ class BlenderController:
         self._reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
         self.ready_event: dict[str, Any] | None = None
+        self._source_path: Path | None = None
+        self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
     def logs(self) -> tuple[str, ...]:
@@ -144,7 +156,37 @@ class BlenderController:
         manifest = SceneManifest.model_validate(result)
         if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
+        self._source_path = source
+        self._accepted_commands.clear()
         return manifest
+
+    def execute(self, command: Command) -> object:
+        operation = command.op
+        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        try:
+            result = self.request(operation, **arguments)
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._recover_session()
+            result = self.request(operation, **arguments)
+        if operation == "session.reset":
+            self._accepted_commands.clear()
+            return SessionSnapshot.model_validate(result)
+        if operation in STATE_OPERATIONS:
+            self._accepted_commands.append((operation, arguments))
+            return SessionSnapshot.model_validate(result)
+        return result
+
+    def _recover_session(self) -> None:
+        if self._source_path is None:
+            raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
+        source_path = self._source_path
+        accepted_commands = list(self._accepted_commands)
+        self.close()
+        self.start()
+        self.open_scene(source_path)
+        for operation, arguments in accepted_commands:
+            self.request(operation, **arguments)
+        self._accepted_commands = accepted_commands
 
     def close(self) -> None:
         process = self._process
