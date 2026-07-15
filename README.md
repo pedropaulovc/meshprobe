@@ -91,15 +91,15 @@ Build the released 512-model procedural corpus and the 160-model curated track, 
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v4
+uv run meshprobe eval generate .corpora --version procedural-v5
 uv run meshprobe eval curated-generate \
   evals/curated/catalog.json .cache/meshprobe-curated .corpora \
-  --corpus-version curated-tasks-v4
+  --build-version curated-v2 --corpus-version curated-tasks-v5
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v4 .corpora/curated-tasks-v4 \
-  --version qualification-v4
+  .corpora/procedural-v5 .corpora/curated-tasks-v5 \
+  --version qualification-v5
 uv run meshprobe eval pin \
-  .corpora/qualification-v4 .corpora/manifests
+  .corpora/qualification-v5 .corpora/manifests
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -113,7 +113,7 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v4 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v5 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -132,7 +132,7 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v4 evals/manifests/public/smoke.json \
+  .corpora/qualification-v5 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
