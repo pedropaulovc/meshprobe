@@ -91,15 +91,15 @@ Build the released 512-model procedural corpus and the 160-model curated track, 
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v2
+uv run meshprobe eval generate .corpora --version procedural-v4
 uv run meshprobe eval curated-generate \
   evals/curated/catalog.json .cache/meshprobe-curated .corpora \
-  --corpus-version curated-tasks-v2
+  --corpus-version curated-tasks-v4
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v2 .corpora/curated-tasks-v2 \
-  --version qualification-v2
+  .corpora/procedural-v4 .corpora/curated-tasks-v4 \
+  --version qualification-v4
 uv run meshprobe eval pin \
-  .corpora/qualification-v2 .corpora/manifests
+  .corpora/qualification-v4 .corpora/manifests
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -113,7 +113,7 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v2 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v4 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -126,6 +126,18 @@ episode and publish JSON plus Markdown reports split by operation, task family,
 difficulty, projection, focal-length band, illumination, model source, and failure gate.
 On Linux the episode envelope uses `/workspace/input` and `/workspace/artifacts` paths;
 on Windows it uses the assigned absolute paths granted to the AppContainer.
+
+To test the packaged wheel instead of the checkout, run the pinned smoke tier through a
+clean uv environment:
+
+```bash
+uv run python tools/clean_install_smoke.py \
+  .corpora/qualification-v4 evals/manifests/public/smoke.json \
+  .runs/clean-install-smoke
+```
+
+The command records the wheel hash, runtime versions, manifest hash, and qualification
+report hash in `clean-install-report.json`.
 
 The approved implementation and evaluation design is in [docs/plan.md](docs/plan.md).
 
