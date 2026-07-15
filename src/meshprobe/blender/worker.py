@@ -16,14 +16,28 @@ import struct
 import sys
 import traceback
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import bpy  # type: ignore[import-not-found]
-from mathutils import Vector  # type: ignore[import-not-found]
+from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 1
 MILLIMETERS_PER_METER = 1_000.0
+DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
+MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
+MANIFEST: dict[str, Any] | None = None
+COMPONENT_OBJECTS: dict[str, bpy.types.Object] = {}
+ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
+ORIGINAL_VISIBILITY: dict[str, tuple[bool, bool]] = {}
+COMPONENT_STATES: dict[str, dict[str, str]] = {}
+IMPORTED_CAMERA: dict[str, Any] | None = None
+CURRENT_CAMERA: dict[str, Any] | None = None
+IMPORTED_ILLUMINATION: dict[str, Any] | None = None
+CURRENT_ILLUMINATION: dict[str, Any] | None = None
+MARK_OBJECTS: dict[str, bpy.types.Object] = {}
+OVERRIDE_MATERIALS: dict[str, bpy.types.Material] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -321,6 +335,495 @@ def imported_illumination() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     )
 
 
+def require_session() -> dict[str, Any]:
+    if MANIFEST is None:
+        raise ValueError("no scene is open")
+    return MANIFEST
+
+
+def camera_object() -> bpy.types.Object:
+    cameras = sorted(
+        (obj for obj in bpy.context.scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name
+    )
+    if cameras:
+        active_camera = bpy.context.scene.camera
+        camera = active_camera if active_camera in cameras else cameras[0]
+        bpy.context.scene.camera = camera
+        return camera
+    data = bpy.data.cameras.new("MeshProbeCamera")
+    camera = bpy.data.objects.new("MeshProbeCamera", data)
+    bpy.context.scene.collection.objects.link(camera)
+    bpy.context.scene.camera = camera
+    return camera
+
+
+def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
+    obj = camera_object()
+    pose = camera["pose"]
+    position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
+    x, y, z, w = pose["orientation_xyzw"]
+    rotation = Quaternion((w, x, y, z)).normalized()
+    obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
+    projection = camera["projection"]
+    data = obj.data
+    data.clip_start = projection["near_clip_mm"] / MILLIMETERS_PER_METER
+    data.clip_end = projection["far_clip_mm"] / MILLIMETERS_PER_METER
+    mode = projection["mode"]
+    if mode not in {"orthographic", "perspective"}:
+        raise ValueError(f"unknown projection mode: {mode}")
+    if mode == "orthographic":
+        data.type = "ORTHO"
+        data.ortho_scale = projection["scale_mm"] / MILLIMETERS_PER_METER
+    else:
+        data.type = "PERSP"
+        data.lens = projection["focal_length_mm"]
+        data.sensor_width = projection["sensor_width_mm"]
+        data.sensor_height = projection.get("sensor_height_mm", 24.0)
+        sensor_fit = projection["sensor_fit"]
+        if sensor_fit not in {"auto", "horizontal", "vertical"}:
+            raise ValueError(f"unknown sensor fit: {sensor_fit}")
+        data.sensor_fit = sensor_fit.upper()
+    global CURRENT_CAMERA
+    CURRENT_CAMERA = deepcopy(camera)
+    orient_component_labels()
+    return session_snapshot()
+
+
+def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
+    target = Vector(value / MILLIMETERS_PER_METER for value in command["target_mm"])
+    azimuth = math.radians(command["azimuth_degrees"])
+    elevation = math.radians(command["elevation_degrees"])
+    distance = command["distance_mm"] / MILLIMETERS_PER_METER
+    offset = Vector(
+        (
+            distance * math.cos(elevation) * math.cos(azimuth),
+            distance * math.cos(elevation) * math.sin(azimuth),
+            distance * math.sin(elevation),
+        )
+    )
+    position = target + offset
+    direction = target - position
+    if direction.length <= 1e-12:
+        raise ValueError("orbit camera direction is degenerate")
+    rotation = direction.to_track_quat("-Z", "Y").normalized()
+    roll = math.radians(command.get("roll_degrees", 0.0))
+    if roll:
+        rotation = Quaternion(direction.normalized(), roll) @ rotation
+    camera = {
+        "pose": {
+            "position_mm": [value * MILLIMETERS_PER_METER for value in position],
+            "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+        },
+        "projection": command["projection"],
+    }
+    return apply_camera(camera)
+
+
+def linear_rgb_from_temperature(kelvin: float) -> list[float]:
+    temperature = kelvin / 100.0
+    if temperature <= 66:
+        red = 255.0
+        green = 99.4708025861 * math.log(temperature) - 161.1195681661
+        blue = (
+            0.0
+            if temperature <= 19
+            else 138.5177312231 * math.log(temperature - 10) - 305.0447927307
+        )
+    else:
+        red = 329.698727446 * ((temperature - 60) ** -0.1332047592)
+        green = 288.1221695283 * ((temperature - 60) ** -0.0755148492)
+        blue = 255.0
+
+    def to_linear(channel: float) -> float:
+        srgb = min(255.0, max(0.0, channel)) / 255.0
+        if srgb <= 0.04045:
+            return srgb / 12.92
+        return float(((srgb + 0.055) / 1.055) ** 2.4)
+
+    return [to_linear(red), to_linear(green), to_linear(blue)]
+
+
+def light_rgb(spec: dict[str, Any]) -> list[float]:
+    if spec.get("linear_rgb") is not None:
+        return list(spec["linear_rgb"])
+    return linear_rgb_from_temperature(spec["color_temperature_k"])
+
+
+def clear_lights() -> None:
+    for obj in list(bpy.context.scene.objects):
+        if obj.type != "LIGHT":
+            continue
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data.users == 0:
+            bpy.data.lights.remove(data)
+
+
+def scene_center_and_span() -> tuple[Vector, float]:
+    manifest = require_session()
+    minimum = manifest["root_bounds"]["minimum_mm"]
+    maximum = manifest["root_bounds"]["maximum_mm"]
+    center = Vector((low + high) / 2 for low, high in zip(minimum, maximum, strict=True))
+    span = max(high - low for low, high in zip(minimum, maximum, strict=True))
+    return center, max(span, 100.0)
+
+
+def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
+    rotation = (target_mm - position_mm).to_track_quat("-Z", "Y").normalized()
+    return [rotation.x, rotation.y, rotation.z, rotation.w]
+
+
+def preset_lights(preset: str) -> dict[str, Any]:
+    center, span = scene_center_and_span()
+    background = [0.03, 0.03, 0.03]
+    ambient = 0.15
+    definitions: list[tuple[str, Vector, float, float]] = []
+    if preset == "neutral_studio":
+        definitions = [
+            ("key", center + Vector((span, -span, span)), 900.0, span),
+            ("fill", center + Vector((-span, -span / 2, span / 2)), 450.0, span),
+            ("rim", center + Vector((0, span, span)), 600.0, span / 2),
+        ]
+    elif preset == "high_key":
+        background = [0.25, 0.25, 0.25]
+        ambient = 0.45
+        definitions = [
+            ("key", center + Vector((span, -span, span)), 1_200.0, span * 1.5),
+            ("fill", center + Vector((-span, -span, span)), 1_000.0, span * 1.5),
+        ]
+    elif preset in {"raking_left", "raking_right"}:
+        side = -1 if preset == "raking_left" else 1
+        definitions = [
+            ("rake", center + Vector((side * span * 2, -span / 4, span / 8)), 1_000.0, span / 3)
+        ]
+    elif preset == "backlit":
+        definitions = [("back", center + Vector((0, span * 2, 0)), 1_200.0, span)]
+    elif preset == "flat_diagnostic":
+        background = [0.18, 0.18, 0.18]
+        ambient = 1.0
+    else:
+        raise ValueError(f"unknown illumination preset: {preset}")
+    lights = [
+        {
+            "id": light_id,
+            "type": "area",
+            "position_mm": list(position),
+            "orientation_xyzw": look_orientation(position, center),
+            "power_w": power,
+            "linear_rgb": [1.0, 1.0, 1.0],
+            "size_mm": max(size, 1.0),
+        }
+        for light_id, position, power, size in definitions
+    ]
+    return {
+        "preset": "custom",
+        "background_rgb": background,
+        "ambient_strength": ambient,
+        "lights": lights,
+    }
+
+
+def configure_world(background_rgb: list[float], ambient_strength: float) -> None:
+    world = bpy.context.scene.world or bpy.data.worlds.new("MeshProbeWorld")
+    bpy.context.scene.world = world
+    world.use_nodes = True
+    background = world.node_tree.nodes.get("Background")
+    background.inputs["Color"].default_value = (*background_rgb, 1.0)
+    background.inputs["Strength"].default_value = ambient_strength
+
+
+def create_light(spec: dict[str, Any]) -> None:
+    blender_type = {"area": "AREA", "point": "POINT", "spot": "SPOT", "sun": "SUN"}[spec["type"]]
+    data = bpy.data.lights.new(f"MeshProbe-{spec['id']}", blender_type)
+    data.color = light_rgb(spec)
+    obj = bpy.data.objects.new(f"MeshProbe-{spec['id']}", data)
+    bpy.context.scene.collection.objects.link(obj)
+    if spec.get("position_mm") is not None:
+        obj.location = [value / MILLIMETERS_PER_METER for value in spec["position_mm"]]
+    if spec.get("orientation_xyzw") is not None:
+        x, y, z, w = spec["orientation_xyzw"]
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = Quaternion((w, x, y, z)).normalized()
+    if spec["type"] == "area":
+        data.energy = spec["power_w"]
+        data.shape = "DISK"
+        data.size = spec["size_mm"] / MILLIMETERS_PER_METER
+    elif spec["type"] == "point":
+        data.energy = spec["power_w"]
+    elif spec["type"] == "spot":
+        data.energy = spec["power_w"]
+        data.spot_size = math.radians(spec["spot_size_degrees"])
+        data.spot_blend = spec["blend"]
+    else:
+        data.energy = spec["strength"]
+        data.angle = math.radians(spec["angle_degrees"])
+
+
+def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
+    runtime = (
+        preset_lights(illumination["preset"])
+        if illumination["preset"] != "custom"
+        else illumination
+    )
+    clear_lights()
+    configure_world(runtime["background_rgb"], runtime["ambient_strength"])
+    for light in runtime["lights"]:
+        create_light(light)
+    global CURRENT_ILLUMINATION
+    CURRENT_ILLUMINATION = deepcopy(illumination)
+    return session_snapshot()
+
+
+def restore_mesh(component_id: str) -> None:
+    obj = COMPONENT_OBJECTS[component_id]
+    original = ORIGINAL_MESHES[component_id]
+    if obj.data is original:
+        return
+    replacement = obj.data
+    obj.data = original
+    if replacement.users == 0:
+        bpy.data.meshes.remove(replacement)
+
+
+def replacement_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
+    material = OVERRIDE_MATERIALS.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        OVERRIDE_MATERIALS[name] = material
+    material.diffuse_color = color
+    material.use_nodes = True
+    principled = material.node_tree.nodes.get("Principled BSDF")
+    if principled is not None:
+        principled.inputs["Base Color"].default_value = color
+        principled.inputs["Alpha"].default_value = color[3]
+    if color[3] < 1 and hasattr(material, "surface_render_method"):
+        material.surface_render_method = "DITHERED"
+    return material
+
+
+def replace_component_material(component_id: str, material: bpy.types.Material) -> None:
+    obj = COMPONENT_OBJECTS[component_id]
+    restore_mesh(component_id)
+    obj.data = obj.data.copy()
+    obj.data.materials.clear()
+    obj.data.materials.append(material)
+    for polygon in obj.data.polygons:
+        polygon.material_index = 0
+
+
+def clear_component_label(component_id: str) -> None:
+    label = MARK_OBJECTS.pop(component_id, None)
+    if label is None:
+        return
+    data = label.data
+    bpy.data.objects.remove(label, do_unlink=True)
+    if data.users == 0:
+        bpy.data.curves.remove(data)
+
+
+def create_component_label(component_id: str) -> None:
+    component = next(item for item in require_session()["components"] if item["id"] == component_id)
+    bounds = component["world_bounds"]
+    minimum = bounds["minimum_mm"]
+    maximum = bounds["maximum_mm"]
+    _, scene_span = scene_center_and_span()
+    data = bpy.data.curves.new(f"MeshProbeLabel-{component_id}", "FONT")
+    data.body = component["display_name"]
+    data.align_x = "CENTER"
+    data.align_y = "BOTTOM"
+    data.size = max(scene_span / MILLIMETERS_PER_METER / 30.0, 0.002)
+    data.extrude = data.size * 0.01
+    label = bpy.data.objects.new(f"MeshProbeLabel-{component_id}", data)
+    bpy.context.scene.collection.objects.link(label)
+    label.location = (
+        (minimum[0] + maximum[0]) / 2 / MILLIMETERS_PER_METER,
+        (minimum[1] + maximum[1]) / 2 / MILLIMETERS_PER_METER,
+        (maximum[2] + scene_span * 0.02) / MILLIMETERS_PER_METER,
+    )
+    label.rotation_mode = "QUATERNION"
+    label.rotation_quaternion = camera_object().matrix_world.to_quaternion()
+    data.materials.append(replacement_material("MeshProbeMark-labeled", (1.0, 0.85, 0.05, 1.0)))
+    MARK_OBJECTS[component_id] = label
+
+
+def orient_component_labels() -> None:
+    orientation = camera_object().matrix_world.to_quaternion()
+    for label in MARK_OBJECTS.values():
+        label.rotation_quaternion = orientation
+
+
+def refresh_component_appearance(component_id: str) -> None:
+    restore_mesh(component_id)
+    clear_component_label(component_id)
+    state = COMPONENT_STATES[component_id]
+    if state["display"] == "hidden":
+        return
+    mark = state["mark"]
+    if mark != "unmarked":
+        colors = {
+            "selected": (0.05, 0.8, 1.0, 1.0),
+            "highlighted": (1.0, 0.2, 0.02, 1.0),
+            "labeled": (1.0, 0.85, 0.05, 1.0),
+        }
+        replace_component_material(
+            component_id, replacement_material(f"MeshProbeMark-{mark}", colors[mark])
+        )
+        if mark == "labeled":
+            create_component_label(component_id)
+        return
+    if state["display"] == "ghosted":
+        replace_component_material(
+            component_id, replacement_material("MeshProbeGhost", (0.35, 0.65, 1.0, 0.2))
+        )
+
+
+def set_component_visibility(component_id: str, mode: str) -> None:
+    obj = COMPONENT_OBJECTS[component_id]
+    hidden = mode == "hidden"
+    obj.hide_render = hidden
+    obj.hide_viewport = hidden
+    COMPONENT_STATES[component_id]["display"] = mode
+    refresh_component_appearance(component_id)
+
+
+def selected_component_ids(command: dict[str, Any]) -> set[str]:
+    selected = set(command["component_ids"])
+    if not selected:
+        raise ValueError("at least one component id is required")
+    unknown = selected - COMPONENT_OBJECTS.keys()
+    if unknown:
+        raise ValueError(f"unknown component ids: {sorted(unknown)}")
+    return selected
+
+
+def component_display(command: dict[str, Any]) -> dict[str, Any]:
+    selected = selected_component_ids(command)
+    mode = command["mode"]
+    if mode not in DISPLAY_MODES:
+        raise ValueError(f"unknown display mode: {mode}")
+    if mode == "isolated":
+        for component_id in COMPONENT_OBJECTS:
+            set_component_visibility(
+                component_id, "isolated" if component_id in selected else "hidden"
+            )
+        return session_snapshot()
+    for component_id in selected:
+        set_component_visibility(component_id, mode)
+    return session_snapshot()
+
+
+def component_mark(command: dict[str, Any]) -> dict[str, Any]:
+    selected = selected_component_ids(command)
+    mode = command["mode"]
+    if mode not in MARK_MODES:
+        raise ValueError(f"unknown mark mode: {mode}")
+    for component_id in selected:
+        COMPONENT_STATES[component_id]["mark"] = mode
+        refresh_component_appearance(component_id)
+    return session_snapshot()
+
+
+def session_snapshot() -> dict[str, Any]:
+    if CURRENT_CAMERA is None or CURRENT_ILLUMINATION is None:
+        raise ValueError("session state is not initialized")
+    payload = {
+        "camera": CURRENT_CAMERA,
+        "illumination": CURRENT_ILLUMINATION,
+        "components": {key: COMPONENT_STATES[key] for key in sorted(COMPONENT_STATES)},
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return {**deepcopy(payload), "state_sha256": hashlib.sha256(canonical).hexdigest()}
+
+
+def reset_session() -> dict[str, Any]:
+    if IMPORTED_CAMERA is None or IMPORTED_ILLUMINATION is None:
+        raise ValueError("session state is not initialized")
+    for component_id, obj in COMPONENT_OBJECTS.items():
+        restore_mesh(component_id)
+        clear_component_label(component_id)
+        hide_render, hide_viewport = ORIGINAL_VISIBILITY[component_id]
+        obj.hide_render = hide_render
+        obj.hide_viewport = hide_viewport
+        COMPONENT_STATES[component_id] = {
+            "display": "hidden" if hide_render else "shown",
+            "mark": "unmarked",
+        }
+    apply_camera(deepcopy(IMPORTED_CAMERA))
+    apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
+    return session_snapshot()
+
+
+def runtime_diagnostics() -> dict[str, Any]:
+    camera = camera_object()
+    return {
+        "components": {
+            component_id: {
+                "hide_render": obj.hide_render,
+                "hide_viewport": obj.hide_viewport,
+                "mesh_name": obj.data.name,
+                "materials": [material.name for material in obj.data.materials],
+                "material_colors": [
+                    list(material.diffuse_color) for material in obj.data.materials
+                ],
+                "label": MARK_OBJECTS[component_id].name if component_id in MARK_OBJECTS else None,
+                "label_rotation_wxyz": (
+                    list(MARK_OBJECTS[component_id].rotation_quaternion)
+                    if component_id in MARK_OBJECTS
+                    else None
+                ),
+            }
+            for component_id, obj in COMPONENT_OBJECTS.items()
+        },
+        "camera": {
+            "type": camera.data.type,
+            "lens": camera.data.lens,
+            "sensor_fit": camera.data.sensor_fit,
+            "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
+        },
+        "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+    }
+
+
+def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
+    global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS, OVERRIDE_MATERIALS
+
+    MANIFEST = manifest
+    objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    path_objects = set(objects)
+    for obj in objects:
+        ancestor = obj.parent
+        while ancestor is not None:
+            path_objects.add(ancestor)
+            ancestor = ancestor.parent
+    source_names, _ = source_names_for_objects(source_path, sorted(path_objects, key=object_path))
+    objects_by_path = {path: obj for obj, path in source_paths(objects, source_names).items()}
+    COMPONENT_OBJECTS = {
+        component["id"]: objects_by_path[component["path"]] for component in manifest["components"]
+    }
+    ORIGINAL_MESHES = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
+    ORIGINAL_VISIBILITY = {
+        component_id: (obj.hide_render, obj.hide_viewport)
+        for component_id, obj in COMPONENT_OBJECTS.items()
+    }
+    COMPONENT_STATES = {
+        component_id: {
+            "display": "hidden" if obj.hide_render else "shown",
+            "mark": "unmarked",
+        }
+        for component_id, obj in COMPONENT_OBJECTS.items()
+    }
+    IMPORTED_CAMERA = deepcopy(manifest["imported_camera"])
+    CURRENT_CAMERA = deepcopy(IMPORTED_CAMERA)
+    IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
+    CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
+    MARK_OBJECTS = {}
+    OVERRIDE_MATERIALS = {}
+    apply_camera(deepcopy(IMPORTED_CAMERA))
+    apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
+
+
 def import_source(path: Path) -> list[dict[str, Any]]:
     suffix = path.suffix.lower()
     warnings: list[dict[str, Any]] = []
@@ -593,15 +1096,57 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
     source_sha256 = command.get("source_sha256") or sha256_file(source_path)
+    clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
-    return build_manifest(source_path, source_sha256, import_warnings)
+    manifest = build_manifest(source_path, source_sha256, import_warnings)
+    initialize_session(manifest, source_path)
+    return manifest
+
+
+def clear_session_state() -> None:
+    global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
+    MANIFEST = None
+    COMPONENT_OBJECTS = {}
+    ORIGINAL_MESHES = {}
+    ORIGINAL_VISIBILITY = {}
+    COMPONENT_STATES = {}
+    IMPORTED_CAMERA = None
+    CURRENT_CAMERA = None
+    IMPORTED_ILLUMINATION = None
+    CURRENT_ILLUMINATION = None
+    MARK_OBJECTS = {}
 
 
 def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     operation = command.get("op")
     if operation == "scene.open":
         return scene_open(command)
+    if operation == "scene.describe":
+        return {"scene": require_session(), "session": session_snapshot()}
+    if operation == "view.set":
+        require_session()
+        return apply_camera(command["camera"])
+    if operation == "view.orbit":
+        require_session()
+        return orbit_camera(command)
+    if operation == "illumination.set":
+        require_session()
+        return apply_illumination(command["illumination"])
+    if operation == "component.display":
+        require_session()
+        return component_display(command)
+    if operation == "component.mark":
+        require_session()
+        return component_mark(command)
+    if operation == "session.reset":
+        require_session()
+        return reset_session()
+    if operation == "session.runtime":
+        require_session()
+        return runtime_diagnostics()
     if operation == "session.shutdown":
         return {"shutdown": True}
     raise ValueError(f"unsupported worker operation: {operation}")

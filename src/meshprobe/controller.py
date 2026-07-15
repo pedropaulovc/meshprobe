@@ -15,6 +15,14 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.models import SceneManifest
+from meshprobe.protocol import (
+    Command,
+    ComponentFindCommand,
+    ComponentInspectCommand,
+    SceneOpenCommand,
+)
+from meshprobe.selectors import ComponentIndex
+from meshprobe.session import SessionSnapshot
 from meshprobe.sources import sha256_file, snapshot_source
 
 __all__ = [
@@ -24,6 +32,14 @@ __all__ = [
     "BlenderWorkerTimeout",
     "sha256_file",
 ]
+
+STATE_OPERATIONS = {
+    "view.set",
+    "view.orbit",
+    "illumination.set",
+    "component.display",
+    "component.mark",
+}
 
 
 class BlenderWorkerError(RuntimeError):
@@ -50,6 +66,10 @@ class BlenderController:
         self._reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
         self.ready_event: dict[str, Any] | None = None
+        self._source_path: Path | None = None
+        self._source_sha256: str | None = None
+        self._manifest: SceneManifest | None = None
+        self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
     def logs(self) -> tuple[str, ...]:
@@ -128,6 +148,10 @@ class BlenderController:
     def open_scene(self, source_path: str | Path) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
         before = snapshot_source(source)
+        self._source_path = None
+        self._source_sha256 = None
+        self._manifest = None
+        self._accepted_commands.clear()
         try:
             result = self.request(
                 "scene.open", source_path=str(source), source_sha256=before.sha256
@@ -144,7 +168,56 @@ class BlenderController:
         manifest = SceneManifest.model_validate(result)
         if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
+        self._source_path = source
+        self._source_sha256 = manifest.source_sha256
+        self._manifest = manifest
         return manifest
+
+    def execute(self, command: Command) -> object:
+        if isinstance(command, SceneOpenCommand):
+            return self.open_scene(command.source_path)
+        if isinstance(command, (ComponentFindCommand, ComponentInspectCommand)):
+            if self._manifest is None:
+                raise BlenderWorkerError("cannot inspect components before a scene is open")
+            index = ComponentIndex(self._manifest)
+            if isinstance(command, ComponentFindCommand):
+                return [
+                    component.model_dump(mode="json") for component in index.find(command.selector)
+                ]
+            return index.by_id(command.component_id).model_dump(mode="json")
+        operation = command.op
+        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        try:
+            result = self.request(operation, **arguments)
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._recover_session()
+            result = self.request(operation, **arguments)
+        if operation == "session.reset":
+            self._accepted_commands.clear()
+            return SessionSnapshot.model_validate(result)
+        if operation in STATE_OPERATIONS:
+            self._accepted_commands.append((operation, arguments))
+            return SessionSnapshot.model_validate(result)
+        return result
+
+    def _recover_session(self) -> None:
+        if self._source_path is None or self._source_sha256 is None:
+            raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
+        source_path = self._source_path
+        source_sha256 = self._source_sha256
+        accepted_commands = list(self._accepted_commands)
+        self.close()
+        self.start()
+        reopened = self.open_scene(source_path)
+        if reopened.source_sha256 != source_sha256:
+            self.close()
+            self._source_path = None
+            self._source_sha256 = None
+            self._manifest = None
+            raise BlenderWorkerError("source asset bundle changed since the session opened")
+        self._accepted_commands = accepted_commands
+        for operation, arguments in accepted_commands:
+            self.request(operation, **arguments)
 
     def close(self) -> None:
         process = self._process

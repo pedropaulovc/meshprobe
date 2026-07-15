@@ -13,7 +13,28 @@ from typer.testing import CliRunner
 
 from meshprobe.cli import app
 from meshprobe.controller import BlenderController, BlenderWorkerError
+from meshprobe.models import (
+    AreaLight,
+    Camera,
+    CustomIllumination,
+    DisplayMode,
+    IlluminationPreset,
+    MarkMode,
+    OrthographicProjection,
+    PerspectiveProjection,
+    Pose,
+    PresetIllumination,
+)
+from meshprobe.protocol import (
+    ComponentDisplayCommand,
+    ComponentMarkCommand,
+    IlluminationSetCommand,
+    SessionResetCommand,
+    ViewOrbitCommand,
+    ViewSetCommand,
+)
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
+from meshprobe.session import SessionSnapshot
 from meshprobe.sources import snapshot_source
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
@@ -30,11 +51,15 @@ from mathutils import Vector
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
+source_material = bpy.data.materials.new('MeshProbeGhost')
+source_material.diffuse_color = (0.8, 0.1, 0.05, 1.0)
+
 def cube(name, location, parent=None):
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)
     obj = bpy.context.object
     obj.name = name
     obj.data.name = name + '-mesh'
+    obj.data.materials.append(source_material)
     obj.parent = parent
     return obj
 
@@ -426,3 +451,246 @@ def test_component_paths_escape_separator_characters(tmp_path: Path) -> None:
         manifest = controller.open_scene(source)
 
     assert {component.path for component in manifest.components} == {"a%2Fb", "a/b"}
+
+
+def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        initial = SessionSnapshot.model_validate(controller.request("scene.describe")["session"])
+        target = manifest.components[-1].id
+        other = manifest.components[0].id
+        initial_runtime = controller.request("session.runtime")["components"]
+
+        orthographic = controller.execute(
+            ViewSetCommand(
+                request_id="view",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(5_000, 4_000, 3_000),
+                        orientation_xyzw=manifest.imported_camera.pose.orientation_xyzw,
+                    ),
+                    projection=OrthographicProjection(scale_mm=2_500),
+                ),
+            )
+        )
+        assert isinstance(orthographic, SessionSnapshot)
+        runtime = controller.request("session.runtime")
+        assert runtime["camera"]["type"] == "ORTHO"
+        assert runtime["camera"]["ortho_scale_mm"] == pytest.approx(2_500)
+
+        hidden = controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        assert isinstance(hidden, SessionSnapshot)
+        assert controller.request("session.runtime")["components"][target]["hide_render"]
+
+        ghosted = controller.execute(
+            ComponentDisplayCommand(
+                request_id="ghost",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.GHOSTED,
+            )
+        )
+        assert isinstance(ghosted, SessionSnapshot)
+        assert ghosted.components[target].display is DisplayMode.GHOSTED
+        ghosted_runtime = controller.request("session.runtime")["components"]
+        assert ghosted_runtime[target]["materials"] != ["MeshProbeGhost"]
+        assert (
+            ghosted_runtime[other]["material_colors"] == initial_runtime[other]["material_colors"]
+        )
+
+        marked = controller.execute(
+            ComponentMarkCommand(
+                request_id="mark",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+            )
+        )
+        assert isinstance(marked, SessionSnapshot)
+        assert marked.components[target].mark is MarkMode.HIGHLIGHTED
+        marked_runtime = controller.request("session.runtime")["components"][target]
+        assert marked_runtime["materials"] == ["MeshProbeMark-highlighted"]
+
+        labeled = controller.execute(
+            ComponentMarkCommand(
+                request_id="label",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.LABELED,
+            )
+        )
+        assert isinstance(labeled, SessionSnapshot)
+        labeled_runtime = controller.request("session.runtime")["components"][target]
+        assert labeled_runtime["materials"] == ["MeshProbeMark-labeled"]
+        assert labeled_runtime["label"].startswith("MeshProbeLabel-")
+        initial_label_rotation = labeled_runtime["label_rotation_wxyz"]
+
+        controller.execute(
+            ViewSetCommand(
+                request_id="perspective-auto",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(-4_000, 2_000, 1_000),
+                        orientation_xyzw=(0, 0, 1, 0),
+                    ),
+                    projection=PerspectiveProjection(sensor_fit="auto"),
+                ),
+            )
+        )
+        camera_runtime = controller.request("session.runtime")
+        assert camera_runtime["camera"]["sensor_fit"] == "AUTO"
+        assert camera_runtime["components"][target]["label_rotation_wxyz"] != initial_label_rotation
+
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-label",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        assert controller.request("session.runtime")["components"][target]["label"] is None
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="show-label",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.SHOWN,
+            )
+        )
+        assert controller.request("session.runtime")["components"][target]["label"].startswith(
+            "MeshProbeLabel-"
+        )
+
+        lit = controller.execute(
+            IlluminationSetCommand(
+                request_id="light",
+                op="illumination.set",
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
+            )
+        )
+        assert isinstance(lit, SessionSnapshot)
+        assert controller.request("session.runtime")["lights"] == ["MeshProbe-rake"]
+
+        custom = controller.execute(
+            IlluminationSetCommand(
+                request_id="custom-light",
+                op="illumination.set",
+                illumination=CustomIllumination(
+                    background_rgb=(0.01, 0.02, 0.03),
+                    ambient_strength=0.1,
+                    lights=(
+                        AreaLight(
+                            id="inspection",
+                            position_mm=(1_000, 2_000, 3_000),
+                            orientation_xyzw=(0, 0, 0, 1),
+                            power_w=500,
+                            size_mm=800,
+                            color_temperature_k=5_200,
+                        ),
+                    ),
+                ),
+            )
+        )
+        assert isinstance(custom, SessionSnapshot)
+        assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
+
+        before_invalid_mode = controller.request("scene.describe")["session"]
+        with pytest.raises(BlenderWorkerError, match="unknown display mode"):
+            controller.request(
+                "component.display",
+                component_ids=[target],
+                mode="hide",
+            )
+        assert controller.request("scene.describe")["session"] == before_invalid_mode
+
+        reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
+        assert reset == initial
+        reset_runtime = controller.request("session.runtime")["components"]
+        assert (
+            reset_runtime[target]["material_colors"] == initial_runtime[target]["material_colors"]
+        )
+
+
+def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        orbit = controller.execute(
+            ViewOrbitCommand(
+                request_id="orbit",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+                projection=PerspectiveProjection(focal_length_mm=85),
+            )
+        )
+        assert isinstance(orbit, SessionSnapshot)
+        assert orbit.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        assert controller._process is not None
+        controller._process.kill()
+        controller._process.wait(timeout=5)
+
+        recovered = controller.execute(
+            ComponentMarkCommand(
+                request_id="mark",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.SELECTED,
+            )
+        )
+        runtime = controller.request("session.runtime")
+
+    assert isinstance(recovered, SessionSnapshot)
+    assert recovered.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
+    assert recovered.components[target].display is DisplayMode.HIDDEN
+    assert recovered.components[target].mark is MarkMode.SELECTED
+    assert runtime["components"][target]["hide_render"]
+
+
+def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        before = controller.request("session.runtime")
+        with pytest.raises(BlenderWorkerError, match="at least one component"):
+            controller.request("component.display", component_ids=[], mode="isolated")
+        after = controller.request("session.runtime")
+
+    assert after["components"][target] == before["components"][target]
+
+
+def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    corrupt = tmp_path / "corrupt.glb"
+    corrupt.write_bytes(b"not a glb")
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        with pytest.raises(BlenderWorkerError):
+            controller.open_scene(corrupt)
+        with pytest.raises(BlenderWorkerError, match="no scene is open"):
+            controller.request("scene.describe")
+        assert controller._source_path is None
+        assert controller._source_sha256 is None
