@@ -16,7 +16,9 @@ from meshprobe.controller import BlenderController, BlenderWorkerError
 from meshprobe.models import (
     AreaLight,
     Camera,
+    CustomIllumination,
     DisplayMode,
+    IlluminationPreset,
     MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
@@ -31,8 +33,8 @@ from meshprobe.protocol import (
     ViewOrbitCommand,
     ViewSetCommand,
 )
-from meshprobe.session import SessionSnapshot
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
+from meshprobe.session import SessionSnapshot
 from meshprobe.sources import snapshot_source
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
@@ -49,11 +51,15 @@ from mathutils import Vector
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
+source_material = bpy.data.materials.new('MeshProbeGhost')
+source_material.diffuse_color = (0.8, 0.1, 0.05, 1.0)
+
 def cube(name, location, parent=None):
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)
     obj = bpy.context.object
     obj.name = name
     obj.data.name = name + '-mesh'
+    obj.data.materials.append(source_material)
     obj.parent = parent
     return obj
 
@@ -453,6 +459,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         manifest = controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("scene.describe")["session"])
         target = manifest.components[-1].id
+        other = manifest.components[0].id
+        initial_runtime = controller.request("session.runtime")["components"]
 
         orthographic = controller.execute(
             ViewSetCommand(
@@ -493,6 +501,11 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert isinstance(ghosted, SessionSnapshot)
         assert ghosted.components[target].display is DisplayMode.GHOSTED
+        ghosted_runtime = controller.request("session.runtime")["components"]
+        assert ghosted_runtime[target]["materials"] != ["MeshProbeGhost"]
+        assert (
+            ghosted_runtime[other]["material_colors"] == initial_runtime[other]["material_colors"]
+        )
 
         marked = controller.execute(
             ComponentMarkCommand(
@@ -520,11 +533,32 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert labeled_runtime["materials"] == ["MeshProbeMark-labeled"]
         assert labeled_runtime["label"].startswith("MeshProbeLabel-")
 
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-label",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        assert controller.request("session.runtime")["components"][target]["label"] is None
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="show-label",
+                op="component.display",
+                component_ids=(target,),
+                mode=DisplayMode.SHOWN,
+            )
+        )
+        assert controller.request("session.runtime")["components"][target]["label"].startswith(
+            "MeshProbeLabel-"
+        )
+
         lit = controller.execute(
             IlluminationSetCommand(
                 request_id="light",
                 op="illumination.set",
-                illumination=PresetIllumination(preset="raking_left"),
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
             )
         )
         assert isinstance(lit, SessionSnapshot)
@@ -534,11 +568,10 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             IlluminationSetCommand(
                 request_id="custom-light",
                 op="illumination.set",
-                illumination={
-                    "preset": "custom",
-                    "background_rgb": (0.01, 0.02, 0.03),
-                    "ambient_strength": 0.1,
-                    "lights": (
+                illumination=CustomIllumination(
+                    background_rgb=(0.01, 0.02, 0.03),
+                    ambient_strength=0.1,
+                    lights=(
                         AreaLight(
                             id="inspection",
                             position_mm=(1_000, 2_000, 3_000),
@@ -548,7 +581,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                             color_temperature_k=5_200,
                         ),
                     ),
-                },
+                ),
             )
         )
         assert isinstance(custom, SessionSnapshot)
@@ -556,6 +589,10 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
 
         reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
         assert reset == initial
+        reset_runtime = controller.request("session.runtime")["components"]
+        assert (
+            reset_runtime[target]["material_colors"] == initial_runtime[target]["material_colors"]
+        )
 
 
 def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:

@@ -35,6 +35,7 @@ CURRENT_CAMERA: dict[str, Any] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
+OVERRIDE_MATERIALS: dict[str, bpy.types.Material] = {}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -576,7 +577,10 @@ def restore_mesh(component_id: str) -> None:
 
 
 def replacement_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
-    material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    material = OVERRIDE_MATERIALS.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        OVERRIDE_MATERIALS[name] = material
     material.diffuse_color = color
     material.use_nodes = True
     principled = material.node_tree.nodes.get("Principled BSDF")
@@ -637,6 +641,8 @@ def refresh_component_appearance(component_id: str) -> None:
     restore_mesh(component_id)
     clear_component_label(component_id)
     state = COMPONENT_STATES[component_id]
+    if state["display"] == "hidden":
+        return
     mark = state["mark"]
     if mark != "unmarked":
         colors = {
@@ -736,6 +742,9 @@ def runtime_diagnostics() -> dict[str, Any]:
                 "hide_viewport": obj.hide_viewport,
                 "mesh_name": obj.data.name,
                 "materials": [material.name for material in obj.data.materials],
+                "material_colors": [
+                    list(material.diffuse_color) for material in obj.data.materials
+                ],
                 "label": MARK_OBJECTS[component_id].name if component_id in MARK_OBJECTS else None,
             }
             for component_id, obj in COMPONENT_OBJECTS.items()
@@ -752,7 +761,7 @@ def runtime_diagnostics() -> dict[str, Any]:
 def initialize_session(manifest: dict[str, Any]) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
-    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
+    global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS, OVERRIDE_MATERIALS
 
     MANIFEST = manifest
     objects_by_path = {
@@ -778,6 +787,7 @@ def initialize_session(manifest: dict[str, Any]) -> None:
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
     MARK_OBJECTS = {}
+    OVERRIDE_MATERIALS = {}
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 

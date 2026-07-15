@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.models import SceneManifest
-from meshprobe.protocol import Command, SceneOpenCommand
+from meshprobe.protocol import (
+    Command,
+    ComponentFindCommand,
+    ComponentInspectCommand,
+    SceneOpenCommand,
+)
+from meshprobe.selectors import ComponentIndex
 from meshprobe.session import SessionSnapshot
 from meshprobe.sources import sha256_file, snapshot_source
 
@@ -62,6 +68,7 @@ class BlenderController:
         self.ready_event: dict[str, Any] | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
+        self._manifest: SceneManifest | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
@@ -143,6 +150,7 @@ class BlenderController:
         before = snapshot_source(source)
         self._source_path = None
         self._source_sha256 = None
+        self._manifest = None
         self._accepted_commands.clear()
         try:
             result = self.request(
@@ -162,11 +170,21 @@ class BlenderController:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
         self._source_path = source
         self._source_sha256 = manifest.source_sha256
+        self._manifest = manifest
         return manifest
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
             return self.open_scene(command.source_path)
+        if isinstance(command, (ComponentFindCommand, ComponentInspectCommand)):
+            if self._manifest is None:
+                raise BlenderWorkerError("cannot inspect components before a scene is open")
+            index = ComponentIndex(self._manifest)
+            if isinstance(command, ComponentFindCommand):
+                return [
+                    component.model_dump(mode="json") for component in index.find(command.selector)
+                ]
+            return index.by_id(command.component_id).model_dump(mode="json")
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         try:
@@ -195,10 +213,11 @@ class BlenderController:
             self.close()
             self._source_path = None
             self._source_sha256 = None
+            self._manifest = None
             raise BlenderWorkerError("source asset bundle changed since the session opened")
+        self._accepted_commands = accepted_commands
         for operation, arguments in accepted_commands:
             self.request(operation, **arguments)
-        self._accepted_commands = accepted_commands
 
     def close(self) -> None:
         process = self._process

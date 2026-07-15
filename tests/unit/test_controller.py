@@ -18,11 +18,14 @@ from meshprobe.controller import (
 from meshprobe.identity import stable_component_id
 from meshprobe.models import MarkMode, SceneManifest
 from meshprobe.protocol import (
+    ComponentFindCommand,
+    ComponentInspectCommand,
     ComponentMarkCommand,
     SceneDescribeCommand,
     SceneOpenCommand,
     SessionResetCommand,
 )
+from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.session import InspectionSession, SessionSnapshot
 from meshprobe.sources import snapshot_source
 
@@ -310,6 +313,48 @@ def test_execute_returns_nonstate_result(monkeypatch) -> None:  # type: ignore[n
     assert result == {"operation": "scene.describe"}
 
 
+def test_execute_resolves_component_queries_without_worker(
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    monkeypatch.setattr(
+        controller,
+        "request",
+        lambda operation, **arguments: pytest.fail("component lookup reached worker"),
+    )
+    target = scene_manifest.components[-1]
+
+    found = controller.execute(
+        ComponentFindCommand(
+            request_id="find",
+            op="component.find",
+            selector=ComponentSelector(kind=SelectorKind.EXACT_NAME, pattern=target.display_name),
+        )
+    )
+    inspected = controller.execute(
+        ComponentInspectCommand(
+            request_id="inspect",
+            op="component.inspect",
+            component_id=target.id,
+        )
+    )
+
+    assert found == [target.model_dump(mode="json")]
+    assert inspected == target.model_dump(mode="json")
+
+
+def test_execute_rejects_component_query_before_open() -> None:
+    command = ComponentInspectCommand(
+        request_id="inspect",
+        op="component.inspect",
+        component_id="missing",
+    )
+    with pytest.raises(BlenderWorkerError, match="before a scene is open"):
+        BlenderController().execute(command)
+
+
 def test_execute_routes_scene_open_through_checked_import(
     tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -377,11 +422,12 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     calls: list[object] = []
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
-    monkeypatch.setattr(
-        controller,
-        "open_scene",
-        lambda path: calls.append(("open", path)) or SimpleNamespace(source_sha256="source-hash"),
-    )
+
+    def open_scene(path: Path) -> SimpleNamespace:
+        calls.append(("open", path))
+        return SimpleNamespace(source_sha256="source-hash")
+
+    monkeypatch.setattr(controller, "open_scene", open_scene)
     monkeypatch.setattr(
         controller,
         "request",
@@ -404,6 +450,37 @@ def test_recover_session_requires_open_scene() -> None:
     controller = BlenderController()
     with pytest.raises(BlenderWorkerCrashed, match="before a scene is open"):
         controller._recover_session()
+
+
+def test_recover_session_retains_replay_log_when_replay_crashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller._source_path = source
+    controller._source_sha256 = "source-hash"
+    expected: list[tuple[str, dict[str, object]]] = [
+        ("component.mark", {"component_ids": ["one"], "mode": "selected"})
+    ]
+    controller._accepted_commands = list(expected)
+    monkeypatch.setattr(controller, "close", lambda: None)
+    monkeypatch.setattr(controller, "start", lambda: {})
+
+    def reopen(path: Path) -> SimpleNamespace:
+        controller._accepted_commands.clear()
+        return SimpleNamespace(source_sha256="source-hash")
+
+    def crash(operation: str, **arguments: object) -> dict[str, object]:
+        raise BlenderWorkerCrashed("replay crashed")
+
+    monkeypatch.setattr(controller, "open_scene", reopen)
+    monkeypatch.setattr(controller, "request", crash)
+
+    with pytest.raises(BlenderWorkerCrashed, match="replay crashed"):
+        controller._recover_session()
+    assert controller._accepted_commands == expected
 
 
 def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
