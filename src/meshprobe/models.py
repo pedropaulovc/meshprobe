@@ -373,3 +373,80 @@ class SceneManifest(ContractModel):
                 f"warnings reference unknown component ids: {sorted(unknown_warning_ids)}"
             )
         return self
+
+
+class RenderEngine(StrEnum):
+    EEVEE = "eevee"
+    CYCLES = "cycles"
+
+
+class ImageArtifact(ContractModel):
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    media_type: Literal["image/png", "image/x-exr"]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    bytes: Annotated[int, Field(ge=1)]
+
+
+class LuminanceSummary(ContractModel):
+    minimum: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    median: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    maximum: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    crushed_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    clipped_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+    @model_validator(mode="after")
+    def validate_order(self) -> Self:
+        if not self.minimum <= self.median <= self.maximum:
+            raise ValueError("luminance values must be ordered minimum <= median <= maximum")
+        return self
+
+
+class EvaluatorPasses(ContractModel):
+    multilayer: ImageArtifact
+    component_ids: ImageArtifact
+    highlighted: ImageArtifact
+    component_colors: dict[Identifier, tuple[int, int, int]]
+
+    @field_validator("component_colors")
+    @classmethod
+    def validate_component_colors(
+        cls, colors: dict[str, tuple[int, int, int]]
+    ) -> dict[str, tuple[int, int, int]]:
+        if len(colors.values()) != len(set(colors.values())):
+            raise ValueError("component pass colors must be unique")
+        if any(channel < 0 or channel > 255 for color in colors.values() for channel in color):
+            raise ValueError("component pass colors must use 8-bit channels")
+        return colors
+
+
+class RenderManifest(ContractModel):
+    schema_version: Literal[1] = 1
+    source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    width: Annotated[int, Field(ge=64, le=16_384)]
+    height: Annotated[int, Field(ge=64, le=16_384)]
+    samples: Annotated[int, Field(ge=1, le=4_096)]
+    engine: RenderEngine
+    color: ImageArtifact
+    evaluator: EvaluatorPasses | None = None
+    luminance: LuminanceSummary
+
+
+class ContactSheetPanel(ContractModel):
+    index: Annotated[int, Field(ge=1)]
+    caption: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    render: RenderManifest
+
+
+class ContactSheetManifest(ContractModel):
+    schema_version: Literal[1] = 1
+    recipe: Literal["focused_3x3"]
+    focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    sheet: ImageArtifact
+    panels: tuple[ContactSheetPanel, ...] = Field(min_length=9, max_length=9)
+
+    @model_validator(mode="after")
+    def validate_panel_indices(self) -> Self:
+        if tuple(panel.index for panel in self.panels) != tuple(range(1, 10)):
+            raise ValueError("focused contact-sheet panel indices must be 1 through 9")
+        return self
