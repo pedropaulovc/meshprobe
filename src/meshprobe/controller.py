@@ -14,16 +14,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self
 
-from meshprobe.models import SceneManifest
+from meshprobe.models import RenderManifest, SceneManifest
 from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
+    RenderImageCommand,
     SceneOpenCommand,
 )
 from meshprobe.selectors import ComponentIndex
 from meshprobe.session import SessionSnapshot
-from meshprobe.sources import sha256_file, snapshot_source
+from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
 
 __all__ = [
     "BlenderController",
@@ -69,6 +70,7 @@ class BlenderController:
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
         self._manifest: SceneManifest | None = None
+        self._source_snapshot: SourceSnapshot | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
 
     @property
@@ -151,6 +153,7 @@ class BlenderController:
         self._source_path = None
         self._source_sha256 = None
         self._manifest = None
+        self._source_snapshot = None
         self._accepted_commands.clear()
         try:
             result = self.request(
@@ -171,6 +174,7 @@ class BlenderController:
         self._source_path = source
         self._source_sha256 = manifest.source_sha256
         self._manifest = manifest
+        self._source_snapshot = before
         return manifest
 
     def execute(self, command: Command) -> object:
@@ -185,6 +189,8 @@ class BlenderController:
                     component.model_dump(mode="json") for component in index.find(command.selector)
                 ]
             return index.by_id(command.component_id).model_dump(mode="json")
+        if isinstance(command, RenderImageCommand):
+            return self.render_image(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         try:
@@ -200,6 +206,50 @@ class BlenderController:
             return SessionSnapshot.model_validate(result)
         return result
 
+    def render_image(self, command: RenderImageCommand) -> RenderManifest:
+        if self._source_snapshot is None:
+            raise BlenderWorkerError("cannot render before a scene is open")
+        output = Path(command.output_path).expanduser().resolve()
+        source_paths = {asset.path for asset in self._source_snapshot.assets}
+        if output in source_paths:
+            raise BlenderWorkerError("render output must not overwrite a source asset")
+        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        arguments["output_path"] = str(output)
+        try:
+            result = self.request(command.op, **arguments)
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._recover_session()
+            result = self.request(command.op, **arguments)
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during render")
+        manifest = RenderManifest.model_validate(result)
+        if manifest.source_sha256 != self._source_sha256:
+            raise BlenderWorkerError("render manifest source hash does not match the open scene")
+        self._verify_render_artifacts(manifest)
+        return manifest
+
+    @staticmethod
+    def _verify_render_artifacts(manifest: RenderManifest) -> None:
+        artifacts = [manifest.color]
+        if manifest.evaluator is not None:
+            artifacts.extend(
+                (
+                    manifest.evaluator.multilayer,
+                    manifest.evaluator.component_ids,
+                    manifest.evaluator.highlighted,
+                )
+            )
+        for artifact_record in artifacts:
+            path = Path(artifact_record.path)
+            if not path.is_file():
+                raise BlenderWorkerError(f"render artifact is missing: {path}")
+            if (
+                path.stat().st_size != artifact_record.bytes
+                or sha256_file(path) != artifact_record.sha256
+            ):
+                raise BlenderWorkerError(f"render artifact digest mismatch: {path}")
+
     def _recover_session(self) -> None:
         if self._source_path is None or self._source_sha256 is None:
             raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
@@ -214,6 +264,7 @@ class BlenderController:
             self._source_path = None
             self._source_sha256 = None
             self._manifest = None
+            self._source_snapshot = None
             raise BlenderWorkerError("source asset bundle changed since the session opened")
         self._accepted_commands = accepted_commands
         for operation, arguments in accepted_commands:

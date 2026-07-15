@@ -16,11 +16,12 @@ from meshprobe.controller import (
     sha256_file,
 )
 from meshprobe.identity import stable_component_id
-from meshprobe.models import MarkMode, SceneManifest
+from meshprobe.models import MarkMode, RenderManifest, SceneManifest
 from meshprobe.protocol import (
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    RenderImageCommand,
     SceneDescribeCommand,
     SceneOpenCommand,
     SessionResetCommand,
@@ -509,3 +510,78 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     assert calls == ["close", "start", "close"]
     assert controller._source_path is None
     assert controller._source_sha256 is None
+
+
+def render_manifest_for(path: Path, source_hash: str) -> RenderManifest:
+    return RenderManifest.model_validate(
+        {
+            "source_sha256": source_hash,
+            "state_sha256": "b" * 64,
+            "width": 128,
+            "height": 128,
+            "samples": 1,
+            "engine": "eevee",
+            "color": {
+                "path": str(path),
+                "media_type": "image/png",
+                "sha256": sha256_file(path),
+                "bytes": path.stat().st_size,
+            },
+            "luminance": {
+                "minimum": 0.1,
+                "median": 0.2,
+                "maximum": 0.3,
+                "crushed_fraction": 0,
+                "clipped_fraction": 0,
+            },
+        }
+    )
+
+
+def test_render_requires_open_scene() -> None:
+    controller = BlenderController()
+    command = RenderImageCommand(request_id="render", op="render.image", output_path="evidence.png")
+    with pytest.raises(BlenderWorkerError, match="before a scene is open"):
+        controller.render_image(command)
+
+
+def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderImageCommand(request_id="render", op="render.image", output_path=str(source))
+    with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_image(command)
+
+
+def test_render_validates_worker_artifact_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    output = tmp_path / "evidence.png"
+    output.write_bytes(b"png bytes")
+    source_snapshot = snapshot_source(source)
+    manifest = render_manifest_for(output, source_snapshot.sha256)
+    controller = BlenderController()
+    controller._source_snapshot = source_snapshot
+    controller._source_sha256 = source_snapshot.sha256
+    monkeypatch.setattr(
+        controller,
+        "request",
+        lambda operation, **arguments: manifest.model_dump(mode="json"),
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(output),
+        width=128,
+        height=128,
+        samples=1,
+    )
+
+    assert controller.render_image(command) == manifest
+    output.write_bytes(b"tampered!")
+    with pytest.raises(BlenderWorkerError, match="digest mismatch"):
+        controller._verify_render_artifacts(manifest)

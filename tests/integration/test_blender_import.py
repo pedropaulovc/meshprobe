@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from PIL import Image
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
@@ -24,11 +25,13 @@ from meshprobe.models import (
     PerspectiveProjection,
     Pose,
     PresetIllumination,
+    RenderManifest,
 )
 from meshprobe.protocol import (
     ComponentDisplayCommand,
     ComponentMarkCommand,
     IlluminationSetCommand,
+    RenderImageCommand,
     SessionResetCommand,
     ViewOrbitCommand,
     ViewSetCommand,
@@ -694,3 +697,49 @@ def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
             controller.request("scene.describe")
         assert controller._source_path is None
         assert controller._source_sha256 is None
+
+
+def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    before = snapshot_source(source)
+    output = tmp_path / "evidence.png"
+    evaluator_dir = tmp_path / "private"
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="mark",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+            )
+        )
+        rendered = controller.execute(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(output),
+                width=256,
+                height=192,
+                samples=1,
+                engine="eevee",
+                evaluator_output_dir=str(evaluator_dir),
+            )
+        )
+
+    assert isinstance(rendered, RenderManifest)
+    assert rendered.width == 256
+    assert rendered.height == 192
+    assert rendered.evaluator is not None
+    assert rendered.evaluator.component_colors.keys() == {
+        component.id for component in manifest.components
+    }
+    assert Image.open(rendered.color.path).size == (256, 192)
+    assert Image.open(rendered.evaluator.component_ids.path).size == (256, 192)
+    highlighted = Image.open(rendered.evaluator.highlighted.path).convert("RGB")
+    assert highlighted.getbbox() is not None
+    pass_header = Path(rendered.evaluator.multilayer.path).read_bytes()[:4_096]
+    assert b"Depth" in pass_header
+    assert b"Normal" in pass_header
+    assert snapshot_source(source) == before
