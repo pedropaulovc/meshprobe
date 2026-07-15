@@ -40,12 +40,15 @@ from meshprobe.selectors import ComponentIndex
 from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
 
 __all__ = [
+    "DEFAULT_WORKER_TIMEOUT_SECONDS",
     "BlenderController",
     "BlenderWorkerCrashed",
     "BlenderWorkerError",
     "BlenderWorkerTimeout",
     "sha256_file",
 ]
+
+DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
 
 STATE_OPERATIONS = {
     "view.set",
@@ -71,7 +74,11 @@ class BlenderWorkerTimeout(BlenderWorkerError):
 class BlenderController:
     """Own one factory-clean Blender worker and its line-oriented protocol."""
 
-    def __init__(self, executable: str | Path | None = None, timeout_seconds: float = 30) -> None:
+    def __init__(
+        self,
+        executable: str | Path | None = None,
+        timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
+    ) -> None:
         configured = str(executable or os.environ.get("MESHPROBE_BLENDER", "blender"))
         self.executable = Path(configured)
         self.timeout_seconds = timeout_seconds

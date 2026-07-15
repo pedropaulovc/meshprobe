@@ -6,7 +6,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
-from meshprobe.controller import BlenderController
+from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
 from meshprobe.protocol import (
     Command,
     RenderContactSheetCommand,
@@ -33,7 +33,7 @@ class MeshProbeService:
         *,
         controller: BlenderController | None = None,
         blender: str | None = None,
-        timeout_seconds: float = 30,
+        timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
     ) -> None:
         if controller is not None and blender is not None:
             raise ValueError("controller and blender cannot both be provided")

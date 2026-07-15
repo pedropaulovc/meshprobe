@@ -14,7 +14,11 @@ from PIL import Image
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
-from meshprobe.controller import BlenderController, BlenderWorkerError
+from meshprobe.controller import (
+    DEFAULT_WORKER_TIMEOUT_SECONDS,
+    BlenderController,
+    BlenderWorkerError,
+)
 from meshprobe.models import (
     AreaLight,
     Camera,
@@ -769,7 +773,7 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     before = snapshot_source(source)
     output = tmp_path / "evidence.png"
     evaluator_dir = tmp_path / "private"
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         controller.execute(

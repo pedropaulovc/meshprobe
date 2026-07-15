@@ -11,7 +11,7 @@ import typer
 from pydantic import ValidationError
 
 from meshprobe.camera import orbit_camera
-from meshprobe.controller import BlenderWorkerError
+from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderWorkerError
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
 from meshprobe.evals.curated_build import build_curated_variants
 from meshprobe.evals.curated_tasks import build_curated_corpus
@@ -244,7 +244,9 @@ def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
 def open_scene(
     source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
+        DEFAULT_WORKER_TIMEOUT_SECONDS
+    ),
 ) -> None:
     """Open a model in a factory-clean Blender worker and print its manifest."""
 
@@ -263,7 +265,9 @@ def open_scene(
 def run_commands(
     commands: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
+        DEFAULT_WORKER_TIMEOUT_SECONDS
+    ),
 ) -> None:
     """Execute JSONL commands in one persistent Blender session."""
 
