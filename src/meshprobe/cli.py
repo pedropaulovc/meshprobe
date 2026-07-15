@@ -11,6 +11,8 @@ from pydantic import ValidationError
 
 from meshprobe.camera import orbit_camera
 from meshprobe.controller import BlenderWorkerError
+from meshprobe.evals.factory import CorpusBuild, build_corpus, validate_corpus
+from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
     Command,
@@ -31,6 +33,8 @@ from meshprobe.service import MeshProbeService
 from meshprobe.session import InspectionSession
 
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
+eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
+app.add_typer(eval_app, name="eval")
 
 
 def _load_manifest(path: Path) -> SceneManifest:
@@ -49,6 +53,54 @@ def schema() -> None:
     """Print the JSON Schema for every public protocol command."""
 
     _emit(command_json_schema())
+
+
+@eval_app.command("generate")
+def generate_eval_corpus(
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v1",
+    families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
+    seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
+    seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
+) -> None:
+    """Generate an atomic, checkpointed procedural evaluation corpus."""
+
+    selected_families = tuple(families) if families else tuple(GeneratorFamily)
+    try:
+        build = build_corpus(
+            output_root,
+            corpus_version=corpus_version,
+            families=selected_families,
+            seeds=range(seed_start, seed_start + seed_count),
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(_corpus_summary(build))
+
+
+@eval_app.command("validate")
+def validate_eval_corpus(
+    root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+) -> None:
+    """Verify corpus membership, hashes, leakage boundaries, and coverage."""
+
+    try:
+        build = validate_corpus(root.resolve())
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(_corpus_summary(build))
+
+
+def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
+    return {
+        "valid": True,
+        "root": str(build.root),
+        "corpus_version": build.manifest.corpus_version,
+        "generator_sha256": build.manifest.generator_sha256,
+        "models": build.model_count,
+        "episodes": build.episode_count,
+        "full_investigations": build.full_investigation_count,
+    }
 
 
 @app.command("open")
