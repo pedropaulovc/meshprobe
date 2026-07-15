@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -96,8 +97,14 @@ def test_reference_agent_passes_full_stack_rigid_and_rescaled_episodes(
         )
         if report.passed:
             continue
+        adapter = json.loads(
+            (result.root / "episodes" / episode_id / "evaluator" / "adapter.json").read_text(
+                encoding="utf-8"
+            )
+        )
         failures[episode_id] = {
-            gate.gate: gate.details for gate in report.gates if gate.status == "fail"
+            "adapter": adapter,
+            "gates": {gate.gate: gate.details for gate in report.gates if gate.status == "fail"},
         }
 
     assert not failures, failures
