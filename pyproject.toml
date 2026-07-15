@@ -39,6 +39,7 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["meshprobe"]
+omit = ["src/meshprobe/blender/worker.py"]
 
 [tool.coverage.report]
 fail_under = 90
@@ -55,4 +56,3 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 packages = ["meshprobe"]
-

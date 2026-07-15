@@ -60,6 +60,7 @@ class BlenderController:
     def start(self) -> dict[str, Any]:
         if self._process is not None:
             raise BlenderWorkerError("Blender worker is already started")
+        self._lines = queue.Queue()
         worker_path = Path(__file__).with_name("blender") / "worker.py"
         self._process = subprocess.Popen(
             [
@@ -116,7 +117,12 @@ class BlenderController:
         source = Path(source_path).expanduser().resolve(strict=True)
         before_hash = sha256_file(source)
         before_stat = source.stat()
-        result = self.request("scene.open", source_path=str(source))
+        try:
+            result = self.request("scene.open", source_path=str(source))
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self.close()
+            self.start()
+            result = self.request("scene.open", source_path=str(source))
         after_hash = sha256_file(source)
         after_stat = source.stat()
         if before_hash != after_hash or before_stat.st_mtime_ns != after_stat.st_mtime_ns:
