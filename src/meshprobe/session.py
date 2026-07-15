@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 
+from meshprobe.camera import camera_diagnostics
 from meshprobe.models import (
     Camera,
     ComponentVisualState,
@@ -80,8 +81,16 @@ class InspectionSession:
             },
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        minimum = self.manifest.root_bounds.minimum_mm
+        maximum = self.manifest.root_bounds.maximum_mm
+        target = (
+            (minimum[0] + maximum[0]) / 2,
+            (minimum[1] + maximum[1]) / 2,
+            (minimum[2] + maximum[2]) / 2,
+        )
         return SessionSnapshot(
             camera=self._camera,
+            camera_diagnostics=camera_diagnostics(self._camera, target_mm=target),
             illumination=self._illumination,
             components=dict(self._components),
             state_sha256=hashlib.sha256(canonical).hexdigest(),

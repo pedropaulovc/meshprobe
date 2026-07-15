@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 from PIL import Image
 
+from meshprobe.camera import orbit_camera
 from meshprobe.controller import (
     BlenderController,
     BlenderWorkerCrashed,
@@ -20,9 +21,9 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
-    Camera,
     DisplayMode,
     MarkMode,
+    OrthographicProjection,
     PerspectiveProjection,
     PresetIllumination,
     RenderManifest,
@@ -550,6 +551,15 @@ def render_manifest_for(
                 },
                 "projection": {"mode": "perspective", "focal_length_mm": 50},
             },
+            "camera_diagnostics": {
+                "aspect_ratio": 1,
+                "right": [1, 0, 0],
+                "up": [0, 1, 0],
+                "forward": [0, 0, -1],
+                "frustum_corners_mm": [[0, 0, 0]] * 8,
+                "target_depth_mm": 100,
+                "projected_bounds": {},
+            },
             "illumination": {"preset": "neutral_studio"},
             "components": {},
             "state_sha256": "b" * 64,
@@ -689,8 +699,21 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         if operation == "illumination.set":
             illumination = PresetIllumination.model_validate(arguments["illumination"])
             return session.set_illumination(illumination).model_dump(mode="json")
-        if operation == "view.set":
-            camera = Camera.model_validate(arguments["camera"])
+        if operation == "view.orbit":
+            projection_payload = cast(dict[str, object], arguments["projection"])
+            projection = (
+                PerspectiveProjection.model_validate(projection_payload)
+                if projection_payload["mode"] == "perspective"
+                else OrthographicProjection.model_validate(projection_payload)
+            )
+            camera = orbit_camera(
+                target_mm=cast(tuple[float, float, float], arguments["target_mm"]),
+                azimuth_degrees=cast(float, arguments["azimuth_degrees"]),
+                elevation_degrees=cast(float, arguments["elevation_degrees"]),
+                roll_degrees=cast(float, arguments["roll_degrees"]),
+                distance_mm=cast(float, arguments["distance_mm"]),
+                projection=projection,
+            )
             return session.set_camera(camera).model_dump(mode="json")
         if operation == "component.mark":
             snapshot = session.mark(
@@ -801,10 +824,11 @@ def test_perspective_orbit_framing_uses_limiting_panel_dimension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = BlenderController()
-    cameras: list[Camera] = []
+    distances: list[float] = []
 
     def request(operation: str, **arguments: object) -> dict[str, object]:
-        cameras.append(Camera.model_validate(arguments["camera"]))
+        assert operation == "view.orbit"
+        distances.append(cast(float, arguments["distance_mm"]))
         return {}
 
     monkeypatch.setattr(controller, "request", request)
@@ -812,5 +836,4 @@ def test_perspective_orbit_framing_uses_limiting_panel_dimension(
     controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 2.0)
     controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 0.5)
 
-    distances = [sum(value**2 for value in camera.pose.position_mm) ** 0.5 for camera in cameras]
     assert distances[1] > distances[0]

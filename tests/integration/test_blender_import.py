@@ -336,13 +336,26 @@ def test_persistent_worker_imports_glb_without_source_changes(tmp_path: Path) ->
     before_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     before_stat = source.stat()
 
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
         manifest = controller.open_scene(source)
+        assert manifest.normalized_geometry is not None
+        normalized_path = Path(manifest.normalized_geometry.path)
+        normalized_stat = normalized_path.stat()
         second_manifest = controller.open_scene(source)
 
     assert manifest == second_manifest
     assert manifest.source_sha256 == before_hash
     assert manifest.source_format == "glb"
+    assert manifest.normalized_geometry is not None
+    assert normalized_path.read_bytes()[:4] == b"glTF"
+    assert manifest.normalized_geometry.bytes == normalized_path.stat().st_size
+    assert manifest.normalized_geometry.sha256 == hashlib.sha256(
+        normalized_path.read_bytes()
+    ).hexdigest()
+    assert normalized_path.stat().st_mtime_ns == normalized_stat.st_mtime_ns
     assert manifest.capabilities.hierarchy == "preserved"
     assert manifest.capabilities.textures == "absent"
     assert len(manifest.components) == 3
@@ -699,6 +712,7 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
+        camera_focus = manifest.components[0].id
         orbit = controller.execute(
             ViewOrbitCommand(
                 request_id="orbit",
@@ -708,10 +722,22 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
                 elevation_degrees=0,
                 distance_mm=2_000,
                 projection=PerspectiveProjection(focal_length_mm=85),
+                focus_component_ids=(camera_focus,),
+                aspect_ratio=16 / 9,
             )
         )
         assert isinstance(orbit, SessionSnapshot)
         assert orbit.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
+        diagnostics = orbit.camera_diagnostics
+        assert diagnostics.aspect_ratio == pytest.approx(16 / 9)
+        assert diagnostics.forward == pytest.approx((-1, 0, 0))
+        assert diagnostics.target_depth_mm == pytest.approx(2_000)
+        assert len(diagnostics.frustum_corners_mm) == 8
+        projected = diagnostics.projected_bounds[camera_focus]
+        assert projected.projection_status == "in_front"
+        assert projected.minimum_image_xy is not None
+        assert projected.maximum_image_xy is not None
+        assert projected.minimum_depth_mm < projected.maximum_depth_mm
         controller.execute(
             ComponentDisplayCommand(
                 request_id="hide",

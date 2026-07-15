@@ -11,6 +11,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StringConstraints,
     field_validator,
     model_validator,
@@ -139,6 +140,50 @@ type Projection = Annotated[
 class Camera(ContractModel):
     pose: Pose
     projection: Projection
+
+
+class ProjectedComponentBounds(ContractModel):
+    projection_status: Literal["in_front", "behind", "crosses_camera_plane"]
+    minimum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
+    maximum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
+    minimum_depth_mm: FiniteFloat
+    maximum_depth_mm: FiniteFloat
+
+    @model_validator(mode="after")
+    def validate_projection(self) -> Self:
+        if self.minimum_depth_mm > self.maximum_depth_mm:
+            raise ValueError("minimum_depth_mm must not exceed maximum_depth_mm")
+        has_minimum = self.minimum_image_xy is not None
+        if has_minimum != (self.maximum_image_xy is not None):
+            raise ValueError("projected image bounds must be both present or both absent")
+        if self.projection_status == "crosses_camera_plane":
+            if has_minimum:
+                raise ValueError("camera-plane intersections cannot have finite image bounds")
+            return self
+        if not has_minimum or self.maximum_image_xy is None or self.minimum_image_xy is None:
+            raise ValueError(
+                "finite projected image bounds are required away from the camera plane"
+            )
+        if any(
+            low > high
+            for low, high in zip(
+                self.minimum_image_xy,
+                self.maximum_image_xy,
+                strict=True,
+            )
+        ):
+            raise ValueError("minimum_image_xy must not exceed maximum_image_xy")
+        return self
+
+
+class CameraDiagnostics(ContractModel):
+    aspect_ratio: PositiveFiniteFloat
+    right: Vec3
+    up: Vec3
+    forward: Vec3
+    frustum_corners_mm: tuple[Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3]
+    target_depth_mm: FiniteFloat
+    projected_bounds: dict[Identifier, ProjectedComponentBounds]
 
 
 class LightType(StrEnum):
@@ -284,6 +329,7 @@ class ComponentVisualState(ContractModel):
 
 class SessionSnapshot(ContractModel):
     camera: Camera
+    camera_diagnostics: CameraDiagnostics
     illumination: Illumination
     components: dict[Identifier, ComponentVisualState]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -302,6 +348,17 @@ class SceneCapabilities(ContractModel):
     textures: Literal["preserved", "partial", "absent"]
 
 
+class NormalizedGeometryArtifact(ContractModel):
+    cache_key: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    bytes: Annotated[int, Field(ge=1)]
+    importer_version: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    normalization_parameters: dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)], JsonValue
+    ]
+
+
 class SceneManifest(ContractModel):
     schema_version: Literal[1] = 1
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -313,6 +370,7 @@ class SceneManifest(ContractModel):
     imported_illumination: Illumination
     capabilities: SceneCapabilities
     warnings: tuple[CapabilityWarning, ...] = ()
+    normalized_geometry: NormalizedGeometryArtifact | None = None
 
     @model_validator(mode="after")
     def validate_graph(self) -> Self:

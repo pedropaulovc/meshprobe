@@ -47,6 +47,8 @@ class ComponentInspectCommand(CommandModel):
 class ViewSetCommand(CommandModel):
     op: Literal["view.set"]
     camera: Camera
+    focus_component_ids: tuple[str, ...] = ()
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 class ViewOrbitCommand(CommandModel):
@@ -57,6 +59,8 @@ class ViewOrbitCommand(CommandModel):
     roll_degrees: FiniteFloat = 0
     distance_mm: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     projection: Projection
+    focus_component_ids: tuple[str, ...] = ()
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 class IlluminationSetCommand(CommandModel):

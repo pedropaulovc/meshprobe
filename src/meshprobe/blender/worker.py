@@ -35,6 +35,7 @@ ORIGINAL_VISIBILITY: dict[str, tuple[bool, bool]] = {}
 COMPONENT_STATES: dict[str, dict[str, str]] = {}
 IMPORTED_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA: dict[str, Any] | None = None
+CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
@@ -368,7 +369,12 @@ def camera_object() -> bpy.types.Object:
     return camera
 
 
-def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
+def apply_camera(
+    camera: dict[str, Any],
+    focus_component_ids: list[str] | tuple[str, ...] = (),
+    aspect_ratio: float = 1.0,
+    target_mm: list[float] | tuple[float, float, float] | None = None,
+) -> dict[str, Any]:
     obj = camera_object()
     pose = camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
@@ -394,8 +400,14 @@ def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
         if sensor_fit not in {"auto", "horizontal", "vertical"}:
             raise ValueError(f"unknown sensor fit: {sensor_fit}")
         data.sensor_fit = sensor_fit.upper()
-    global CURRENT_CAMERA
+    global CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
     CURRENT_CAMERA = deepcopy(camera)
+    CURRENT_CAMERA_DIAGNOSTICS = camera_diagnostics(
+        obj,
+        focus_component_ids,
+        aspect_ratio,
+        target_mm,
+    )
     orient_component_labels()
     return session_snapshot()
 
@@ -427,7 +439,143 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         },
         "projection": command["projection"],
     }
-    return apply_camera(camera)
+    return apply_camera(
+        camera,
+        command.get("focus_component_ids", ()),
+        command.get("aspect_ratio", 1.0),
+        command["target_mm"],
+    )
+
+
+def camera_diagnostics(
+    camera: bpy.types.Object,
+    focus_component_ids: list[str] | tuple[str, ...],
+    aspect_ratio: float,
+    target_mm: list[float] | tuple[float, float, float] | None,
+) -> dict[str, Any]:
+    focus_ids = set(focus_component_ids)
+    unknown = focus_ids - COMPONENT_OBJECTS.keys()
+    if unknown:
+        raise ValueError(f"unknown focus component ids: {sorted(unknown)}")
+    if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
+        raise ValueError("aspect_ratio must be between 0.01 and 100")
+
+    matrix = camera.matrix_world
+    right = matrix.to_3x3().col[0].normalized()
+    up = matrix.to_3x3().col[1].normalized()
+    forward = -matrix.to_3x3().col[2].normalized()
+    y_resolution = 1_000
+    x_resolution = max(1, round(y_resolution * aspect_ratio))
+    projection = camera.calc_matrix_camera(
+        bpy.context.evaluated_depsgraph_get(),
+        x=x_resolution,
+        y=y_resolution,
+        scale_x=1.0,
+        scale_y=1.0,
+    )
+    inverse_projection = projection.inverted()
+    frustum: list[list[float]] = []
+    for clip_z in (-1.0, 1.0):
+        for clip_y in (-1.0, 1.0):
+            for clip_x in (-1.0, 1.0):
+                local_homogeneous = inverse_projection @ Vector((clip_x, clip_y, clip_z, 1.0))
+                local = local_homogeneous.xyz / local_homogeneous.w
+                world = matrix @ local
+                frustum.append([value * MILLIMETERS_PER_METER for value in world])
+
+    if target_mm is None:
+        target_mm = focus_center_mm(focus_ids) if focus_ids else scene_center_mm()
+    target_world = Vector(value / MILLIMETERS_PER_METER for value in target_mm)
+    target_camera = matrix.inverted() @ target_world
+    projected = {
+        component_id: projected_component_bounds(
+            camera,
+            projection,
+            COMPONENT_OBJECTS[component_id],
+        )
+        for component_id in sorted(focus_ids)
+    }
+    return {
+        "aspect_ratio": aspect_ratio,
+        "right": list(right),
+        "up": list(up),
+        "forward": list(forward),
+        "frustum_corners_mm": frustum,
+        "target_depth_mm": -target_camera.z * MILLIMETERS_PER_METER,
+        "projected_bounds": projected,
+    }
+
+
+def scene_center_mm() -> list[float]:
+    manifest = require_session()
+    minimum = manifest["root_bounds"]["minimum_mm"]
+    maximum = manifest["root_bounds"]["maximum_mm"]
+    return [(low + high) / 2 for low, high in zip(minimum, maximum, strict=True)]
+
+
+def focus_center_mm(focus_ids: set[str]) -> list[float]:
+    components = {
+        component["id"]: component for component in require_session()["components"]
+    }
+    minimum = [
+        min(
+            components[component_id]["world_bounds"]["minimum_mm"][axis]
+            for component_id in focus_ids
+        )
+        for axis in range(3)
+    ]
+    maximum = [
+        max(
+            components[component_id]["world_bounds"]["maximum_mm"][axis]
+            for component_id in focus_ids
+        )
+        for axis in range(3)
+    ]
+    return [(low + high) / 2 for low, high in zip(minimum, maximum, strict=True)]
+
+
+def projected_component_bounds(
+    camera: bpy.types.Object,
+    projection: Matrix,
+    obj: bpy.types.Object,
+) -> dict[str, Any]:
+    world_to_camera = camera.matrix_world.inverted()
+    points = [world_to_camera @ (obj.matrix_world @ Vector(corner)) for corner in obj.bound_box]
+    depths = [-point.z * MILLIMETERS_PER_METER for point in points]
+    in_front = [depth > 0 for depth in depths]
+    if any(in_front) and not all(in_front):
+        return {
+            "projection_status": "crosses_camera_plane",
+            "minimum_image_xy": None,
+            "maximum_image_xy": None,
+            "minimum_depth_mm": min(depths),
+            "maximum_depth_mm": max(depths),
+        }
+    image_points: list[tuple[float, float]] = []
+    for point in points:
+        clip = projection @ point.to_4d()
+        if abs(clip.w) <= 1e-12:
+            return {
+                "projection_status": "crosses_camera_plane",
+                "minimum_image_xy": None,
+                "maximum_image_xy": None,
+                "minimum_depth_mm": min(depths),
+                "maximum_depth_mm": max(depths),
+            }
+        image_points.append(((clip.x / clip.w + 1) / 2, (clip.y / clip.w + 1) / 2))
+    return {
+        "projection_status": "in_front" if all(in_front) else "behind",
+        "minimum_image_xy": [
+            min(point[0] for point in image_points),
+            min(point[1] for point in image_points),
+        ],
+        "maximum_image_xy": [
+            max(point[0] for point in image_points),
+            max(point[1] for point in image_points),
+        ],
+        "minimum_depth_mm": min(depths),
+        "maximum_depth_mm": max(depths),
+    }
 
 
 def linear_rgb_from_temperature(kelvin: float) -> list[float]:
@@ -750,15 +898,23 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def session_snapshot() -> dict[str, Any]:
-    if CURRENT_CAMERA is None or CURRENT_ILLUMINATION is None:
+    if (
+        CURRENT_CAMERA is None
+        or CURRENT_CAMERA_DIAGNOSTICS is None
+        or CURRENT_ILLUMINATION is None
+    ):
         raise ValueError("session state is not initialized")
-    payload = {
+    state = {
         "camera": CURRENT_CAMERA,
         "illumination": CURRENT_ILLUMINATION,
         "components": {key: COMPONENT_STATES[key] for key in sorted(COMPONENT_STATES)},
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return {**deepcopy(payload), "state_sha256": hashlib.sha256(canonical).hexdigest()}
+    canonical = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        **deepcopy(state),
+        "camera_diagnostics": deepcopy(CURRENT_CAMERA_DIAGNOSTICS),
+        "state_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def reset_session() -> dict[str, Any]:
@@ -1131,6 +1287,27 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "evaluator": evaluator,
         "luminance": luminance,
     }
+
+
+def export_normalized(command: dict[str, Any]) -> dict[str, Any]:
+    require_session()
+    output = Path(command["output_path"]).expanduser().resolve()
+    if output.suffix.lower() != ".glb":
+        raise ValueError("scene.export_normalized output_path must end in .glb")
+    if output.exists():
+        raise ValueError("scene.export_normalized refuses to overwrite an existing file")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = bpy.ops.export_scene.gltf(
+        filepath=str(output),
+        export_format="GLB",
+        export_apply=True,
+        export_cameras=False,
+        export_lights=False,
+        export_yup=True,
+    )
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Blender exporter did not finish: {sorted(result)}")
+    return artifact(output, "model/gltf-binary")
 
 
 def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
@@ -1510,7 +1687,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
 
 def clear_session_state() -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
-    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
     MANIFEST = None
     COMPONENT_OBJECTS = {}
@@ -1519,6 +1696,7 @@ def clear_session_state() -> None:
     COMPONENT_STATES = {}
     IMPORTED_CAMERA = None
     CURRENT_CAMERA = None
+    CURRENT_CAMERA_DIAGNOSTICS = None
     IMPORTED_ILLUMINATION = None
     CURRENT_ILLUMINATION = None
     MARK_OBJECTS = {}
@@ -1532,7 +1710,11 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
         return {"scene": require_session(), "session": session_snapshot()}
     if operation == "view.set":
         require_session()
-        return apply_camera(command["camera"])
+        return apply_camera(
+            command["camera"],
+            command.get("focus_component_ids", ()),
+            command.get("aspect_ratio", 1.0),
+        )
     if operation == "view.orbit":
         require_session()
         return orbit_camera(command)
@@ -1554,6 +1736,8 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.image":
         require_session()
         return render_image(command)
+    if operation == "scene.export_normalized":
+        return export_normalized(command)
     if operation == "component.occluders":
         require_session()
         return rank_occluders(command)

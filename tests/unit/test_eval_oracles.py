@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from meshprobe.camera import camera_diagnostics
 from meshprobe.evals.generators import (
     GeneratorFamily,
     build_model,
@@ -214,11 +215,13 @@ def evidence_render(
     highlighted.save(highlight_path)
     exr_path.write_bytes(b"private evaluator pass")
     state_hash = ("1" if projection.mode == "perspective" else "2") * 64
+    camera = Camera(
+        pose=Pose(position_mm=(3_000, -4_000, 2_000), orientation_xyzw=(0, 0, 0, 1)),
+        projection=projection,
+    )
     session = SessionSnapshot(
-        camera=Camera(
-            pose=Pose(position_mm=(3_000, -4_000, 2_000), orientation_xyzw=(0, 0, 0, 1)),
-            projection=projection,
-        ),
+        camera=camera,
+        camera_diagnostics=camera_diagnostics(camera, target_mm=(0, 0, 0)),
         illumination=PresetIllumination(preset="raking_left"),
         components={
             component_id: ComponentVisualState(

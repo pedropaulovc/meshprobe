@@ -15,12 +15,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self
 
-from meshprobe.camera import orbit_camera
+from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
     ContactSheetManifest,
     ContactSheetPanel,
+    NormalizedGeometryArtifact,
     OrthographicProjection,
     PerspectiveProjection,
     Projection,
@@ -59,6 +60,16 @@ STATE_OPERATIONS = {
 }
 
 
+def _default_cache_root() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if os.name == "nt" and local_app_data:
+        return Path(local_app_data) / "MeshProbe" / "cache"
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "meshprobe"
+    return Path.home() / ".cache" / "meshprobe"
+
+
 class BlenderWorkerError(RuntimeError):
     """A structured Blender worker error."""
 
@@ -78,10 +89,15 @@ class BlenderController:
         self,
         executable: str | Path | None = None,
         timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root: str | Path | None = None,
     ) -> None:
         configured = str(executable or os.environ.get("MESHPROBE_BLENDER", "blender"))
         self.executable = Path(configured)
         self.timeout_seconds = timeout_seconds
+        configured_cache = artifact_cache_root or os.environ.get("MESHPROBE_CACHE")
+        self._artifact_cache = ArtifactCache(
+            Path(configured_cache) if configured_cache else _default_cache_root()
+        )
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
@@ -185,17 +201,74 @@ class BlenderController:
             result = self.request(
                 "scene.open", source_path=str(source), source_sha256=before.sha256
             )
-        after = snapshot_source(source)
-        if before != after:
+        after_import = snapshot_source(source)
+        if before != after_import:
             raise BlenderWorkerError("source asset bundle changed during read-only import")
         manifest = SceneManifest.model_validate(result)
         if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
+        if self.ready_event is not None:
+            manifest = self._attach_normalized_geometry(manifest, source, before.sha256)
+        after_normalization = snapshot_source(source)
+        if before != after_normalization:
+            raise BlenderWorkerError("source asset bundle changed during geometry normalization")
         self._source_path = source
         self._source_sha256 = manifest.source_sha256
         self._manifest = manifest
         self._source_snapshot = before
         return manifest
+
+    def _attach_normalized_geometry(
+        self,
+        manifest: SceneManifest,
+        source: Path,
+        source_sha256: str,
+    ) -> SceneManifest:
+        importer_version = self._normalizer_version()
+        parameters: dict[str, JsonValue] = {
+            "apply_modifiers": True,
+            "coordinate_system": "gltf_y_up",
+            "format": "glb",
+            "include_cameras": False,
+            "include_lights": False,
+            "units": "meter",
+        }
+
+        def write_outputs(payload: Path) -> None:
+            output = payload / "scene.glb"
+            try:
+                self.request("scene.export_normalized", output_path=str(output))
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self.close()
+                self.start()
+                self.request("scene.open", source_path=str(source), source_sha256=source_sha256)
+                self.request("scene.export_normalized", output_path=str(output))
+
+        entry = self._artifact_cache.publish(
+            source_sha256,
+            importer_version,
+            parameters,
+            write_outputs,
+        )
+        output = entry.outputs[0]
+        normalized = NormalizedGeometryArtifact(
+            cache_key=entry.key,
+            path=str(entry.output_path(output.relative_path)),
+            sha256=output.sha256,
+            bytes=output.bytes,
+            importer_version=entry.importer_version,
+            normalization_parameters=entry.normalization_parameters,
+        )
+        return manifest.model_copy(update={"normalized_geometry": normalized})
+
+    def _normalizer_version(self) -> str:
+        if self.ready_event is None:
+            raise BlenderWorkerError("worker is not ready")
+        blender_version = self.ready_event.get("blender_version")
+        if not isinstance(blender_version, str) or not blender_version:
+            raise BlenderWorkerError("worker did not report its Blender version")
+        worker_path = Path(__file__).with_name("blender") / "worker.py"
+        return f"blender-{blender_version}+meshprobe-normalizer-v1-{sha256_file(worker_path)[:16]}"
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
@@ -330,6 +403,7 @@ class BlenderController:
                 30,
                 PerspectiveProjection(),
                 panel_aspect,
+                focus_ids,
             )
             panels.append(
                 self._render_contact_panel(
@@ -393,6 +467,7 @@ class BlenderController:
                     elevation,
                     projection,
                     panel_aspect,
+                    focus_ids,
                 )
                 panels.append(
                     self._render_contact_panel(
@@ -471,6 +546,7 @@ class BlenderController:
         elevation: float,
         projection: Projection,
         aspect_ratio: float,
+        focus_component_ids: tuple[str, ...] = (),
     ) -> None:
         distance = max(span * 2, 100.0)
         if isinstance(projection, PerspectiveProjection):
@@ -482,15 +558,17 @@ class BlenderController:
                 (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25,
                 100.0,
             )
-        camera = orbit_camera(
-            target_mm=target,
+        self.request(
+            "view.orbit",
+            target_mm=list(target),
             azimuth_degrees=azimuth,
             elevation_degrees=elevation,
-            roll_degrees=0,
+            roll_degrees=0.0,
             distance_mm=distance,
-            projection=projection,
+            projection=projection.model_dump(mode="json"),
+            aspect_ratio=aspect_ratio,
+            focus_component_ids=list(focus_component_ids),
         )
-        self.request("view.set", camera=camera.model_dump(mode="json"))
 
     def _focus_bounds(self, focus_ids: tuple[str, ...]) -> Bounds:
         if self._manifest is None:

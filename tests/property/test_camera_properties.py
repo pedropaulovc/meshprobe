@@ -6,8 +6,8 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from meshprobe.camera import _normalize, _quaternion_from_matrix, orbit_camera
-from meshprobe.models import PerspectiveProjection, Pose
+from meshprobe.camera import _normalize, _quaternion_from_matrix, camera_diagnostics, orbit_camera
+from meshprobe.models import OrthographicProjection, PerspectiveProjection, Pose
 
 finite = st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False)
 positive = st.floats(min_value=0.1, max_value=10_000, allow_nan=False, allow_infinity=False)
@@ -51,3 +51,35 @@ def test_camera_math_covers_x_dominant_rotation_and_zero_vector() -> None:
     assert quaternion == (1.0, 0.0, 0.0, 0.0)
     with pytest.raises(ValueError, match="degenerate"):
         _normalize((0.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        PerspectiveProjection(focal_length_mm=85, near_clip_mm=1, far_clip_mm=1_000),
+        OrthographicProjection(scale_mm=200, near_clip_mm=1, far_clip_mm=1_000),
+    ],
+)
+def test_camera_diagnostics_return_basis_frustum_and_target_depth(
+    projection: PerspectiveProjection | OrthographicProjection,
+) -> None:
+    camera = orbit_camera(
+        target_mm=(0, 0, 0),
+        azimuth_degrees=0,
+        elevation_degrees=0,
+        roll_degrees=0,
+        distance_mm=500,
+        projection=projection,
+    )
+
+    diagnostics = camera_diagnostics(camera, target_mm=(0, 0, 0), aspect_ratio=16 / 9)
+
+    assert diagnostics.right == pytest.approx((0, 1, 0))
+    assert diagnostics.up == pytest.approx((0, 0, 1))
+    assert diagnostics.forward == pytest.approx((-1, 0, 0))
+    assert diagnostics.target_depth_mm == pytest.approx(500)
+    assert len(diagnostics.frustum_corners_mm) == 8
+    near_depths = [500 - corner[0] for corner in diagnostics.frustum_corners_mm[:4]]
+    far_depths = [500 - corner[0] for corner in diagnostics.frustum_corners_mm[4:]]
+    assert near_depths == pytest.approx([1] * 4)
+    assert far_depths == pytest.approx([1_000] * 4)
