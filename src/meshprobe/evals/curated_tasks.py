@@ -261,16 +261,17 @@ def _prompt(model: CuratedModelTruth, index: int) -> str:
     if index == 1:
         return (
             f"Verify the identity and hierarchy of {target!r} against {reference!r}. Highlight "
-            f"the target, hide {occluder!r}, compare perspective at 85 mm with an orthographic "
-            "view under raking-left illumination, and submit image plus focused contact-sheet "
-            "evidence. Return all three stable IDs and paths."
+            f"the target and hide {occluder!r} in both a neutral 85 mm perspective context "
+            "render and an orthographic raking-left render. Submit both images plus focused "
+            "contact-sheet evidence, then return all three stable IDs and paths."
         )
     return (
         f"Perform a complete inspection of {target!r}, using {reference!r} as the comparison and "
         f"{occluder!r} as the removable foreground component. Exercise every MeshProbe operation, "
-        "including both projection modes, an 85 mm lens, orbiting, raking-left illumination, "
-        "hide/display, highlighting, still renders, a focused 3x3 contact sheet, and a final "
-        "session reset. Return all three stable IDs and paths with the evidence manifests."
+        "including a neutral 85 mm perspective context state and an orthographic raking-left "
+        "state with the occluder hidden and target highlighted, still renders, a focused 3x3 "
+        "contact sheet, and a final session reset. Return all three stable IDs and paths with "
+        "the evidence manifests."
     )
 
 
@@ -301,19 +302,54 @@ def _evidence_operations() -> tuple[Operation, ...]:
 
 def _state_requirements(index: int) -> tuple[StateRequirement, ...]:
     requirements = [
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="orthographic"),
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="perspective"),
-        StateRequirement(predicate=StatePredicate.FOCAL_LENGTH_MM, expected=85.0),
-        StateRequirement(predicate=StatePredicate.ILLUMINATION_PRESET, expected="raking_left"),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="perspective",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.FOCAL_LENGTH_MM,
+            expected=85.0,
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+            state_group="context_85",
+        ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_DISPLAY,
             component_role="occluder",
             expected="hidden",
+            state_group="context_85",
         ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_MARK,
             component_role="target",
             expected="highlighted",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="orthographic_rake",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="raking_left",
+            state_group="orthographic_rake",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="occluder",
+            expected="hidden",
+            state_group="orthographic_rake",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_MARK,
+            component_role="target",
+            expected="highlighted",
+            state_group="orthographic_rake",
         ),
     ]
     if index == 2:
@@ -329,21 +365,63 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="target",
             minimum=0.01,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="target",
             minimum=0.005,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.COMPONENT_ABSENT,
             component_role="occluder",
             maximum=0.0,
+            render_group="context_85",
         ),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="orthographic"),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="perspective"),
-        EvidenceRequirement(kind=EvidenceKind.FOCAL_LENGTH, expected=85.0),
-        EvidenceRequirement(kind=EvidenceKind.ILLUMINATION, expected="raking_left"),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="perspective",
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.FOCAL_LENGTH,
+            expected=85.0,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="neutral_studio",
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="target",
+            minimum=0.01,
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_HIGHLIGHTED,
+            component_role="target",
+            minimum=0.005,
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.COMPONENT_ABSENT,
+            component_role="occluder",
+            maximum=0.0,
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="raking_left",
+            render_group="orthographic_rake",
+        ),
         EvidenceRequirement(kind=EvidenceKind.CONTACT_SHEET_PANELS, expected=9),
         EvidenceRequirement(kind=EvidenceKind.DISTINCT_VIEWS, minimum=9),
     )

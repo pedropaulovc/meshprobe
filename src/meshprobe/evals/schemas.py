@@ -114,6 +114,7 @@ class EvidenceRequirement(EvalModel):
     expected: JsonValue = None
     minimum: float | None = None
     maximum: float | None = None
+    render_group: str | None = None
 
     @model_validator(mode="after")
     def validate_bounds(self) -> Self:
@@ -127,6 +128,11 @@ class EvidenceRequirement(EvalModel):
         }
         if self.kind in component_kinds and self.component_role is None:
             raise ValueError(f"{self.kind} evidence requires component_role")
+        if self.render_group is not None and self.kind in {
+            EvidenceKind.CONTACT_SHEET_PANELS,
+            EvidenceKind.DISTINCT_VIEWS,
+        }:
+            raise ValueError(f"{self.kind} cannot belong to a single-render group")
         return self
 
 
@@ -143,6 +149,7 @@ class StateRequirement(EvalModel):
     predicate: StatePredicate
     expected: JsonValue
     component_role: str | None = None
+    state_group: str | None = None
 
     @model_validator(mode="after")
     def validate_role(self) -> Self:

@@ -43,6 +43,17 @@ def test_every_family_generates_four_operation_aware_episodes(
     assert episodes[-1].spec.family is TaskFamily.FULL_INVESTIGATION
     assert set(episodes[-1].spec.required_operations) == set(Operation)
     assert episodes[-1].ground_truth.state_requirements[-1].predicate == "reset_to_imported"
+    for episode in episodes[1:]:
+        assert {
+            requirement.state_group
+            for requirement in episode.ground_truth.state_requirements
+            if requirement.state_group is not None
+        } == {"context_85", "surface_left", "surface_right", "gap_backlit"}
+        assert {
+            requirement.render_group
+            for requirement in episode.ground_truth.evidence_requirements
+            if requirement.render_group is not None
+        } == {"context_85", "surface_left", "surface_right", "gap_backlit"}
 
 
 def test_seed_rotation_covers_every_metamorphic_variant() -> None:

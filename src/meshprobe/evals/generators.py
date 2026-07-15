@@ -579,8 +579,9 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
         return (
             f"Investigate {target!r}. Determine the numbered shaft it contacts, "
             "the local-X side carrying its retaining clip, the stamped arrow direction, and which "
-            "coaxial ring is nearer the starting camera. Use camera, display, marking, projection, "
-            "and illumination changes required by the geometry; submit rendered evidence."
+            "coaxial ring is nearer the starting camera. Submit an 85 mm perspective context "
+            "render with the cover hidden and target highlighted, isolated orthographic arrow "
+            "renders under both raking directions, and an orthographic backlit gap render."
         )
     if index == 2:
         return (
@@ -662,19 +663,74 @@ def _evidence_operations() -> tuple[Operation, ...]:
 
 def _state_requirements(index: int) -> tuple[StateRequirement, ...]:
     requirements = [
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="orthographic"),
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="perspective"),
-        StateRequirement(predicate=StatePredicate.FOCAL_LENGTH_MM, expected=85.0),
-        StateRequirement(predicate=StatePredicate.ILLUMINATION_PRESET, expected="raking_left"),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="perspective",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.FOCAL_LENGTH_MM,
+            expected=85.0,
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+            state_group="context_85",
+        ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_DISPLAY,
             component_role="cover",
             expected="hidden",
+            state_group="context_85",
         ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_MARK,
             component_role="idler",
             expected="highlighted",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="raking_left",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="arrow",
+            expected="isolated",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="raking_right",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="arrow",
+            expected="isolated",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="gap_backlit",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="backlit",
+            state_group="gap_backlit",
         ),
     ]
     if index == 3:
@@ -690,25 +746,100 @@ def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="idler",
             minimum=0.02,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="idler",
             minimum=0.01,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.COMPONENT_ABSENT,
             component_role="cover",
             maximum=0.0,
+            render_group="context_85",
         ),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="orthographic"),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="perspective"),
-        EvidenceRequirement(kind=EvidenceKind.FOCAL_LENGTH, expected=85.0),
-        EvidenceRequirement(kind=EvidenceKind.ILLUMINATION, expected="raking_left"),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="perspective",
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.FOCAL_LENGTH,
+            expected=85.0,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="neutral_studio",
+            render_group="context_85",
+        ),
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_CONTRAST,
             component_role="arrow",
             minimum=0.04,
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="arrow",
+            minimum=0.005,
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="raking_left",
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_CONTRAST,
+            component_role="arrow",
+            minimum=0.04,
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="arrow",
+            minimum=0.005,
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="raking_right",
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="gap_left",
+            minimum=0.001,
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="gap_right",
+            minimum=0.001,
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="backlit",
+            render_group="gap_backlit",
         ),
     ]
     if index >= 2:

@@ -17,10 +17,12 @@ from meshprobe.evals.schemas import (
     EpisodeSpec,
     EpisodeSubmission,
     EvidenceKind,
+    EvidenceRequirement,
     GateResult,
     GateStatus,
     Operation,
     StatePredicate,
+    StateRequirement,
     StructuredAnswer,
     TraceEvent,
     TraceStatus,
@@ -133,7 +135,16 @@ def _compare_json(
 def _state_gate(inputs: OracleInputs) -> GateResult:
     failures: list[str] = []
     accepted = [event for event in inputs.trace if event.status is TraceStatus.ACCEPTED]
+    ungrouped = [
+        requirement
+        for requirement in inputs.truth.state_requirements
+        if requirement.state_group is None
+    ]
+    grouped: dict[str, list[StateRequirement]] = {}
     for requirement in inputs.truth.state_requirements:
+        if requirement.state_group is not None:
+            grouped.setdefault(requirement.state_group, []).append(requirement)
+    for requirement in ungrouped:
         component_id = (
             inputs.truth.component_roles[requirement.component_role]
             if requirement.component_role is not None
@@ -146,6 +157,25 @@ def _state_gate(inputs: OracleInputs) -> GateResult:
             failures.append(
                 f"no accepted event proves {requirement.predicate}={requirement.expected}"
             )
+    for group_name, requirements in grouped.items():
+        if any(
+            all(
+                _event_satisfies_state(
+                    event,
+                    requirement.predicate,
+                    requirement.expected,
+                    (
+                        inputs.truth.component_roles[requirement.component_role]
+                        if requirement.component_role is not None
+                        else None
+                    ),
+                )
+                for requirement in requirements
+            )
+            for event in accepted
+        ):
+            continue
+        failures.append(f"no accepted state snapshot proves group {group_name}")
     if failures:
         return _fail("state", "required scene transitions were not proven", failures=failures)
     return _pass("state", "every required scene transition is present in accepted results")
@@ -190,7 +220,16 @@ def _evidence_gate(inputs: OracleInputs) -> GateResult:
         return _na("evidence", "episode declares no rendered evidence requirements")
     renders = _all_renders(inputs)
     failures: list[str] = []
+    ungrouped = [
+        requirement
+        for requirement in inputs.truth.evidence_requirements
+        if requirement.render_group is None
+    ]
+    grouped: dict[str, list[EvidenceRequirement]] = {}
     for requirement in inputs.truth.evidence_requirements:
+        if requirement.render_group is not None:
+            grouped.setdefault(requirement.render_group, []).append(requirement)
+    for requirement in ungrouped:
         component_id = (
             inputs.truth.component_roles[requirement.component_role]
             if requirement.component_role is not None
@@ -206,6 +245,28 @@ def _evidence_gate(inputs: OracleInputs) -> GateResult:
             inputs.contact_sheets,
         ):
             failures.append(f"unsatisfied evidence requirement: {requirement.kind}")
+    for group_name, requirements in grouped.items():
+        if any(
+            all(
+                _evidence_satisfied(
+                    requirement.kind,
+                    requirement.expected,
+                    requirement.minimum,
+                    requirement.maximum,
+                    (
+                        inputs.truth.component_roles[requirement.component_role]
+                        if requirement.component_role is not None
+                        else None
+                    ),
+                    (render,),
+                    (),
+                )
+                for requirement in requirements
+            )
+            for render in renders
+        ):
+            continue
+        failures.append(f"no single render proves evidence group {group_name}")
     if failures:
         return _fail(
             "evidence", "rendered evidence does not prove every requirement", failures=failures
