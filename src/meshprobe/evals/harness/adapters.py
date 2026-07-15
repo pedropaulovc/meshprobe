@@ -85,6 +85,14 @@ class CliJsonlAdapter:
         if process.stdin is None or process.stdout is None or process.stderr is None:
             isolated.terminate()
             raise RuntimeError("isolated process did not expose standard streams")
+        deadline = isolated.started_monotonic + isolated.wall_seconds
+        agent_stdin = _DeadlineWriter(process.stdin, deadline)
+        streams = _PipeStreams(process.stdout, process.stderr)
+        stdout_buffer = b""
+        stderr_buffer = b""
+        submission: EpisodeSubmission | None = None
+        protocol_error: str | None = None
+        timed_out = False
         initialization = {
             "type": "episode",
             "protocol_version": 1,
@@ -96,40 +104,13 @@ class CliJsonlAdapter:
             "budgets": spec.budgets.model_dump(mode="json"),
         }
         try:
-            process.stdin.write(json.dumps(initialization, separators=(",", ":")) + "\n")
-            process.stdin.flush()
+            agent_stdin.write(json.dumps(initialization, separators=(",", ":")) + "\n")
+            agent_stdin.flush()
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            protocol_error = "agent exceeded the episode wall-time budget"
         except (BrokenPipeError, OSError):
-            process.wait(timeout=1)
-            if process.returncode is None:
-                raise RuntimeError("agent process ended without a return code") from None
-            stderr = process.stderr.read(_MAX_STREAM_BYTES)
-            stdout = process.stdout.read(_MAX_STREAM_BYTES).encode("utf-8", errors="replace")
-            _remainder, messages = _complete_lines(stdout)
-            startup_error: str | None = "agent exited before accepting the episode envelope"
-            startup_submission: EpisodeSubmission | None = None
-            for raw_message in messages:
-                startup_submission, startup_error = self._handle_message(
-                    raw_message,
-                    process.stdin,
-                    broker,
-                )
-                if startup_submission is not None or startup_error is not None:
-                    break
-            return AdapterRun(
-                submission=startup_submission,
-                returncode=process.returncode,
-                stderr=stderr,
-                elapsed_seconds=time.monotonic() - isolated.started_monotonic,
-                timed_out=False,
-                protocol_error=startup_error,
-            )
-        streams = _PipeStreams(process.stdout, process.stderr)
-        stdout_buffer = b""
-        stderr_buffer = b""
-        submission: EpisodeSubmission | None = None
-        protocol_error: str | None = None
-        timed_out = False
-        deadline = isolated.started_monotonic + isolated.wall_seconds
+            protocol_error = "agent exited before accepting the episode envelope"
         try:
             while submission is None and protocol_error is None:
                 remaining = deadline - time.monotonic()
@@ -155,18 +136,24 @@ class CliJsonlAdapter:
                     break
                 stdout_buffer, messages = _complete_lines(stdout_buffer)
                 for raw_message in messages:
-                    submission, protocol_error = self._handle_message(
-                        raw_message,
-                        process.stdin,
-                        broker,
-                    )
+                    try:
+                        submission, protocol_error = self._handle_message(
+                            raw_message,
+                            agent_stdin,
+                            broker,
+                        )
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        protocol_error = "agent exceeded the episode wall-time budget"
                     if submission is not None or protocol_error is not None:
                         break
         finally:
+            if timed_out and process.poll() is None:
+                isolated.terminate()
             if process.stdin is not None:
                 with contextlib.suppress(BrokenPipeError, OSError):
                     process.stdin.close()
-            if process.poll() is None:
+            if not timed_out and process.poll() is None:
                 try:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
@@ -262,6 +249,7 @@ class McpStdioAdapter:
         timed_out = False
         initialized = False
         deadline = isolated.started_monotonic + isolated.wall_seconds
+        agent_stdin = _DeadlineWriter(process.stdin, deadline)
         try:
             while submission is None and protocol_error is None:
                 remaining = deadline - time.monotonic()
@@ -287,21 +275,29 @@ class McpStdioAdapter:
                     break
                 stdout_buffer, messages = _complete_lines(stdout_buffer)
                 for raw_message in messages:
-                    submission, message_error, initialized = self._handle_message(
-                        raw_message,
-                        process.stdin,
-                        broker,
-                        spec,
-                        initialized,
-                    )
+                    try:
+                        submission, message_error, initialized = self._handle_message(
+                            raw_message,
+                            agent_stdin,
+                            broker,
+                            spec,
+                            initialized,
+                        )
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        message_error = "agent exceeded the episode wall-time budget"
+                    except (BrokenPipeError, OSError):
+                        message_error = "agent closed stdin before accepting the MCP response"
                     protocol_error = message_error
                     if submission is not None or protocol_error is not None:
                         break
         finally:
+            if timed_out and process.poll() is None:
+                isolated.terminate()
             if process.stdin is not None:
                 with contextlib.suppress(BrokenPipeError, OSError):
                     process.stdin.close()
-            if process.poll() is None:
+            if not timed_out and process.poll() is None:
                 try:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
@@ -483,6 +479,38 @@ def _write_rpc(stream: object, payload: object) -> None:
 
 
 type _StreamEvent = tuple[Literal["stdout", "stderr"], bytes | None]
+
+
+class _DeadlineWriter:
+    """Write to an agent pipe without letting backpressure defeat the wall deadline."""
+
+    def __init__(self, stream: IO[str], deadline: float) -> None:
+        self._stream = stream
+        self._deadline = deadline
+
+    def write(self, value: str) -> int:
+        completed = threading.Event()
+        errors: list[BaseException] = []
+
+        def send() -> None:
+            try:
+                self._stream.write(value)
+                self._stream.flush()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                completed.set()
+
+        threading.Thread(target=send, daemon=True).start()
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0 or not completed.wait(remaining):
+            raise subprocess.TimeoutExpired("agent stdin", max(0, remaining))
+        if errors:
+            raise errors[0]
+        return len(value)
+
+    def flush(self) -> None:
+        pass
 
 
 class _PipeStreams:

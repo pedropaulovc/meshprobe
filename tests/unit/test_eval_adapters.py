@@ -377,3 +377,30 @@ def test_agent_adapters_reject_empty_commands_and_enforce_wall_timeout(tmp_path:
 
     assert run.timed_out
     assert run.protocol_error == "agent exceeded the episode wall-time budget"
+
+    mcp_script = public / "slow_mcp.py"
+    mcp_script.write_text(
+        "import json, time\n"
+        "print(json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{"
+        "'protocolVersion':'2025-06-18'}}), flush=True)\n"
+        "time.sleep(10)\n",
+        encoding="utf-8",
+    )
+    mcp_broker = EvaluationBroker(
+        service=AdapterService(),
+        model_path=model.path,
+        artifact_root=tmp_path / "mcp-artifacts",
+        evaluator_root=tmp_path / "mcp-evaluator" / "passes",
+        trace_path=tmp_path / "mcp-evaluator" / "trace.jsonl",
+        budgets=spec.budgets,
+    )
+
+    mcp_run = McpStdioAdapter(agent_command(mcp_script)).run(
+        spec=spec,
+        broker=mcp_broker,
+        input_root=public,
+        artifact_root=tmp_path / "mcp-artifacts",
+    )
+
+    assert mcp_run.timed_out
+    assert mcp_run.protocol_error == "agent exceeded the episode wall-time budget"

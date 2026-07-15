@@ -220,7 +220,8 @@ class WindowsProcess:
                 reader.start()
         elif input:
             raise ValueError("cannot send input after communication started")
-        self.wait(timeout=timeout)
+        if not self._finished:
+            self.wait(timeout=timeout)
         if self._reader_threads is not None:
             for reader in self._reader_threads:
                 reader.join(timeout=2)
