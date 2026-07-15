@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -44,8 +45,8 @@ def test_find_command_returns_component_paths(tmp_path, scene_manifest: SceneMan
 
 
 def test_apply_exercises_renderer_independent_operations(
-    tmp_path, scene_manifest: SceneManifest
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
     manifest_path = write_manifest(tmp_path, scene_manifest)
     target = scene_manifest.components[-1].id
     commands = [

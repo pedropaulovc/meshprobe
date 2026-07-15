@@ -8,6 +8,7 @@ from meshprobe.models import (
     Bounds,
     Camera,
     Component,
+    IlluminationPreset,
     PerspectiveProjection,
     Pose,
     PresetIllumination,
@@ -84,7 +85,7 @@ def scene_manifest() -> SceneManifest:
             pose=Pose(position_mm=(100, 100, 100), orientation_xyzw=(0, 0, 0, 1)),
             projection=PerspectiveProjection(),
         ),
-        imported_illumination=PresetIllumination(preset="neutral_studio"),
+        imported_illumination=PresetIllumination(preset=IlluminationPreset.NEUTRAL_STUDIO),
         capabilities=SceneCapabilities(
             hierarchy="preserved",
             component_names="source",

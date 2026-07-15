@@ -5,6 +5,7 @@ import math
 import pytest
 from pydantic import ValidationError
 
+from meshprobe.identity import stable_component_id
 from meshprobe.models import (
     AreaLight,
     Bounds,
@@ -13,6 +14,7 @@ from meshprobe.models import (
     PerspectiveProjection,
     Pose,
     SceneManifest,
+    SensorFit,
 )
 
 
@@ -33,8 +35,23 @@ def test_bounds_reject_inverted_axis() -> None:
 
 def test_perspective_reports_field_of_view() -> None:
     projection = PerspectiveProjection(focal_length_mm=50, sensor_width_mm=36)
-    assert projection.horizontal_fov_degrees == pytest.approx(39.5978, rel=1e-4)
+    assert projection.horizontal_fov_degrees(16 / 9) == pytest.approx(39.5978, rel=1e-4)
     assert projection.vertical_fov_degrees(16 / 9) == pytest.approx(22.8952, rel=1e-4)
+
+
+def test_perspective_respects_vertical_and_automatic_sensor_fit() -> None:
+    vertical = PerspectiveProjection(
+        focal_length_mm=50,
+        sensor_width_mm=36,
+        sensor_height_mm=24,
+        sensor_fit=SensorFit.VERTICAL,
+    )
+    automatic = vertical.model_copy(update={"sensor_fit": SensorFit.AUTO})
+
+    assert vertical.horizontal_fov_degrees(16 / 9) == pytest.approx(46.2127, rel=1e-4)
+    assert vertical.vertical_fov_degrees(16 / 9) == pytest.approx(26.9915, rel=1e-4)
+    assert automatic.effective_sensor_fit(16 / 9) is SensorFit.HORIZONTAL
+    assert automatic.effective_sensor_fit(9 / 16) is SensorFit.VERTICAL
 
 
 @pytest.mark.parametrize("projection", [PerspectiveProjection, OrthographicProjection])
@@ -70,6 +87,40 @@ def test_custom_illumination_rejects_duplicate_ids() -> None:
             ambient_strength=0,
             lights=(light, light),
         )
+
+
+def test_custom_illumination_rejects_zero_effective_output() -> None:
+    black_light = AreaLight(
+        id="black",
+        position_mm=(1, 2, 3),
+        orientation_xyzw=(0, 0, 0, 1),
+        power_w=100,
+        size_mm=50,
+        linear_rgb=(0, 0, 0),
+    )
+    with pytest.raises(ValidationError, match="non-zero light output"):
+        CustomIllumination(
+            background_rgb=(0, 0, 0),
+            ambient_strength=0,
+            lights=(black_light,),
+        )
+
+
+def test_custom_illumination_accepts_effective_background() -> None:
+    black_light = AreaLight(
+        id="black",
+        position_mm=(1, 2, 3),
+        orientation_xyzw=(0, 0, 0, 1),
+        power_w=100,
+        size_mm=50,
+        linear_rgb=(0, 0, 0),
+    )
+    illumination = CustomIllumination(
+        background_rgb=(0.1, 0, 0),
+        ambient_strength=0.5,
+        lights=(black_light,),
+    )
+    assert illumination.ambient_strength == 0.5
 
 
 def test_normalized_quaternion_has_unit_length() -> None:
@@ -139,6 +190,29 @@ def test_scene_rejects_duplicate_child_ids(scene_manifest: SceneManifest) -> Non
     payload = scene_manifest.model_dump(mode="json")
     payload["components"][0]["child_ids"].append(payload["components"][0]["child_ids"][0])
     with pytest.raises(ValidationError, match="child ids must be unique"):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_child_path_outside_parent(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    child = payload["components"][1]
+    old_id = child["id"]
+    child["path"] = "elsewhere/clip"
+    child["id"] = stable_component_id(scene_manifest.source_sha256, child["path"])
+    payload["components"][0]["child_ids"] = [
+        child["id"] if component_id == old_id else component_id
+        for component_id in payload["components"][0]["child_ids"]
+    ]
+    with pytest.raises(ValidationError, match="path must be under parent path"):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_root_bounds_that_exclude_component(
+    scene_manifest: SceneManifest,
+) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    payload["root_bounds"] = {"minimum_mm": [-5, -5, -5], "maximum_mm": [5, 5, 5]}
+    with pytest.raises(ValidationError, match="root_bounds must enclose"):
         SceneManifest.model_validate(payload)
 
 

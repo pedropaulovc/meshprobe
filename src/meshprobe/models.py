@@ -79,6 +79,7 @@ class Pose(ContractModel):
 
 
 class SensorFit(StrEnum):
+    AUTO = "auto"
     HORIZONTAL = "horizontal"
     VERTICAL = "vertical"
 
@@ -87,7 +88,8 @@ class PerspectiveProjection(ContractModel):
     mode: Literal["perspective"] = "perspective"
     focal_length_mm: PositiveFiniteFloat = 50.0
     sensor_width_mm: PositiveFiniteFloat = 36.0
-    sensor_fit: SensorFit = SensorFit.HORIZONTAL
+    sensor_height_mm: PositiveFiniteFloat = 24.0
+    sensor_fit: SensorFit = SensorFit.AUTO
     near_clip_mm: PositiveFiniteFloat = 0.5
     far_clip_mm: PositiveFiniteFloat = 100_000.0
 
@@ -97,12 +99,21 @@ class PerspectiveProjection(ContractModel):
             raise ValueError("far_clip_mm must be greater than near_clip_mm")
         return self
 
-    @property
-    def horizontal_fov_degrees(self) -> float:
-        return math.degrees(2.0 * math.atan(self.sensor_width_mm / (2.0 * self.focal_length_mm)))
+    def effective_sensor_fit(self, aspect_ratio: PositiveFiniteFloat) -> SensorFit:
+        if self.sensor_fit is not SensorFit.AUTO:
+            return self.sensor_fit
+        return SensorFit.HORIZONTAL if aspect_ratio >= 1 else SensorFit.VERTICAL
+
+    def horizontal_fov_degrees(self, aspect_ratio: PositiveFiniteFloat) -> float:
+        sensor_width = self.sensor_width_mm
+        if self.effective_sensor_fit(aspect_ratio) is SensorFit.VERTICAL:
+            sensor_width = self.sensor_height_mm * aspect_ratio
+        return math.degrees(2.0 * math.atan(sensor_width / (2.0 * self.focal_length_mm)))
 
     def vertical_fov_degrees(self, aspect_ratio: PositiveFiniteFloat) -> float:
-        sensor_height = self.sensor_width_mm / aspect_ratio
+        sensor_height = self.sensor_height_mm
+        if self.effective_sensor_fit(aspect_ratio) is SensorFit.HORIZONTAL:
+            sensor_height = self.sensor_width_mm / aspect_ratio
         return math.degrees(2.0 * math.atan(sensor_height / (2.0 * self.focal_length_mm)))
 
 
@@ -217,6 +228,18 @@ class CustomIllumination(ContractModel):
             raise ValueError("light ids must be unique")
         return lights
 
+    @model_validator(mode="after")
+    def require_effective_output(self) -> Self:
+        background_contributes = self.ambient_strength > 0 and any(self.background_rgb)
+        light_contributes = any(
+            light.color_temperature_k is not None
+            or (light.linear_rgb is not None and any(light.linear_rgb))
+            for light in self.lights
+        )
+        if not background_contributes and not light_contributes:
+            raise ValueError("custom illumination must have non-zero light output")
+        return self
+
 
 type Illumination = PresetIllumination | CustomIllumination
 
@@ -318,6 +341,29 @@ class SceneManifest(ContractModel):
                     raise ValueError(f"component hierarchy contains a cycle at {current.id}")
                 ancestors.add(current.id)
                 current = by_id[current.parent_id] if current.parent_id is not None else None
+        for component in self.components:
+            if component.parent_id is not None:
+                parent_path = by_id[component.parent_id].path
+                if not component.path.startswith(f"{parent_path}/"):
+                    raise ValueError(
+                        f"component {component.id} path must be under parent path {parent_path}"
+                    )
+            if any(
+                child_bound < root_bound
+                for child_bound, root_bound in zip(
+                    component.world_bounds.minimum_mm,
+                    self.root_bounds.minimum_mm,
+                    strict=True,
+                )
+            ) or any(
+                child_bound > root_bound
+                for child_bound, root_bound in zip(
+                    component.world_bounds.maximum_mm,
+                    self.root_bounds.maximum_mm,
+                    strict=True,
+                )
+            ):
+                raise ValueError(f"root_bounds must enclose component {component.id} world_bounds")
         warning_ids = {
             component_id for warning in self.warnings for component_id in warning.component_ids
         }
