@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -19,9 +19,9 @@ FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 PositiveFiniteFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=256)]
-Vec3: TypeAlias = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
-Quaternion: TypeAlias = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
-Matrix4x4: TypeAlias = tuple[
+type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
+type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
+type Matrix4x4 = tuple[
     FiniteFloat,
     FiniteFloat,
     FiniteFloat,
@@ -112,7 +112,7 @@ class OrthographicProjection(ContractModel):
         return self
 
 
-Projection: TypeAlias = Annotated[
+type Projection = Annotated[
     PerspectiveProjection | OrthographicProjection,
     Field(discriminator="mode"),
 ]
@@ -180,9 +180,7 @@ class SunLight(LightColor):
     angle_degrees: Annotated[float, Field(ge=0, le=180, allow_inf_nan=False)] = 0.526
 
 
-Light: TypeAlias = Annotated[
-    AreaLight | PointLight | SpotLight | SunLight, Field(discriminator="type")
-]
+type Light = Annotated[AreaLight | PointLight | SpotLight | SunLight, Field(discriminator="type")]
 
 
 class IlluminationPreset(StrEnum):
@@ -213,7 +211,7 @@ class CustomIllumination(ContractModel):
         return lights
 
 
-Illumination: TypeAlias = PresetIllumination | CustomIllumination
+type Illumination = PresetIllumination | CustomIllumination
 
 
 class DisplayMode(StrEnum):

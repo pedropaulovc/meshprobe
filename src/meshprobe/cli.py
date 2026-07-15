@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
+    Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentInspectCommand,
@@ -104,7 +105,12 @@ def apply_commands(
     _emit({"results": results, "final_state": session.snapshot().model_dump(mode="json")})
 
 
-def _apply_one(command, scene, index, session):  # type: ignore[no-untyped-def]
+def _apply_one(
+    command: Command,
+    scene: SceneManifest,
+    index: ComponentIndex,
+    session: InspectionSession,
+) -> object:
     if isinstance(command, SceneDescribeCommand):
         return scene.model_dump(mode="json")
     if isinstance(command, ComponentFindCommand):

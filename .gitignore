@@ -3,10 +3,10 @@
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.coverage
 __pycache__/
 *.py[cod]
 build/
 dist/
 *.egg-info/
 artifacts/
-

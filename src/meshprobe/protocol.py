@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -85,7 +85,7 @@ class SessionResetCommand(CommandModel):
     op: Literal["session.reset"]
 
 
-Command: TypeAlias = Annotated[
+type Command = Annotated[
     SceneOpenCommand
     | SceneDescribeCommand
     | ComponentFindCommand
@@ -101,7 +101,7 @@ Command: TypeAlias = Annotated[
     Field(discriminator="op"),
 ]
 
-COMMAND_ADAPTER = TypeAdapter(Command)
+COMMAND_ADAPTER: TypeAdapter[Command] = TypeAdapter(Command)
 
 
 def parse_command_json(payload: str) -> Command:

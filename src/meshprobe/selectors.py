@@ -5,10 +5,11 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import re
+from collections.abc import Callable
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
-from typing_extensions import Annotated
 
 from meshprobe.models import Component, SceneManifest
 
@@ -52,7 +53,7 @@ class ComponentIndex:
         return tuple(component for component in self._components if predicate(component))
 
     @staticmethod
-    def _predicate(selector: ComponentSelector):  # type: ignore[no-untyped-def]
+    def _predicate(selector: ComponentSelector) -> Callable[[Component], bool]:
         if selector.kind is SelectorKind.EXACT_NAME:
             return lambda component: component.display_name == selector.pattern
 
