@@ -501,6 +501,7 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [
             ("key", center + Vector((span, -span, span)), 1_200.0, span * 1.5),
             ("fill", center + Vector((-span, -span, span)), 1_000.0, span * 1.5),
+            ("under", center + Vector((0, 0, -span)), 700.0, span * 1.5),
         ]
     elif preset in {"raking_left", "raking_right"}:
         side = -1 if preset == "raking_left" else 1
@@ -511,7 +512,21 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [("back", center + Vector((0, span * 2, 0)), 1_200.0, span)]
     elif preset == "flat_diagnostic":
         background = [0.18, 0.18, 0.18]
-        ambient = 1.0
+        ambient = 0.25
+        definitions = [
+            (f"axis-{index}", center + direction * span, 500.0, span * 2)
+            for index, direction in enumerate(
+                (
+                    Vector((1, 0, 0)),
+                    Vector((-1, 0, 0)),
+                    Vector((0, 1, 0)),
+                    Vector((0, -1, 0)),
+                    Vector((0, 0, 1)),
+                    Vector((0, 0, -1)),
+                ),
+                start=1,
+            )
+        ]
     else:
         raise ValueError(f"unknown illumination preset: {preset}")
     lights = [
@@ -795,7 +810,7 @@ def runtime_diagnostics() -> dict[str, Any]:
     }
 
 
-def configure_render(command: dict[str, Any]) -> None:
+def configure_render(command: dict[str, Any]) -> str:
     scene = bpy.context.scene
     engine = command["engine"]
     scene.render.engine = eevee_engine() if engine == "eevee" else "CYCLES"
@@ -809,6 +824,8 @@ def configure_render(command: dict[str, Any]) -> None:
     scene.render.use_file_extension = False
     if engine == "cycles":
         configure_cycles_gpu(command["samples"])
+        return "cuda"
+    return "graphics"
 
 
 def eevee_engine() -> str:
@@ -1045,7 +1062,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
-    configure_render(command)
+    device = configure_render(command)
     render_still(output)
     luminance = luminance_summary(output)
     evaluator = None
@@ -1053,17 +1070,69 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
         evaluator_dir.mkdir(parents=True, exist_ok=True)
         evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+    session = session_snapshot()
     return {
         "schema_version": 1,
         "source_sha256": manifest["source_sha256"],
-        "state_sha256": session_snapshot()["state_sha256"],
+        "state_sha256": session["state_sha256"],
         "width": command["width"],
         "height": command["height"],
         "samples": command["samples"],
         "engine": command["engine"],
+        "device": device,
+        "blender_version": bpy.app.version_string,
+        "session": session,
         "color": artifact(output, "image/png"),
         "evaluator": evaluator,
         "luminance": luminance,
+    }
+
+
+def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
+    focus_ids = selected_component_ids(command)
+    camera_origin = camera_object().matrix_world.translation
+    object_ids = {obj: component_id for component_id, obj in COMPONENT_OBJECTS.items()}
+    points: list[Vector] = []
+    for component_id in sorted(focus_ids):
+        obj = COMPONENT_OBJECTS[component_id]
+        vertices = obj.data.vertices
+        stride = max(1, len(vertices) // 128)
+        points.extend(
+            obj.matrix_world @ vertices[index].co for index in range(0, len(vertices), stride)
+        )
+        points.append(obj.matrix_world.translation.copy())
+    counts: dict[str, int] = {}
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for point in points:
+        direction = point - camera_origin
+        distance = direction.length
+        if distance <= 1e-9:
+            continue
+        hit, _, _, _, hit_object, _ = bpy.context.scene.ray_cast(
+            depsgraph, camera_origin, direction.normalized(), distance=distance + 1e-6
+        )
+        if not hit or hit_object is None:
+            continue
+        original = hit_object.original if hasattr(hit_object, "original") else hit_object
+        hit_component_id = object_ids.get(original)
+        if hit_component_id is None or hit_component_id in focus_ids:
+            continue
+        if COMPONENT_STATES[hit_component_id]["display"] == "hidden":
+            continue
+        counts[hit_component_id] = counts.get(hit_component_id, 0) + 1
+    sample_count = len(points)
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "focus_component_ids": sorted(focus_ids),
+        "sample_count": sample_count,
+        "occluders": [
+            {
+                "component_id": component_id,
+                "blocked_rays": count,
+                "fraction": count / sample_count if sample_count else 0.0,
+            }
+            for component_id, count in ranked
+        ],
     }
 
 
@@ -1433,6 +1502,9 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.image":
         require_session()
         return render_image(command)
+    if operation == "component.occluders":
+        require_session()
+        return rank_occluders(command)
     if operation == "session.shutdown":
         return {"shutdown": True}
     raise ValueError(f"unsupported worker operation: {operation}")

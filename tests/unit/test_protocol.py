@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     ComponentFindCommand,
+    RenderImageCommand,
     command_json_schema,
     parse_command_json,
 )
@@ -82,6 +83,7 @@ def test_render_command_bounds_engine_and_samples() -> None:
             "evaluator_output_dir": "private",
         }
     )
+    assert isinstance(command, RenderImageCommand)
     assert command.samples == 128
     assert command.engine == "cycles"
 

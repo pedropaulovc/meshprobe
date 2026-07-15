@@ -95,6 +95,7 @@ class RenderContactSheetCommand(CommandModel):
     panel_height: Annotated[int, Field(ge=128, le=4_096)] = 768
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
     engine: RenderEngine = RenderEngine.EEVEE
+    evaluator_output_dir: str | None = None
 
 
 class SessionResetCommand(CommandModel):

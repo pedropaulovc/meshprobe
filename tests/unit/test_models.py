@@ -19,6 +19,21 @@ from meshprobe.models import (
 )
 
 
+def render_session(state_sha256: str = "b" * 64) -> dict[str, object]:
+    return {
+        "camera": {
+            "pose": {
+                "position_mm": [100, 100, 100],
+                "orientation_xyzw": [0, 0, 0, 1],
+            },
+            "projection": {"mode": "perspective", "focal_length_mm": 50},
+        },
+        "illumination": {"preset": "neutral_studio"},
+        "components": {},
+        "state_sha256": state_sha256,
+    }
+
+
 def test_pose_normalizes_quaternion() -> None:
     pose = Pose(position_mm=(1, 2, 3), orientation_xyzw=(0, 0, 0, 4))
     assert pose.orientation_xyzw == (0, 0, 0, 1)
@@ -252,6 +267,9 @@ def test_render_manifest_rejects_unordered_luminance() -> None:
                 "height": 512,
                 "samples": 16,
                 "engine": "eevee",
+                "device": "graphics",
+                "blender_version": "5.2.0",
+                "session": render_session(),
                 "color": {
                     "path": "render.png",
                     "media_type": "image/png",
@@ -283,6 +301,9 @@ def test_evaluator_component_colors_must_be_unique() -> None:
         "height": 512,
         "samples": 16,
         "engine": "eevee",
+        "device": "graphics",
+        "blender_version": "5.2.0",
+        "session": render_session(),
         "color": artifact,
         "evaluator": {
             "multilayer": {**artifact, "media_type": "image/x-exr"},

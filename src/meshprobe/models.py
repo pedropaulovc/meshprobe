@@ -277,6 +277,18 @@ class Component(ContractModel):
     materials: MaterialSummary = MaterialSummary()
 
 
+class ComponentVisualState(ContractModel):
+    display: DisplayMode = DisplayMode.SHOWN
+    mark: MarkMode = MarkMode.UNMARKED
+
+
+class SessionSnapshot(ContractModel):
+    camera: Camera
+    illumination: Illumination
+    components: dict[Identifier, ComponentVisualState]
+    state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
 class CapabilityWarning(ContractModel):
     code: Identifier
     message: Annotated[str, StringConstraints(min_length=1, max_length=2_000)]
@@ -427,9 +439,18 @@ class RenderManifest(ContractModel):
     height: Annotated[int, Field(ge=64, le=16_384)]
     samples: Annotated[int, Field(ge=1, le=4_096)]
     engine: RenderEngine
+    device: Literal["graphics", "cuda"]
+    blender_version: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    session: SessionSnapshot
     color: ImageArtifact
     evaluator: EvaluatorPasses | None = None
     luminance: LuminanceSummary
+
+    @model_validator(mode="after")
+    def validate_session_hash(self) -> Self:
+        if self.state_sha256 != self.session.state_sha256:
+            raise ValueError("render state hash must match the embedded session")
+        return self
 
 
 class ContactSheetPanel(ContractModel):
@@ -442,6 +463,7 @@ class ContactSheetManifest(ContractModel):
     schema_version: Literal[1] = 1
     recipe: Literal["focused_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    removed_occluder_ids: tuple[Identifier, ...] = ()
     sheet: ImageArtifact
     panels: tuple[ContactSheetPanel, ...] = Field(min_length=9, max_length=9)
 
