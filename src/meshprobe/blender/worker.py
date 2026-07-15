@@ -25,6 +25,8 @@ from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-foun
 
 PROTOCOL_VERSION = 1
 MILLIMETERS_PER_METER = 1_000.0
+DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
+MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MANIFEST: dict[str, Any] | None = None
 COMPONENT_OBJECTS: dict[str, bpy.types.Object] = {}
 ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
@@ -366,7 +368,10 @@ def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
     data = obj.data
     data.clip_start = projection["near_clip_mm"] / MILLIMETERS_PER_METER
     data.clip_end = projection["far_clip_mm"] / MILLIMETERS_PER_METER
-    if projection["mode"] == "orthographic":
+    mode = projection["mode"]
+    if mode not in {"orthographic", "perspective"}:
+        raise ValueError(f"unknown projection mode: {mode}")
+    if mode == "orthographic":
         data.type = "ORTHO"
         data.ortho_scale = projection["scale_mm"] / MILLIMETERS_PER_METER
     else:
@@ -374,9 +379,13 @@ def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
         data.lens = projection["focal_length_mm"]
         data.sensor_width = projection["sensor_width_mm"]
         data.sensor_height = projection.get("sensor_height_mm", 24.0)
-        data.sensor_fit = "VERTICAL" if projection["sensor_fit"] == "vertical" else "HORIZONTAL"
+        sensor_fit = projection["sensor_fit"]
+        if sensor_fit not in {"auto", "horizontal", "vertical"}:
+            raise ValueError(f"unknown sensor fit: {sensor_fit}")
+        data.sensor_fit = sensor_fit.upper()
     global CURRENT_CAMERA
     CURRENT_CAMERA = deepcopy(camera)
+    orient_component_labels()
     return session_snapshot()
 
 
@@ -637,6 +646,12 @@ def create_component_label(component_id: str) -> None:
     MARK_OBJECTS[component_id] = label
 
 
+def orient_component_labels() -> None:
+    orientation = camera_object().matrix_world.to_quaternion()
+    for label in MARK_OBJECTS.values():
+        label.rotation_quaternion = orientation
+
+
 def refresh_component_appearance(component_id: str) -> None:
     restore_mesh(component_id)
     clear_component_label(component_id)
@@ -684,6 +699,8 @@ def selected_component_ids(command: dict[str, Any]) -> set[str]:
 def component_display(command: dict[str, Any]) -> dict[str, Any]:
     selected = selected_component_ids(command)
     mode = command["mode"]
+    if mode not in DISPLAY_MODES:
+        raise ValueError(f"unknown display mode: {mode}")
     if mode == "isolated":
         for component_id in COMPONENT_OBJECTS:
             set_component_visibility(
@@ -697,8 +714,11 @@ def component_display(command: dict[str, Any]) -> dict[str, Any]:
 
 def component_mark(command: dict[str, Any]) -> dict[str, Any]:
     selected = selected_component_ids(command)
+    mode = command["mode"]
+    if mode not in MARK_MODES:
+        raise ValueError(f"unknown mark mode: {mode}")
     for component_id in selected:
-        COMPONENT_STATES[component_id]["mark"] = command["mode"]
+        COMPONENT_STATES[component_id]["mark"] = mode
         refresh_component_appearance(component_id)
     return session_snapshot()
 
@@ -746,27 +766,39 @@ def runtime_diagnostics() -> dict[str, Any]:
                     list(material.diffuse_color) for material in obj.data.materials
                 ],
                 "label": MARK_OBJECTS[component_id].name if component_id in MARK_OBJECTS else None,
+                "label_rotation_wxyz": (
+                    list(MARK_OBJECTS[component_id].rotation_quaternion)
+                    if component_id in MARK_OBJECTS
+                    else None
+                ),
             }
             for component_id, obj in COMPONENT_OBJECTS.items()
         },
         "camera": {
             "type": camera.data.type,
             "lens": camera.data.lens,
+            "sensor_fit": camera.data.sensor_fit,
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
     }
 
 
-def initialize_session(manifest: dict[str, Any]) -> None:
+def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS, OVERRIDE_MATERIALS
 
     MANIFEST = manifest
-    objects_by_path = {
-        object_path(obj): obj for obj in bpy.context.scene.objects if obj.type == "MESH"
-    }
+    objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    path_objects = set(objects)
+    for obj in objects:
+        ancestor = obj.parent
+        while ancestor is not None:
+            path_objects.add(ancestor)
+            ancestor = ancestor.parent
+    source_names, _ = source_names_for_objects(source_path, sorted(path_objects, key=object_path))
+    objects_by_path = {path: obj for obj, path in source_paths(objects, source_names).items()}
     COMPONENT_OBJECTS = {
         component["id"]: objects_by_path[component["path"]] for component in manifest["components"]
     }
@@ -1068,7 +1100,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
-    initialize_session(manifest)
+    initialize_session(manifest, source_path)
     return manifest
 
 

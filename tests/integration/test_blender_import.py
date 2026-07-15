@@ -532,6 +532,24 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         labeled_runtime = controller.request("session.runtime")["components"][target]
         assert labeled_runtime["materials"] == ["MeshProbeMark-labeled"]
         assert labeled_runtime["label"].startswith("MeshProbeLabel-")
+        initial_label_rotation = labeled_runtime["label_rotation_wxyz"]
+
+        controller.execute(
+            ViewSetCommand(
+                request_id="perspective-auto",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(-4_000, 2_000, 1_000),
+                        orientation_xyzw=(0, 0, 1, 0),
+                    ),
+                    projection=PerspectiveProjection(sensor_fit="auto"),
+                ),
+            )
+        )
+        camera_runtime = controller.request("session.runtime")
+        assert camera_runtime["camera"]["sensor_fit"] == "AUTO"
+        assert camera_runtime["components"][target]["label_rotation_wxyz"] != initial_label_rotation
 
         controller.execute(
             ComponentDisplayCommand(
@@ -586,6 +604,15 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert isinstance(custom, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
+
+        before_invalid_mode = controller.request("scene.describe")["session"]
+        with pytest.raises(BlenderWorkerError, match="unknown display mode"):
+            controller.request(
+                "component.display",
+                component_ids=[target],
+                mode="hide",
+            )
+        assert controller.request("scene.describe")["session"] == before_invalid_mode
 
         reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
         assert reset == initial
