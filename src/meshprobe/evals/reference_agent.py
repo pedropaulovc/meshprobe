@@ -400,12 +400,11 @@ def _run_curated(
         return values, evidence
 
     target = roles["target"]
-    occluder = roles["occluder"]
     target_center = _center(target)
     extent = max(_bounds_size(target, "world_bounds"))
     if "view.set" in required:
         _set_preliminary_camera(client, manifest, target["id"])
-    client.call("component.display", component_ids=[occluder["id"]], mode="hidden")
+    client.call("component.display", component_ids=[target["id"]], mode="isolated")
     client.call("component.mark", component_ids=[target["id"]], mode="highlighted")
     client.call("illumination.set", illumination={"preset": "neutral_studio"})
     _orbit(
@@ -413,7 +412,7 @@ def _run_curated(
         [target["id"]],
         target_center,
         projection=_projection("perspective"),
-        distance=max(extent * 3, 1_000),
+        distance=extent * 3,
         azimuth=315,
         elevation=25,
     )
@@ -424,7 +423,7 @@ def _run_curated(
         [target["id"]],
         target_center,
         projection=_projection("orthographic", scale=extent * 1.5),
-        distance=max(extent * 5, 1_000),
+        distance=extent * 5,
         azimuth=315,
         elevation=25,
     )

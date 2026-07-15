@@ -492,12 +492,24 @@ class BlenderController:
 
             occlusion = self._remove_occluders(command, focus_ids)
             removed_occluders = tuple(step.component_id for step in occlusion.steps)
+            third_caption = "Occluders removed"
+            if not removed_occluders:
+                self._set_orbit(
+                    scene_center,
+                    scene_span,
+                    -45,
+                    20,
+                    PerspectiveProjection(),
+                    panel_aspect,
+                    focus_ids,
+                )
+                third_caption = "Alternate context"
             panels.append(
                 self._render_contact_panel(
                     command,
                     panel_paths[2],
                     3,
-                    "Occluders removed",
+                    third_caption,
                     evaluator_root,
                 )
             )

@@ -172,10 +172,12 @@ class WindowsProcess:
         if exit_code.value == _STILL_ACTIVE:
             return None
         self.returncode = _signed_exit_code(exit_code.value)
-        self._finish()
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is not None:
+            self._finish()
+            return self.returncode
         milliseconds = _INFINITE if timeout is None else max(0, int(timeout * 1000))
         result = _kernel32.WaitForSingleObject(self._process_handle, milliseconds)
         if result == _WAIT_TIMEOUT:

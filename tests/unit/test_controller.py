@@ -687,10 +687,21 @@ def test_render_validates_worker_artifact_digests(
         controller._verify_render_artifacts(manifest)
 
 
+@pytest.mark.parametrize(
+    ("visibility", "expected_removed", "expected_stop", "third_caption"),
+    [
+        ((0.2, 0.8), ("blocker",), "threshold_met", "Occluders removed"),
+        ((0.8,), (), "threshold_met_initial", "Alternate context"),
+    ],
+)
 def test_contact_sheet_orchestrates_evidence_and_restores_state(
     tmp_path: Path,
     scene_manifest: SceneManifest,
     monkeypatch: pytest.MonkeyPatch,
+    visibility: tuple[float, ...],
+    expected_removed: tuple[str, ...],
+    expected_stop: str,
+    third_caption: str,
 ) -> None:
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")
@@ -708,7 +719,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         ("component.mark", {"component_ids": [focus_id], "mode": "selected"})
     ]
     calls: list[str] = []
-    visibility_measurements = iter((0.2, 0.8))
+    visibility_measurements = iter(visibility)
 
     def request(operation: str, **arguments: object) -> dict[str, Any]:
         calls.append(operation)
@@ -782,11 +793,15 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     )
 
     assert sheet.focus_component_ids == (focus_id,)
-    assert sheet.removed_occluder_ids == (blocker_id,)
-    assert sheet.occlusion.visible_fraction_before == 0.2
-    assert sheet.occlusion.visible_fraction_after == 0.8
-    assert sheet.occlusion.stop_reason == "threshold_met"
-    assert sheet.occlusion.steps[0].ray_hit_count == 3
+    resolved_removed = tuple(blocker_id if item == "blocker" else item for item in expected_removed)
+    assert sheet.removed_occluder_ids == resolved_removed
+    assert sheet.occlusion.visible_fraction_before == visibility[0]
+    assert sheet.occlusion.visible_fraction_after == visibility[-1]
+    assert sheet.occlusion.stop_reason == expected_stop
+    if resolved_removed:
+        assert sheet.occlusion.steps[0].ray_hit_count == 3
+    assert sheet.panels[2].caption == third_caption
+    assert len({panel.render.state_sha256 for panel in sheet.panels}) == 9
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
