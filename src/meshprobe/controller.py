@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import queue
@@ -16,6 +15,15 @@ from pathlib import Path
 from typing import Any, Self
 
 from meshprobe.models import SceneManifest
+from meshprobe.sources import sha256_file, snapshot_source
+
+__all__ = [
+    "BlenderController",
+    "BlenderWorkerCrashed",
+    "BlenderWorkerError",
+    "BlenderWorkerTimeout",
+    "sha256_file",
+]
 
 
 class BlenderWorkerError(RuntimeError):
@@ -30,14 +38,6 @@ class BlenderWorkerTimeout(BlenderWorkerError):
     """The Blender process exceeded an operation deadline."""
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 class BlenderController:
     """Own one factory-clean Blender worker and its line-oriented protocol."""
 
@@ -47,6 +47,7 @@ class BlenderController:
         self.timeout_seconds = timeout_seconds
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
         self.ready_event: dict[str, Any] | None = None
 
@@ -61,7 +62,8 @@ class BlenderController:
         if resolved is None:
             raise BlenderWorkerError(f"Blender executable not found: {self.executable}")
         self.executable = Path(resolved)
-        self._lines = queue.Queue()
+        output_queue: queue.Queue[str | None] = queue.Queue()
+        self._lines = output_queue
         worker_path = Path(__file__).with_name("blender") / "worker.py"
         self._process = subprocess.Popen(
             [
@@ -79,11 +81,20 @@ class BlenderController:
             text=True,
             bufsize=1,
         )
+        process = self._process
         thread = threading.Thread(
-            target=self._read_output, name="meshprobe-blender-output", daemon=True
+            target=self._read_output,
+            args=(process, output_queue),
+            name="meshprobe-blender-output",
+            daemon=True,
         )
+        self._reader_thread = thread
         thread.start()
-        event = self._wait_for(lambda payload: payload.get("event") == "ready")
+        try:
+            event = self._wait_for(lambda payload: payload.get("event") == "ready")
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self.close()
+            raise
         if event.get("protocol_version") != 1:
             self.close()
             raise BlenderWorkerError(
@@ -116,26 +127,29 @@ class BlenderController:
 
     def open_scene(self, source_path: str | Path) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
-        before_hash = sha256_file(source)
-        before_stat = source.stat()
+        before = snapshot_source(source)
         try:
-            result = self.request("scene.open", source_path=str(source))
+            result = self.request(
+                "scene.open", source_path=str(source), source_sha256=before.sha256
+            )
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self.close()
             self.start()
-            result = self.request("scene.open", source_path=str(source))
-        after_hash = sha256_file(source)
-        after_stat = source.stat()
-        if before_hash != after_hash or before_stat.st_mtime_ns != after_stat.st_mtime_ns:
-            raise BlenderWorkerError("source file changed during read-only import")
+            result = self.request(
+                "scene.open", source_path=str(source), source_sha256=before.sha256
+            )
+        after = snapshot_source(source)
+        if before != after:
+            raise BlenderWorkerError("source asset bundle changed during read-only import")
         manifest = SceneManifest.model_validate(result)
-        if manifest.source_sha256 != before_hash:
+        if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
         return manifest
 
     def close(self) -> None:
         process = self._process
         self._process = None
+        self.ready_event = None
         if process is None:
             return
         if process.poll() is None and process.stdin is not None:
@@ -153,6 +167,10 @@ class BlenderController:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
+        reader_thread = self._reader_thread
+        self._reader_thread = None
+        if reader_thread is not None and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=2)
 
     def __enter__(self) -> Self:
         self.start()
@@ -161,14 +179,17 @@ class BlenderController:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def _read_output(self) -> None:
-        process = self._process
-        if process is None or process.stdout is None:
-            self._lines.put(None)
+    def _read_output(
+        self,
+        process: subprocess.Popen[str],
+        output_queue: queue.Queue[str | None],
+    ) -> None:
+        if process.stdout is None:
+            output_queue.put(None)
             return
         for line in process.stdout:
-            self._lines.put(line.rstrip("\n"))
-        self._lines.put(None)
+            output_queue.put(line.rstrip("\n"))
+        output_queue.put(None)
 
     def _wait_for(self, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         deadline = time.monotonic() + self.timeout_seconds

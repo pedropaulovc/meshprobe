@@ -45,9 +45,13 @@ def object_path(obj: bpy.types.Object) -> str:
     names: list[str] = []
     current: bpy.types.Object | None = obj
     while current is not None:
-        names.append(current.name)
+        names.append(escape_path_segment(current.name))
         current = current.parent
     return "/".join(reversed(names))
+
+
+def escape_path_segment(name: str) -> str:
+    return name.replace("%", "%25").replace("/", "%2F")
 
 
 def nearest_component_parent(
@@ -137,7 +141,8 @@ def imported_camera(
         (obj for obj in bpy.context.scene.objects if obj.type == "CAMERA"), key=lambda obj: obj.name
     )
     if cameras:
-        camera = cameras[0]
+        active_camera = bpy.context.scene.camera
+        camera = active_camera if active_camera in cameras else cameras[0]
         data = camera.data
         projection: dict[str, Any]
         if data.type == "ORTHO":
@@ -190,7 +195,7 @@ def imported_camera(
                 "sensor_width_mm": 36.0,
                 "sensor_fit": "horizontal",
                 "near_clip_mm": 0.5,
-                "far_clip_mm": 100_000.0,
+                "far_clip_mm": max(100_000.0, distance * 4.0 + span * 2.0),
             },
         },
         {
@@ -226,6 +231,8 @@ def imported_illumination() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     converted: list[dict[str, Any]] = []
     for obj in lights:
         data = obj.data
+        if data.energy <= 0:
+            continue
         base: dict[str, Any] = {"id": obj.name, **light_color(data)}
         if data.type == "AREA":
             converted.append(
@@ -278,6 +285,21 @@ def imported_illumination() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                     "angle_degrees": math.degrees(data.angle),
                 }
             )
+
+    if not converted:
+        return (
+            {"preset": "neutral_studio"},
+            [
+                {
+                    "code": "illumination.generated",
+                    "message": (
+                        "The source had no positive-energy supported lights; MeshProbe selected "
+                        "neutral_studio."
+                    ),
+                    "component_ids": [],
+                }
+            ],
+        )
 
     world_color = bpy.context.scene.world.color if bpy.context.scene.world else (0.0, 0.0, 0.0)
     return (
@@ -424,7 +446,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     source_path = Path(command["source_path"]).expanduser().resolve(strict=True)
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
-    source_sha256 = sha256_file(source_path)
+    source_sha256 = command["source_sha256"]
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     return build_manifest(source_path, source_sha256, import_warnings)

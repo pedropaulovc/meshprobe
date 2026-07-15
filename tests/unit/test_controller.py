@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import queue
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -11,9 +15,12 @@ from meshprobe.controller import (
     BlenderWorkerTimeout,
     sha256_file,
 )
+from meshprobe.identity import stable_component_id
+from meshprobe.models import SceneManifest
+from meshprobe.sources import snapshot_source
 
 
-def make_fake_blender(tmp_path: Path) -> Path:
+def make_fake_blender(tmp_path: Path, protocol_version: int = 1) -> Path:
     executable = tmp_path / "fake-blender"
     executable.write_text(
         """#!/usr/bin/env python3
@@ -23,7 +30,7 @@ import sys
 
 print(json.dumps({
     "event": "ready",
-    "protocol_version": 1,
+    "protocol_version": __PROTOCOL_VERSION__,
     "blender_version": "test",
     "pid": os.getpid(),
 }), flush=True)
@@ -51,11 +58,28 @@ for line in sys.stdin:
     }), flush=True)
     if command["op"] == "session.shutdown":
         break
-""",
+""".replace("__PROTOCOL_VERSION__", str(protocol_version)),
         encoding="utf-8",
     )
     executable.chmod(0o755)
     return executable
+
+
+def manifest_for_hash(scene_manifest: SceneManifest, source_hash: str) -> SceneManifest:
+    payload = scene_manifest.model_dump(mode="json")
+    replacements = {
+        component["id"]: stable_component_id(source_hash, component["path"])
+        for component in payload["components"]
+    }
+    payload["source_sha256"] = source_hash
+    for component in payload["components"]:
+        component["id"] = replacements[component["id"]]
+        if component["parent_id"] is not None:
+            component["parent_id"] = replacements[component["parent_id"]]
+        component["child_ids"] = [replacements[item] for item in component["child_ids"]]
+    for warning in payload["warnings"]:
+        warning["component_ids"] = [replacements[item] for item in warning["component_ids"]]
+    return SceneManifest.model_validate(payload)
 
 
 def test_sha256_file_reads_in_chunks(tmp_path: Path) -> None:
@@ -86,6 +110,14 @@ def test_start_twice_fails(tmp_path: Path) -> None:
         controller.close()
 
 
+def test_start_failure_closes_half_started_process(tmp_path: Path) -> None:
+    controller = BlenderController(executable=make_fake_blender(tmp_path, protocol_version=2))
+    with pytest.raises(BlenderWorkerError, match="unsupported worker protocol"):
+        controller.start()
+    assert controller._process is None
+    assert controller._reader_thread is None
+
+
 def test_fake_worker_request_round_trip(tmp_path: Path) -> None:
     with BlenderController(executable=make_fake_blender(tmp_path)) as controller:
         result = controller.request("protocol.ping")
@@ -114,7 +146,7 @@ def test_open_scene_validates_hash_and_manifest(
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model bytes")
     source_hash = sha256_file(source)
-    expected = scene_manifest.model_copy(update={"source_sha256": source_hash})
+    expected = manifest_for_hash(scene_manifest, source_hash)
     controller = BlenderController()
     monkeypatch.setattr(
         controller,
@@ -135,7 +167,40 @@ def test_open_scene_detects_source_mutation(tmp_path: Path, scene_manifest, monk
         return scene_manifest.model_dump(mode="json")
 
     monkeypatch.setattr(controller, "request", mutate_source)
-    with pytest.raises(BlenderWorkerError, match="source file changed"):
+    with pytest.raises(BlenderWorkerError, match="source asset bundle changed"):
+        controller.open_scene(source)
+
+
+def test_gltf_bundle_hash_and_immutability_cover_external_assets(
+    tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    buffer = tmp_path / "mesh data.bin"
+    buffer.write_bytes(b"original buffer")
+    source = tmp_path / "fixture.gltf"
+    source.write_text(
+        json.dumps(
+            {
+                "asset": {"version": "2.0"},
+                "buffers": [{"uri": "mesh%20data.bin", "byteLength": buffer.stat().st_size}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = snapshot_source(source)
+    buffer.write_bytes(b"replacement buf")
+    changed = snapshot_source(source)
+    assert original.sha256 != changed.sha256
+
+    buffer.write_bytes(b"original buffer")
+    controller = BlenderController()
+
+    def mutate_dependency(operation: str, **arguments: object) -> dict[str, object]:
+        buffer.write_bytes(b"changed by worker")
+        source_hash = cast(str, arguments["source_sha256"])
+        return manifest_for_hash(scene_manifest, source_hash).model_dump(mode="json")
+
+    monkeypatch.setattr(controller, "request", mutate_dependency)
+    with pytest.raises(BlenderWorkerError, match="source asset bundle changed"):
         controller.open_scene(source)
 
 
@@ -183,3 +248,17 @@ def test_wait_for_times_out() -> None:
     controller = BlenderController(timeout_seconds=0.001)
     with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
         controller._wait_for(lambda payload: False)
+
+
+def test_output_reader_is_bound_to_its_worker_generation() -> None:
+    controller = BlenderController()
+    old_queue: queue.Queue[str | None] = queue.Queue()
+    current_queue: queue.Queue[str | None] = queue.Queue()
+    controller._lines = current_queue
+    old_process = SimpleNamespace(stdout=iter(["old worker\n"]))
+
+    controller._read_output(cast(Any, old_process), old_queue)
+
+    assert old_queue.get_nowait() == "old worker"
+    assert old_queue.get_nowait() is None
+    assert current_queue.empty()
