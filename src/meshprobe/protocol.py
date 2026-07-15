@@ -6,7 +6,15 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from meshprobe.models import Camera, DisplayMode, Illumination, MarkMode, Projection, Vec3
+from meshprobe.models import (
+    Camera,
+    DisplayMode,
+    FiniteFloat,
+    Illumination,
+    MarkMode,
+    Projection,
+    Vec3,
+)
 from meshprobe.selectors import ComponentSelector
 
 
@@ -43,9 +51,9 @@ class ViewSetCommand(CommandModel):
 class ViewOrbitCommand(CommandModel):
     op: Literal["view.orbit"]
     target_mm: Vec3
-    azimuth_degrees: float
-    elevation_degrees: float
-    roll_degrees: float = 0
+    azimuth_degrees: FiniteFloat
+    elevation_degrees: FiniteFloat
+    roll_degrees: FiniteFloat = 0
     distance_mm: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     projection: Projection
 

@@ -122,3 +122,32 @@ def test_apply_rejects_renderer_operation(tmp_path, scene_manifest: SceneManifes
     result = runner.invoke(app, ["apply", str(manifest_path), str(commands_path)])
     assert result.exit_code == 2
     assert "requires the Blender worker" in result.output
+
+
+def test_describe_reports_current_session_state(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = write_manifest(tmp_path, scene_manifest)
+    target = scene_manifest.components[-1].id
+    commands_path = tmp_path / "commands.jsonl"
+    commands_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "request_id": "hide",
+                        "op": "component.display",
+                        "component_ids": [target],
+                        "mode": "hidden",
+                    }
+                ),
+                json.dumps({"request_id": "describe", "op": "scene.describe"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["apply", str(manifest_path), str(commands_path)])
+    payload = json.loads(result.stdout)
+    described = payload["results"][1]["result"]
+    assert result.exit_code == 0
+    assert described["session"]["components"][target]["display"] == "hidden"
+    assert described["scene"]["source_sha256"] == scene_manifest.source_sha256

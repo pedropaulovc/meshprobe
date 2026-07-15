@@ -12,6 +12,7 @@ from meshprobe.models import (
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
+    SceneManifest,
 )
 
 
@@ -74,3 +75,67 @@ def test_custom_illumination_rejects_duplicate_ids() -> None:
 def test_normalized_quaternion_has_unit_length() -> None:
     pose = Pose(position_mm=(0, 0, 0), orientation_xyzw=(1, -2, 3, -4))
     assert math.sqrt(sum(value**2 for value in pose.orientation_xyzw)) == pytest.approx(1)
+
+
+def test_light_quaternion_is_normalized_and_zero_is_rejected() -> None:
+    light = AreaLight(
+        id="key",
+        position_mm=(1, 2, 3),
+        orientation_xyzw=(0, 0, 0, 4),
+        power_w=100,
+        size_mm=50,
+        color_temperature_k=5200,
+    )
+    assert light.orientation_xyzw == (0, 0, 0, 1)
+    with pytest.raises(ValidationError, match="non-zero magnitude"):
+        AreaLight(
+            id="key",
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 0),
+            power_w=100,
+            size_mm=50,
+            color_temperature_k=5200,
+        )
+
+
+def test_scene_rejects_unmirrored_parent_link(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    child_id = payload["components"][1]["id"]
+    payload["components"][0]["child_ids"].remove(child_id)
+    with pytest.raises(ValidationError, match="does not list child"):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_component_cycle(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    root_id = payload["components"][0]["id"]
+    idler_id = payload["components"][2]["id"]
+    payload["components"][0]["parent_id"] = idler_id
+    payload["components"][2]["child_ids"].append(root_id)
+    with pytest.raises(ValidationError, match="contains a cycle"):
+        SceneManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("units", "meter", "millimeter"),
+        ("source_format", "fbx", "Input should be"),
+    ],
+)
+def test_scene_rejects_noncanonical_source_metadata(
+    scene_manifest: SceneManifest, field: str, value: str, message: str
+) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    payload[field] = value
+    with pytest.raises(ValidationError, match=message):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_rejects_warning_for_unknown_component(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    payload["warnings"].append(
+        {"code": "import.partial", "message": "missing detail", "component_ids": ["missing"]}
+    )
+    with pytest.raises(ValidationError, match="warnings reference unknown"):
+        SceneManifest.model_validate(payload)

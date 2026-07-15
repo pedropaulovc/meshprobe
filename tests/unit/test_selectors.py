@@ -5,6 +5,7 @@ from meshprobe.selectors import (
     ComponentIndex,
     ComponentSelector,
     SelectorKind,
+    path_glob_match,
     stable_component_id,
 )
 
@@ -26,6 +27,13 @@ def test_glob_matches_hierarchy(scene_manifest: SceneManifest) -> None:
     index = ComponentIndex(scene_manifest)
     matches = index.find(ComponentSelector(kind=SelectorKind.GLOB, pattern="assembly/**/i*"))
     assert [match.display_name for match in matches] == ["idler"]
+
+
+def test_glob_star_does_not_cross_path_segments() -> None:
+    assert path_glob_match("assembly/drive/idler", "assembly/*/idler")
+    assert not path_glob_match("assembly/drive/gears/idler", "assembly/*/idler")
+    assert path_glob_match("assembly/drive/gears/idler", "assembly/**/idler")
+    assert path_glob_match("assembly/idler", "assembly/**/idler")
 
 
 def test_regex_matches_path(scene_manifest: SceneManifest) -> None:

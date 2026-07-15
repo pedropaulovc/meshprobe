@@ -61,10 +61,42 @@ class ComponentIndex:
             return lambda component: component.path == selector.pattern
 
         if selector.kind is SelectorKind.GLOB:
-            return lambda component: fnmatch.fnmatchcase(component.path, selector.pattern)
+            return lambda component: path_glob_match(component.path, selector.pattern)
 
         try:
             expression = re.compile(selector.pattern)
         except re.error as error:
             raise ValueError(f"invalid regular expression: {error}") from error
         return lambda component: expression.search(component.path) is not None
+
+
+def path_glob_match(path: str, pattern: str) -> bool:
+    """Match component paths with segment-local `*` and recursive `**`."""
+
+    path_parts = path.split("/")
+    pattern_parts = pattern.split("/")
+    memo: dict[tuple[int, int], bool] = {}
+
+    def matches(path_index: int, pattern_index: int) -> bool:
+        key = (path_index, pattern_index)
+        if key in memo:
+            return memo[key]
+        if pattern_index == len(pattern_parts):
+            result = path_index == len(path_parts)
+            memo[key] = result
+            return result
+        pattern_part = pattern_parts[pattern_index]
+        if pattern_part == "**":
+            result = matches(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and matches(path_index + 1, pattern_index)
+            )
+            memo[key] = result
+            return result
+        result = path_index < len(path_parts) and fnmatch.fnmatchcase(
+            path_parts[path_index], pattern_part
+        )
+        result = result and matches(path_index + 1, pattern_index + 1)
+        memo[key] = result
+        return result
+
+    return matches(0, 0)

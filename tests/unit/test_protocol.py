@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from pydantic import ValidationError
 
-from meshprobe.protocol import ComponentFindCommand, command_json_schema, parse_command_json
+from meshprobe.protocol import (
+    COMMAND_ADAPTER,
+    ComponentFindCommand,
+    command_json_schema,
+    parse_command_json,
+)
 
 
 def test_find_command_round_trip() -> None:
@@ -44,3 +50,20 @@ def test_schema_contains_all_public_operations() -> None:
         "session.reset",
     ):
         assert operation in encoded
+
+
+@pytest.mark.parametrize("field", ["azimuth_degrees", "elevation_degrees", "roll_degrees"])
+def test_orbit_rejects_nonfinite_angles(field: str) -> None:
+    payload = {
+        "request_id": "req-orbit",
+        "op": "view.orbit",
+        "target_mm": [0, 0, 0],
+        "azimuth_degrees": 30,
+        "elevation_degrees": 20,
+        "roll_degrees": 0,
+        "distance_mm": 100,
+        "projection": {"mode": "perspective"},
+    }
+    payload[field] = math.inf
+    with pytest.raises(ValidationError):
+        COMMAND_ADAPTER.validate_python(payload)

@@ -112,7 +112,10 @@ def _apply_one(
     session: InspectionSession,
 ) -> object:
     if isinstance(command, SceneDescribeCommand):
-        return scene.model_dump(mode="json")
+        return {
+            "scene": scene.model_dump(mode="json"),
+            "session": session.snapshot().model_dump(mode="json"),
+        }
     if isinstance(command, ComponentFindCommand):
         return [component.model_dump(mode="json") for component in index.find(command.selector)]
     if isinstance(command, ComponentInspectCommand):

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,6 +22,16 @@ NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
 type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
+
+
+def normalize_quaternion(value: Quaternion) -> Quaternion:
+    norm = math.sqrt(sum(component * component for component in value))
+    if norm <= 1e-12:
+        raise ValueError("quaternion must have non-zero magnitude")
+    return cast(Quaternion, tuple(component / norm for component in value))
+
+
+type UnitQuaternion = Annotated[Quaternion, AfterValidator(normalize_quaternion)]
 type Matrix4x4 = tuple[
     FiniteFloat,
     FiniteFloat,
@@ -60,15 +71,7 @@ class Bounds(ContractModel):
 
 class Pose(ContractModel):
     position_mm: Vec3
-    orientation_xyzw: Quaternion
-
-    @field_validator("orientation_xyzw")
-    @classmethod
-    def normalize_quaternion(cls, value: Quaternion) -> Quaternion:
-        norm = math.sqrt(sum(component * component for component in value))
-        if norm <= 1e-12:
-            raise ValueError("orientation_xyzw must have non-zero magnitude")
-        return tuple(component / norm for component in value)  # type: ignore[return-value]
+    orientation_xyzw: UnitQuaternion
 
 
 class SensorFit(StrEnum):
@@ -150,7 +153,7 @@ class AreaLight(LightColor):
     id: Identifier
     type: Literal["area"] = "area"
     position_mm: Vec3
-    orientation_xyzw: Quaternion
+    orientation_xyzw: UnitQuaternion
     power_w: PositiveFiniteFloat
     size_mm: PositiveFiniteFloat
 
@@ -166,7 +169,7 @@ class SpotLight(LightColor):
     id: Identifier
     type: Literal["spot"] = "spot"
     position_mm: Vec3
-    orientation_xyzw: Quaternion
+    orientation_xyzw: UnitQuaternion
     power_w: PositiveFiniteFloat
     spot_size_degrees: Annotated[float, Field(gt=0, le=180, allow_inf_nan=False)]
     blend: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.15
@@ -175,7 +178,7 @@ class SpotLight(LightColor):
 class SunLight(LightColor):
     id: Identifier
     type: Literal["sun"] = "sun"
-    orientation_xyzw: Quaternion
+    orientation_xyzw: UnitQuaternion
     strength: PositiveFiniteFloat
     angle_degrees: Annotated[float, Field(ge=0, le=180, allow_inf_nan=False)] = 0.526
 
@@ -263,8 +266,8 @@ class SceneCapabilities(ContractModel):
 class SceneManifest(ContractModel):
     schema_version: Literal[1] = 1
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-    source_format: Annotated[str, StringConstraints(min_length=1, max_length=32)]
-    units: Annotated[str, StringConstraints(min_length=1, max_length=32)]
+    source_format: Literal["glb", "gltf", "obj", "stl"]
+    units: Literal["millimeter"]
     root_bounds: Bounds
     components: tuple[Component, ...]
     imported_camera: Camera
@@ -283,6 +286,11 @@ class SceneManifest(ContractModel):
         for component in self.components:
             if component.parent_id is not None and component.parent_id not in by_id:
                 raise ValueError(f"unknown parent id: {component.parent_id}")
+            if (
+                component.parent_id is not None
+                and component.id not in by_id[component.parent_id].child_ids
+            ):
+                raise ValueError(f"parent {component.parent_id} does not list child {component.id}")
             unknown_children = set(component.child_ids) - by_id.keys()
             if unknown_children:
                 raise ValueError(f"unknown child ids: {sorted(unknown_children)}")
@@ -291,4 +299,20 @@ class SceneManifest(ContractModel):
                     raise ValueError(
                         f"child {child_id} does not point back to parent {component.id}"
                     )
+        for component in self.components:
+            ancestors: set[str] = set()
+            current: Component | None = component
+            while current is not None:
+                if current.id in ancestors:
+                    raise ValueError(f"component hierarchy contains a cycle at {current.id}")
+                ancestors.add(current.id)
+                current = by_id[current.parent_id] if current.parent_id is not None else None
+        warning_ids = {
+            component_id for warning in self.warnings for component_id in warning.component_ids
+        }
+        unknown_warning_ids = warning_ids - by_id.keys()
+        if unknown_warning_ids:
+            raise ValueError(
+                f"warnings reference unknown component ids: {sorted(unknown_warning_ids)}"
+            )
         return self
