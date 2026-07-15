@@ -141,8 +141,10 @@ def test_worker_nonobject_result_is_rejected(tmp_path: Path) -> None:
 
 
 def test_open_scene_validates_hash_and_manifest(
-    tmp_path: Path, scene_manifest, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model bytes")
     source_hash = sha256_file(source)

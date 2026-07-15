@@ -11,9 +11,11 @@ import hashlib
 import json
 import math
 import os
+import shlex
 import struct
 import sys
 import traceback
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -158,7 +160,7 @@ def imported_camera(
                 "focal_length_mm": data.lens,
                 "sensor_width_mm": data.sensor_width,
                 "sensor_height_mm": data.sensor_height,
-                "sensor_fit": "vertical" if data.sensor_fit == "VERTICAL" else "horizontal",
+                "sensor_fit": data.sensor_fit.lower(),
                 "near_clip_mm": data.clip_start * MILLIMETERS_PER_METER,
                 "far_clip_mm": data.clip_end * MILLIMETERS_PER_METER,
             }
@@ -193,7 +195,8 @@ def imported_camera(
                 "mode": "perspective",
                 "focal_length_mm": 50.0,
                 "sensor_width_mm": 36.0,
-                "sensor_fit": "horizontal",
+                "sensor_height_mm": 24.0,
+                "sensor_fit": "auto",
                 "near_clip_mm": 0.5,
                 "far_clip_mm": max(100_000.0, distance * 4.0 + span * 2.0),
             },
@@ -231,7 +234,7 @@ def imported_illumination() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     converted: list[dict[str, Any]] = []
     for obj in lights:
         data = obj.data
-        if data.energy <= 0:
+        if data.energy <= 0 or not any(data.color):
             continue
         base: dict[str, Any] = {"id": obj.name, **light_color(data)}
         if data.type == "AREA":
@@ -365,6 +368,7 @@ def build_manifest(
         raise ValueError("the imported scene contains no mesh components")
 
     component_objects = set(objects)
+    source_names, names_preserved = source_names_for_objects(source_path, objects)
     ids = {obj: stable_component_id(source_sha256, object_path(obj)) for obj in objects}
     children: dict[bpy.types.Object, list[str]] = {obj: [] for obj in objects}
     parents: dict[bpy.types.Object, bpy.types.Object | None] = {}
@@ -388,8 +392,8 @@ def build_manifest(
             {
                 "id": ids[obj],
                 "path": object_path(obj),
-                "display_name": obj.name,
-                "source_name": obj.name,
+                "display_name": source_names[obj],
+                "source_name": source_names[obj],
                 "parent_id": ids[parents[obj]] if parents[obj] is not None else None,
                 "child_ids": sorted(children[obj]),
                 "mesh_hash": mesh_hash(obj.data),
@@ -403,11 +407,25 @@ def build_manifest(
     root_bounds = bounds_of_points(all_world_points)
     camera, camera_warning = imported_camera(root_bounds)
     illumination, illumination_warnings = imported_illumination()
+    source_format = source_path.suffix.lower().removeprefix(".")
+    hierarchy_flattened = source_format == "stl" or has_unaddressable_hierarchy(objects)
     warnings = [*import_warnings, *illumination_warnings]
+    if hierarchy_flattened and not any(
+        warning["code"] == "hierarchy.flattened" for warning in warnings
+    ):
+        warnings.append(
+            {
+                "code": "hierarchy.flattened",
+                "message": (
+                    "The source contains non-mesh hierarchy nodes; component parent links "
+                    "represent the addressable mesh hierarchy."
+                ),
+                "component_ids": [],
+            }
+        )
     if camera_warning is not None:
         warnings.append(camera_warning)
 
-    source_format = source_path.suffix.lower().removeprefix(".")
     if source_format in {"glb", "gltf"} and camera_warning is None:
         warnings.append(
             {
@@ -419,7 +437,6 @@ def build_manifest(
                 "component_ids": [],
             }
         )
-    flattened = source_format == "stl"
     texture_capability = "absent"
     if material_count:
         texture_capability = "partial" if missing_texture_count else "preserved"
@@ -433,13 +450,92 @@ def build_manifest(
         "imported_camera": camera,
         "imported_illumination": illumination,
         "capabilities": {
-            "hierarchy": "flattened" if flattened else "preserved",
-            "component_names": "generated" if flattened else "source",
+            "hierarchy": "flattened" if hierarchy_flattened else "preserved",
+            "component_names": "source" if names_preserved else "generated",
             "materials": "absent" if material_count == 0 else "preserved",
             "textures": texture_capability,
         },
         "warnings": warnings,
     }
+
+
+def has_unaddressable_hierarchy(objects: list[bpy.types.Object]) -> bool:
+    component_objects = set(objects)
+    for obj in objects:
+        current = obj.parent
+        while current is not None:
+            if current not in component_objects:
+                return True
+            current = current.parent
+    return False
+
+
+def source_names_for_objects(
+    source_path: Path,
+    objects: list[bpy.types.Object],
+) -> tuple[dict[bpy.types.Object, str], bool]:
+    original_names = source_node_names(source_path)
+    available = Counter(original_names)
+    names: dict[bpy.types.Object, str] = {}
+    preserved = source_path.suffix.lower() != ".stl"
+    for obj in objects:
+        if available[obj.name] <= 0:
+            continue
+        names[obj] = obj.name
+        available[obj.name] -= 1
+    for obj in objects:
+        if obj in names:
+            continue
+        base, separator, suffix = obj.name.rpartition(".")
+        if separator and suffix.isdigit() and len(suffix) == 3 and available[base] > 0:
+            names[obj] = base
+            available[base] -= 1
+            continue
+        names[obj] = obj.name
+        preserved = False
+    return names, preserved
+
+
+def source_node_names(source_path: Path) -> tuple[str, ...]:
+    suffix = source_path.suffix.lower()
+    if suffix == ".obj":
+        names: list[str] = []
+        for line in source_path.read_text(encoding="utf-8-sig").splitlines():
+            tokens = shlex.split(line, comments=True, posix=True)
+            if len(tokens) >= 2 and tokens[0].lower() in {"o", "g"}:
+                names.extend(tokens[1:])
+        return tuple(names)
+    if suffix not in {".glb", ".gltf"}:
+        return ()
+    document = gltf_document(source_path)
+    nodes = document.get("nodes", [])
+    if not isinstance(nodes, list):
+        return ()
+    return tuple(
+        node["name"]
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("name"), str)
+    )
+
+
+def gltf_document(source_path: Path) -> dict[str, Any]:
+    if source_path.suffix.lower() == ".gltf":
+        document = json.loads(source_path.read_text(encoding="utf-8"))
+        return document if isinstance(document, dict) else {}
+    payload = source_path.read_bytes()
+    if len(payload) < 20 or payload[:4] != b"glTF":
+        return {}
+    offset = 12
+    while offset + 8 <= len(payload):
+        chunk_length, chunk_type = struct.unpack_from("<II", payload, offset)
+        offset += 8
+        chunk = payload[offset : offset + chunk_length]
+        offset += chunk_length
+        if chunk_type != 0x4E4F534A:
+            continue
+        document = json.loads(chunk.rstrip(b"\x00 \t\r\n").decode("utf-8"))
+        return document if isinstance(document, dict) else {}
+    return {}
 
 
 def scene_open(command: dict[str, Any]) -> dict[str, Any]:

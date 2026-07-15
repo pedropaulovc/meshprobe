@@ -52,3 +52,32 @@ def test_snapshot_rejects_missing_external_asset(tmp_path: Path) -> None:
     source = write_gltf(tmp_path, {"buffers": [{"uri": "missing.bin"}]})
     with pytest.raises(FileNotFoundError):
         snapshot_source(source)
+
+
+def test_obj_snapshot_includes_material_and_texture_dependencies(tmp_path: Path) -> None:
+    texture = tmp_path / "surface texture.png"
+    texture.write_bytes(b"original texture")
+    material = tmp_path / "assembly material.mtl"
+    material.write_text(
+        'newmtl finish\nmap_Kd -s 1 1 1 "surface texture.png"\n',
+        encoding="utf-8",
+    )
+    source = tmp_path / "assembly.obj"
+    source.write_text('mtllib "assembly material.mtl"\no body\n', encoding="utf-8")
+
+    before = snapshot_source(source)
+    texture.write_bytes(b"changed texture")
+    after = snapshot_source(source)
+
+    assert {asset.path for asset in before.assets} == {source, material, texture}
+    assert before.sha256 != after.sha256
+
+
+def test_obj_snapshot_rejects_missing_material_texture(tmp_path: Path) -> None:
+    material = tmp_path / "assembly.mtl"
+    material.write_text("newmtl finish\nmap_Kd missing.png\n", encoding="utf-8")
+    source = tmp_path / "assembly.obj"
+    source.write_text("mtllib assembly.mtl\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        snapshot_source(source)

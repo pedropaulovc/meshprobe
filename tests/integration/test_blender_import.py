@@ -6,12 +6,14 @@ import math
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
 from meshprobe.controller import BlenderController, BlenderWorkerError
+from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.sources import snapshot_source
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
@@ -127,6 +129,41 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_duplicate_name_gltf(tmp_path: Path) -> Path:
+    output = tmp_path / "duplicates.gltf"
+    script = tmp_path / "build_duplicates.py"
+    script.write_text(
+        f"""
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+for parent_name, x in [('left-group', -1.0), ('right-group', 1.0)]:
+    parent = bpy.data.objects.new(parent_name, None)
+    bpy.context.scene.collection.objects.link(parent)
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x, 0, 0))
+    bpy.context.object.name = parent_name + '-bolt'
+    bpy.context.object.parent = parent
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLTF_SEPARATE',
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    document = json.loads(output.read_text(encoding="utf-8"))
+    for node in document["nodes"]:
+        if "mesh" in node:
+            node["name"] = "bolt"
+    output.write_text(json.dumps(document), encoding="utf-8")
+    return output
+
+
 def probe_active_camera(tmp_path: Path) -> dict[str, object]:
     output = tmp_path / "active-camera.json"
     script = tmp_path / "probe_active_camera.py"
@@ -161,7 +198,7 @@ with open({json.dumps(str(output))}, 'w', encoding='utf-8') as destination:
         text=True,
         timeout=30,
     )
-    return json.loads(output.read_text(encoding="utf-8"))
+    return cast(dict[str, object], json.loads(output.read_text(encoding="utf-8")))
 
 
 def build_zero_light_glb(tmp_path: Path) -> Path:
@@ -277,6 +314,23 @@ def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) ->
     assert snapshot_source(source) == before
 
 
+def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
+    tmp_path: Path,
+) -> None:
+    source = build_duplicate_name_gltf(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+
+    matches = ComponentIndex(manifest).find(
+        ComponentSelector(kind=SelectorKind.EXACT_NAME, pattern="bolt")
+    )
+    assert len(matches) == 2
+    assert {component.display_name for component in matches} == {"bolt"}
+    assert manifest.capabilities.component_names == "source"
+    assert manifest.capabilities.hierarchy == "flattened"
+    assert any(warning.code == "hierarchy.flattened" for warning in manifest.warnings)
+
+
 def test_controller_restarts_after_worker_crash(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=30) as controller:
@@ -333,6 +387,7 @@ def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
     camera = result["camera"]
     assert isinstance(camera, dict)
     assert camera["pose"]["position_mm"] == pytest.approx((8_000, 9_000, 10_000))
+    assert camera["projection"]["sensor_fit"] == "auto"
     assert result["warning"] is None
 
 
