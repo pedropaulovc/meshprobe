@@ -105,7 +105,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "codex",
         "exec",
         "--model",
-        "luna",
+        "gpt-5.6-luna",
         "--json",
         "--ephemeral",
         "--ignore-user-config",

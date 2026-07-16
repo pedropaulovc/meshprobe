@@ -194,18 +194,24 @@ def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatc
     assert result["claude_model"] == "available"
     assert result["codex_model"] == "available"
     assert commands[-2][0:4] == ("claude", "-p", "--model", "opus")
-    assert commands[-1][0:5] == ("codex", "exec", "--model", "luna", "--json")
+    assert commands[-1][0:5] == (
+        "codex",
+        "exec",
+        "--model",
+        "gpt-5.6-luna",
+        "--json",
+    )
 
 
 def test_ergonomics_preflight_surfaces_unsupported_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def run(command: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
-        if command[:4] == ("codex", "exec", "--model", "luna"):
+        if command[:4] == ("codex", "exec", "--model", "gpt-5.6-luna"):
             return SimpleNamespace(
                 returncode=1,
                 stdout="",
-                stderr="The 'luna' model is not supported with a ChatGPT account.",
+                stderr="The 'gpt-5.6-luna' model is not supported with a ChatGPT account.",
             )
         output = (
             "MESHPROBE_PREFLIGHT_OK"

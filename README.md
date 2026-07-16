@@ -191,7 +191,8 @@ full-investigation operation contract survived the migration. Schema-v1 corpora 
 by the qualification runtime instead of being translated silently.
 
 The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes across Claude
-Opus and Codex Luna. It records exposed command trajectories and token accounting; it does
+Opus and Codex Luna (`gpt-5.6-luna`). It records exposed command trajectories and token
+accounting; it does
 not claim access to hidden chain of thought and does not replace release qualification:
 
 ```bash

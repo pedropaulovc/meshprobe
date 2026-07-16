@@ -99,7 +99,7 @@ The required agent commands are:
 ```text
 claude -p --model opus --output-format stream-json --verbose \
   --no-session-persistence --safe-mode
-codex exec --model luna --json --ephemeral --ignore-user-config --ignore-rules
+codex exec --model gpt-5.6-luna --json --ephemeral --ignore-user-config --ignore-rules
 ```
 
 Preflight checks versions, authentication, and model availability with no model fallback.
