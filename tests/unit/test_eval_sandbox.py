@@ -13,6 +13,7 @@ import pytest
 from meshprobe.evals.harness.sandbox import (
     IsolationLimits,
     SandboxUnavailable,
+    _sandbox_agent_command,
     _user_task_count,
     run_isolated,
     visible_input_path,
@@ -193,6 +194,28 @@ def test_sandbox_resolves_symlinked_agent_executable(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "resolved-agent"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_preserves_node_package_runtime_for_bin_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "node-v25"
+    executable_root = runtime / "bin"
+    package_bin = runtime / "lib" / "node_modules" / "agent" / "bin"
+    executable_root.mkdir(parents=True)
+    package_bin.mkdir(parents=True)
+    (executable_root / "node").write_bytes(b"node")
+    agent = package_bin / "agent.js"
+    agent.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    entrypoint = executable_root / "agent"
+    entrypoint.symlink_to(Path("../lib/node_modules/agent/bin/agent.js"))
+    monkeypatch.setattr(shutil, "which", lambda name: str(entrypoint) if name == "agent" else None)
+
+    mounts, translated = _sandbox_agent_command(("agent", "--version"))
+
+    assert mounts == ((runtime, Path("/opt/meshprobe-agent")),)
+    assert translated == ("/opt/meshprobe-agent/bin/agent", "--version")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")

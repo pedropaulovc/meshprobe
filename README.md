@@ -194,12 +194,19 @@ The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes ac
 Opus and Codex Luna (`gpt-5.6-luna`). It records exposed command trajectories and token
 accounting; it does not claim access to hidden chain of thought and does not replace release
 qualification. The harness silently enforces a 256,000-token ceiling on each attempt in
-addition to its wall-clock limit:
+addition to its wall-clock limit. On Linux, agents run inside Bubblewrap with only the
+assigned public model, a clean MeshProbe install, credentials, and their writable attempt
+directory mounted. The repository and private evaluator data stay outside the sandbox:
 
 ```bash
 uv run meshprobe eval ergonomics \
   .corpora/qualification-v6 .runs/ergonomics-v1
 ```
+
+Live provider streams and stderr are saved beneath
+`.runs/ergonomics-v1/attempts/<episode>/<agent>/attempt-<n>/`.
+The ergonomics pilot currently runs on Linux; Windows support will use AppContainer isolation
+and will not fall back to an unsandboxed agent.
 
 The approved session and migration design is in
 [docs/session-cli-plan.md](docs/session-cli-plan.md). The broader qualification design remains

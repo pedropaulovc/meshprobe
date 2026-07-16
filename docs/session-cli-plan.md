@@ -108,6 +108,19 @@ be retried once; semantic failures are not retried. The harness silently enforce
 256,000-token ceiling per attempt from the live provider usage stream, alongside the episode
 wall limit; prompts do not disclose the ceiling to the evaluated agent.
 
+On Linux, each agent runs inside Bubblewrap with its own PID and mount namespaces. The
+sandbox shares the host network for provider access but exposes only the assigned public
+model, the agent credential file, a clean wheel-installed MeshProbe runtime, and the writable
+attempt directory. The repository, corpus root, private truth, and prior attempts are not
+mounted. Codex also receives `workspace-write` for its inner managed sandbox so it can create
+`.meshprobe` under the attempt directory. Raw provider streams and stderr remain readable on
+the host at `attempts/<episode>/<agent>/attempt-<n>/{stream.jsonl,stderr.log}` while a run is in
+progress.
+
+Windows ergonomics runs remain disabled until the pilot supports the same boundary through
+the existing AppContainer launcher, including provider network access, credential-file
+projection, and a writable attempt directory. There is no unsandboxed fallback.
+
 Metrics cover correctness and evidence gates, time and tokens to open, help and invalid
 calls, retries, reference use, `rg`/`jq`/`yq` use, bytes read, full raw reads, redundant calls,
 operations, renders, elapsed time, receipt comprehension, and final-answer quality. Claude

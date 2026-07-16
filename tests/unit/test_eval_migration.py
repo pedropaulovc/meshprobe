@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,24 +119,31 @@ def test_ergonomics_markdown_is_explicitly_diagnostic() -> None:
     assert "Hidden chain of thought was not collected" in markdown
 
 
-def test_ergonomics_attempt_teardown_force_stops_workspace(
+@pytest.mark.skipif(os.name == "nt", reason="ergonomics pilot requires Bubblewrap")
+def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    killed: list[Path] = []
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(
+        ergonomics,
+        "_agent_read_only_mounts",
+        lambda agent, cli_runtime: ((runtime, ergonomics.PurePosixPath("/opt/meshprobe-cli")),),
+    )
 
-    class Client:
-        def __init__(self, workspace: Path) -> None:
-            self.workspace = workspace
+    command = ergonomics._sandboxed_agent_command(
+        ("/usr/bin/python3", "-c", "print('isolated')"),
+        agent=ergonomics.ErgonomicsAgent.CODEX,
+        root=tmp_path / "attempt",
+        cli_runtime=runtime,
+        wall_seconds=10,
+        output_bytes=1024,
+    )
 
-        def kill_all(self) -> list[object]:
-            killed.append(self.workspace)
-            return []
-
-    monkeypatch.setattr(ergonomics, "MeshProbeClient", Client)
-
-    ergonomics._stop_workspace(tmp_path)
-
-    assert killed == [tmp_path]
+    assert "bwrap" in " ".join(command)
+    assert "--share-net" in command
+    assert "/workspace/artifacts" in command
+    assert "/opt/meshprobe-cli" in command
 
 
 def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:

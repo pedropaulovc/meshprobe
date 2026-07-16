@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -13,12 +14,17 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from meshprobe.client import MeshProbeClient
+from meshprobe.evals.harness.sandbox import (
+    IsolationLimits,
+    NetworkAccess,
+    isolated_process_command,
+    visible_input_path,
+)
 from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec
 from meshprobe.workspace import atomic_json, atomic_text
 
@@ -111,6 +117,9 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "workspace-write",
     ),
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
@@ -145,7 +154,11 @@ def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tu
     return tuple(selected)
 
 
-def preflight_agents() -> dict[str, str]:
+def preflight_agents(
+    *,
+    sandbox_root: Path | None = None,
+    cli_runtime: Path | None = None,
+) -> dict[str, str]:
     checks = {
         "claude_version": ("claude", "--version"),
         "claude_auth": ("claude", "auth", "status"),
@@ -164,7 +177,18 @@ def preflight_agents() -> dict[str, str]:
         "codex_model": (*AGENT_COMMANDS[ErgonomicsAgent.CODEX], MODEL_PREFLIGHT_PROMPT),
     }
     for name, command in model_checks.items():
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        agent = ErgonomicsAgent.CLAUDE if name == "claude_model" else ErgonomicsAgent.CODEX
+        active_command = command
+        if sandbox_root is not None and cli_runtime is not None:
+            active_command = _sandboxed_agent_command(
+                command,
+                agent=agent,
+                root=sandbox_root / agent,
+                cli_runtime=cli_runtime,
+                wall_seconds=60,
+                output_bytes=10 * 1024**2,
+            )
+        completed = subprocess.run(active_command, capture_output=True, text=True, timeout=60)
         output = (completed.stdout + completed.stderr).strip()
         if completed.returncode != 0:
             raise RuntimeError(f"{name} unavailable ({completed.returncode}): {output[-4000:]}")
@@ -172,6 +196,102 @@ def preflight_agents() -> dict[str, str]:
             raise RuntimeError(f"{name} did not confirm model availability: {output[-4000:]}")
         results[name] = "available"
     return results
+
+
+def _prepare_cli_runtime(output_root: Path) -> Path:
+    runtime = output_root / "cli-runtime"
+    entrypoint = runtime / "bin" / "meshprobe"
+    if entrypoint.is_file():
+        return runtime
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required to build the isolated ergonomics CLI runtime")
+    package_root = Path(__file__).parents[3]
+    wheel_root = output_root / "cli-wheel"
+    wheel_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        (uv, "build", "--wheel", "--out-dir", str(wheel_root)),
+        cwd=package_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheels = tuple(wheel_root.glob("meshprobe-*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeError(f"expected one ergonomics wheel, found {len(wheels)}")
+    staging = output_root / ".cli-runtime.tmp"
+    if staging.exists():
+        shutil.rmtree(staging)
+    subprocess.run(
+        (uv, "venv", "--python", "3.12", str(staging)),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        (uv, "pip", "install", "--python", str(staging / "bin" / "python"), str(wheels[0])),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    staged_entrypoint = staging / "bin" / "meshprobe"
+    lines = staged_entrypoint.read_bytes().splitlines(keepends=True)
+    lines[0] = b"#!/opt/meshprobe-cli/bin/python\n"
+    staged_entrypoint.write_bytes(b"".join(lines))
+    staging.replace(runtime)
+    return runtime
+
+
+def _agent_read_only_mounts(
+    agent: ErgonomicsAgent,
+    cli_runtime: Path,
+) -> tuple[tuple[Path, PurePosixPath], ...]:
+    home = Path.home()
+    credential = (
+        home / ".claude" / ".credentials.json"
+        if agent is ErgonomicsAgent.CLAUDE
+        else home / ".codex" / "auth.json"
+    )
+    guest_credential = (
+        PurePosixPath("/tmp/home/.claude/.credentials.json")
+        if agent is ErgonomicsAgent.CLAUDE
+        else PurePosixPath("/tmp/home/.codex/auth.json")
+    )
+    return (
+        (cli_runtime, PurePosixPath("/opt/meshprobe-cli")),
+        (credential, guest_credential),
+    )
+
+
+def _sandboxed_agent_command(
+    command: tuple[str, ...],
+    *,
+    agent: ErgonomicsAgent,
+    root: Path,
+    cli_runtime: Path,
+    wall_seconds: float,
+    output_bytes: int,
+    input_root: Path | None = None,
+    workspace: Path | None = None,
+) -> tuple[str, ...]:
+    public = input_root or root / "input"
+    artifacts = workspace or root / "workspace"
+    public.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    return isolated_process_command(
+        command,
+        input_root=public,
+        artifact_root=artifacts,
+        environment={"NO_COLOR": "1"},
+        limits=IsolationLimits(
+            wall_seconds=wall_seconds,
+            cpu_seconds=max(1, int(wall_seconds)),
+            output_bytes=output_bytes,
+        ),
+        network=NetworkAccess.SHARED,
+        read_only_mounts=_agent_read_only_mounts(agent, cli_runtime),
+        path_entries=(PurePosixPath("/opt/meshprobe-cli/bin"),),
+    )
 
 
 def run_ergonomics_pilot(
@@ -187,8 +307,12 @@ def run_ergonomics_pilot(
     corpus_root = corpus_root.expanduser().resolve(strict=True)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    cli_runtime = _prepare_cli_runtime(output_root)
     try:
-        preflight = preflight_agents()
+        preflight = preflight_agents(
+            sandbox_root=output_root / "preflight-sandbox",
+            cli_runtime=cli_runtime,
+        )
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         atomic_json(
             output_root / "preflight.json",
@@ -214,6 +338,7 @@ def run_ergonomics_pilot(
                 episode_id,
                 agent,
                 token_limit=token_limit,
+                cli_runtime=cli_runtime,
             )
             attempts.append(attempt)
             _checkpoint(output_root, attempts, preflight)
@@ -240,6 +365,7 @@ def _run_with_retry(
     agent: ErgonomicsAgent,
     *,
     token_limit: int,
+    cli_runtime: Path,
 ) -> ErgonomicsAttempt:
     first = _run_attempt(
         corpus_root,
@@ -248,6 +374,7 @@ def _run_with_retry(
         agent,
         attempt=1,
         token_limit=token_limit,
+        cli_runtime=cli_runtime,
     )
     if not _retryable_provider_failure(first):
         return first
@@ -258,6 +385,7 @@ def _run_with_retry(
         agent,
         attempt=2,
         token_limit=token_limit,
+        cli_runtime=cli_runtime,
     )
     metrics = second.metrics.model_copy(update={"retries": 1})
     return second.model_copy(update={"metrics": metrics})
@@ -271,6 +399,7 @@ def _run_attempt(
     *,
     attempt: int,
     token_limit: int,
+    cli_runtime: Path,
 ) -> ErgonomicsAttempt:
     spec = EpisodeSpec.model_validate_json(
         (corpus_root / "public" / "episodes" / f"{episode_id}.json").read_text(encoding="utf-8")
@@ -281,13 +410,29 @@ def _run_attempt(
         )
     )
     root = output_root / "attempts" / episode_id / agent / f"attempt-{attempt}"
+    input_root = root / "input"
     workspace = root / "workspace"
+    input_root.mkdir(parents=True, exist_ok=True)
     workspace.mkdir(parents=True, exist_ok=True)
+    source_model = corpus_root / "public" / "models" / spec.model_file
+    assigned_model = input_root / spec.model_file
+    if not assigned_model.is_file():
+        shutil.copy2(source_model, assigned_model)
     prompt = _prompt(
         spec,
-        corpus_root / "public" / "models" / spec.model_file,
+        Path(visible_input_path(assigned_model)),
     )
     command = (*AGENT_COMMANDS[agent], prompt)
+    sandbox_command = _sandboxed_agent_command(
+        command,
+        agent=agent,
+        root=root,
+        cli_runtime=cli_runtime,
+        wall_seconds=spec.budgets.wall_seconds,
+        output_bytes=spec.budgets.output_bytes,
+        input_root=input_root,
+        workspace=workspace,
+    )
     raw_path = root / "stream.jsonl"
     stderr_path = root / "stderr.log"
     started_at = datetime.now(UTC)
@@ -301,13 +446,11 @@ def _run_attempt(
         stderr_path.open("w", encoding="utf-8") as stderr_stream,
     ):
         process = subprocess.Popen(
-            command,
-            cwd=workspace,
+            sandbox_command,
             stdout=raw_stream,
             stderr=stderr_stream,
             text=True,
-            env={**os.environ, "NO_COLOR": "1"},
-            start_new_session=os.name != "nt",
+            start_new_session=True,
             creationflags=creation_flags,
         )
         try:
@@ -321,8 +464,6 @@ def _run_attempt(
         except BaseException:
             _terminate_agent(process)
             raise
-        finally:
-            _stop_workspace(workspace)
     elapsed = time.monotonic() - started
     raw = raw_path.read_text(encoding="utf-8")
     stderr = stderr_path.read_text(encoding="utf-8")
@@ -359,12 +500,6 @@ def _run_attempt(
         metrics=metrics,
         raw_stream_path=str(raw_path),
     )
-
-
-def _stop_workspace(workspace: Path) -> None:
-    client = MeshProbeClient(workspace)
-    with suppress(OSError, RuntimeError, TimeoutError, ValueError):
-        client.kill_all()
 
 
 def _retryable_provider_failure(attempt: ErgonomicsAttempt) -> bool:
