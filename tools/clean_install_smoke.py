@@ -71,7 +71,7 @@ def main() -> None:
     if not isinstance(overall, dict) or not isinstance(overall.get("episodes"), int):
         raise SystemExit("clean-install qualification report has no overall episode count")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed",
         "platform": platform.platform(),
         "python": _version((str(python), "--version")),

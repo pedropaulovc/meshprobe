@@ -52,6 +52,7 @@ class ErgonomicsMetrics(BaseModel):
     rg_calls: int
     jq_calls: int
     yq_calls: int
+    bytes_read: int
     raw_reads: int
     full_file_reads: int
     redundant_calls: int
@@ -266,6 +267,7 @@ def _run_attempt(
         tokens=tokens,
         commands=commands,
         raw=raw,
+        workspace=workspace,
     )
     return ErgonomicsAttempt(
         episode_id=episode_id,
@@ -310,6 +312,7 @@ def _metrics(
     tokens: TokenUsage,
     commands: tuple[str, ...],
     raw: str,
+    workspace: Path,
 ) -> ErgonomicsMetrics:
     joined = "\n".join(commands)
     meshprobe = [command for command in commands if re.search(r"\bmeshprobe\b", command)]
@@ -336,6 +339,7 @@ def _metrics(
         rg_calls=len(re.findall(r"(?:^|[;&|]\s*)rg\b", joined, re.MULTILINE)),
         jq_calls=len(re.findall(r"(?:^|[;&|]\s*)jq\b", joined, re.MULTILINE)),
         yq_calls=len(re.findall(r"(?:^|[;&|]\s*)yq\b", joined, re.MULTILINE)),
+        bytes_read=_bytes_read(commands, workspace),
         raw_reads=len(re.findall(r"meshprobe[^\n]*--raw", joined)),
         full_file_reads=len(re.findall(r"\b(?:cat|less|head|tail)\s+[^|;&]+", joined)),
         redundant_calls=max(0, len(normalized) - len(set(normalized))),
@@ -398,7 +402,7 @@ def _json_events(raw: str) -> list[dict[str, Any]]:
 
 def _extract_final(raw: str, events: list[dict[str, Any]]) -> dict[str, Any] | None:
     candidates = [raw]
-    candidates.extend(json.dumps(event) for event in events)
+    candidates.extend(_event_strings(events))
     pattern = re.compile(r"MESHPROBE_RESULT=(\{.*\})")
     for candidate in reversed(candidates):
         match = pattern.search(candidate)
@@ -411,6 +415,25 @@ def _extract_final(raw: str, events: list[dict[str, Any]]) -> dict[str, Any] | N
         if isinstance(result, dict):
             return cast(dict[str, Any], result)
     return None
+
+
+def _event_strings(events: list[dict[str, Any]]) -> list[str]:
+    strings: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+            return
+        if isinstance(value, str):
+            strings.append(value)
+
+    visit(events)
+    return strings
 
 
 def _extract_commands(events: list[dict[str, Any]]) -> list[str]:
@@ -469,6 +492,16 @@ def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenU
 
 def _count_nonzero_exits(raw: str) -> int:
     return len(re.findall(r'"(?:exit_code|exitCode)"\s*:\s*[1-9]\d*', raw))
+
+
+def _bytes_read(commands: tuple[str, ...], workspace: Path) -> int:
+    paths: set[Path] = set()
+    for command in commands:
+        for match in re.findall(r"(?:^|\s)(\.meshprobe/[^\s'\"|;&]+)", command):
+            path = workspace / match
+            if path.is_file():
+                paths.add(path)
+    return sum(path.stat().st_size for path in paths)
 
 
 def _load_attempts(output_root: Path) -> list[ErgonomicsAttempt]:
