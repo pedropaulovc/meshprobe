@@ -480,6 +480,7 @@ def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch
         runner.invoke(app, ["find", "assembly/group/target"]),
         runner.invoke(app, ["find", "*Airship*", "--kind", "glob"]),
         runner.invoke(app, ["find", "**/idler*", "--kind", "glob"]),
+        runner.invoke(app, ["find", "--name", "target__ControlPoint_Art"]),
     ]
 
     assert all(result.exit_code == 0 for result in results)
@@ -491,13 +492,25 @@ def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch
         "exact_path",
         "glob",
         "glob",
+        "exact_name",
     ]
     assert [selector.pattern for selector in selectors] == [
         "target__ControlPoint_Art",
         "assembly/group/target",
         "**/*Airship*",
         "**/idler*",
+        "target__ControlPoint_Art",
     ]
+
+
+def test_find_rejects_conflicting_selector_options() -> None:
+    both = runner.invoke(app, ["find", "target", "--name", "reference"])
+    missing = runner.invoke(app, ["find"])
+
+    assert both.exit_code == 2
+    assert "provide either PATTERN or --name" in both.output
+    assert missing.exit_code == 2
+    assert "provide PATTERN or --name" in missing.output
 
 
 def test_list_and_delete_data_have_text_and_json_output(

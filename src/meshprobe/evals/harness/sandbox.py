@@ -405,6 +405,9 @@ def _sandbox_command(
         "--setenv",
         "LANG",
         "C.UTF-8",
+        "--setenv",
+        "SHELLOPTS",
+        "pipefail",
     ]
     if network is NetworkAccess.SHARED:
         args.insert(2, "--share-net")

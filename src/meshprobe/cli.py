@@ -491,7 +491,7 @@ def snapshot(ctx: typer.Context) -> None:
 @app.command("find")
 def find_components(
     ctx: typer.Context,
-    pattern: Annotated[str, typer.Argument()],
+    pattern: Annotated[str | None, typer.Argument()] = None,
     kind: Annotated[
         FindKind,
         typer.Option(
@@ -499,17 +499,36 @@ def find_components(
             help="Auto treats plain text as an exact name, paths as exact, and wildcards as glob.",
         ),
     ] = FindKind.AUTO,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Find an exact component display name."),
+    ] = None,
 ) -> None:
     """Find components in the selected session."""
 
+    selector = _find_selector_options(pattern=pattern, name=name, kind=kind)
     _execute(
         ctx,
         ComponentFindCommand(
             request_id=_request_id("find"),
             op="component.find",
-            selector=_find_selector(kind, pattern),
+            selector=selector,
         ),
     )
+
+
+def _find_selector_options(
+    *, pattern: str | None, name: str | None, kind: FindKind
+) -> ComponentSelector:
+    if name is not None and pattern is not None:
+        raise typer.BadParameter("provide either PATTERN or --name, not both")
+    if name is not None and kind is not FindKind.AUTO:
+        raise typer.BadParameter("--name already selects exact-name matching; omit --kind")
+    if name is not None:
+        return ComponentSelector(kind=SelectorKind.EXACT_NAME, pattern=name)
+    if pattern is None:
+        raise typer.BadParameter("provide PATTERN or --name")
+    return _find_selector(kind, pattern)
 
 
 def _find_selector(kind: FindKind, pattern: str) -> ComponentSelector:

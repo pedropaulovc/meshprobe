@@ -217,6 +217,19 @@ def test_sandbox_binds_agent_virtualenv_or_checkout_directory(tmp_path: Path) ->
     assert result.stdout.strip() == "bound-agent"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_enables_pipefail_for_agent_shells(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+
+    result = run_isolated(
+        ("/usr/bin/bash", "-c", "false | true"),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    assert result.returncode != 0
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap argument binding is POSIX-specific")
 def test_sandbox_binds_direct_script_arguments(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)

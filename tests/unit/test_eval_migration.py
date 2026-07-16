@@ -452,6 +452,32 @@ def test_ergonomics_extracts_each_provider_command_once() -> None:
     ]
 
 
+def test_ergonomics_counts_failed_commands_for_both_provider_streams() -> None:
+    raw = "\n".join(
+        (
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "exit_code": 2},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {"type": "tool_result", "is_error": True},
+                            {"type": "tool_result", "is_error": False},
+                        ]
+                    },
+                }
+            ),
+        )
+    )
+
+    assert ergonomics._count_nonzero_exits(raw) == 2
+
+
 def test_ergonomics_counts_executables_not_meshprobe_state_paths() -> None:
     command = (
         "/bin/bash -lc 'command -v meshprobe; meshprobe --help; "

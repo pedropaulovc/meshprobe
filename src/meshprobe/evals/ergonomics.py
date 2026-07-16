@@ -1125,7 +1125,29 @@ def _usage_int(usage: dict[str, Any], key: str) -> int:
 
 
 def _count_nonzero_exits(raw: str) -> int:
-    return len(re.findall(r'"(?:exit_code|exitCode)"\s*:\s*[1-9]\d*', raw))
+    failures = 0
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "command_execution":
+            exit_code = item.get("exit_code")
+            if event.get("type") == "item.completed" and isinstance(exit_code, int) and exit_code:
+                failures += 1
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        failures += sum(
+            part.get("type") == "tool_result" and part.get("is_error") is True
+            for part in content
+            if isinstance(part, dict)
+        )
+    return failures
 
 
 def _bytes_read(commands: tuple[str, ...], workspace: Path) -> int:
