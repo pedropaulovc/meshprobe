@@ -111,7 +111,7 @@ provides a deterministic image-reading fallback. Claude's built-in `Read` tool i
 allowed for direct visual inspection of rendered evidence.
 Run a four-pair canary before the remaining twenty. Infrastructure or provider failures may
 be retried once; semantic failures are not retried. The harness silently enforces a
-256,000-token ceiling per attempt from the live provider usage stream, alongside the episode
+512,000-token ceiling per attempt from the live provider usage stream, alongside the episode
 wall limit; prompts do not disclose the ceiling to the evaluated agent.
 The process sandbox also caps any single file at 1 GiB. Episode evidence budgets remain
 separate because Blender's internal startup files are not submitted evidence. The pilot
