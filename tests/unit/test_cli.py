@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from click import unstyle
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
@@ -508,9 +509,9 @@ def test_find_rejects_conflicting_selector_options() -> None:
     missing = runner.invoke(app, ["find"])
 
     assert both.exit_code == 2
-    assert "provide either PATTERN or --name" in both.output
+    assert "provide either PATTERN or --name" in unstyle(both.output)
     assert missing.exit_code == 2
-    assert "provide PATTERN or --name" in missing.output
+    assert "provide PATTERN or --name" in unstyle(missing.output)
 
 
 def test_list_and_delete_data_have_text_and_json_output(
