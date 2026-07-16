@@ -56,7 +56,7 @@ The Python service, CLI, and MCP adapter expose the same operations:
 | Operation | Result |
 | --- | --- |
 | `scene.open` | Load a model and return its capabilities and root bounds. |
-| `scene.describe` | Return hierarchy, component properties, bounds, and current display state. |
+| `session.snapshot` | Return hierarchy, component properties, bounds, and current display state. |
 | `component.find` | Resolve exact names, paths, globs, or regular expressions to stable component IDs. |
 | `component.inspect` | Return one component's path, transform, bounds, material summary, and relationships. |
 | `view.set` | Set an absolute six-degree-of-freedom camera pose and projection. |

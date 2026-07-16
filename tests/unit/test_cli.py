@@ -10,15 +10,15 @@ from typer.testing import CliRunner
 from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.models import SceneManifest
+from meshprobe.protocol import (
+    Command,
+    ComponentDisplayCommand,
+    SceneOpenCommand,
+    SessionSnapshotCommand,
+)
+from meshprobe.workspace import OperationReceipt
 
 runner = CliRunner()
-
-
-def write_manifest(tmp_path, scene_manifest: SceneManifest):  # type: ignore[no-untyped-def]
-    path = tmp_path / "scene.json"
-    path.write_text(scene_manifest.model_dump_json(indent=2), encoding="utf-8")
-    return path
 
 
 def test_schema_command_emits_discriminated_union() -> None:
@@ -172,153 +172,104 @@ def test_eval_orchestration_commands_emit_compact_summaries(
     assert reference.exit_code == 0
 
 
-def test_open_reports_missing_blender(tmp_path) -> None:  # type: ignore[no-untyped-def]
+class FakeClient:
+    def __init__(self) -> None:
+        self.commands: list[Command] = []
+        self.closed: list[str] = []
+        self.killed: list[str] = []
+
+    def execute(self, session: str, command: Command) -> OperationReceipt:
+        self.commands.append(command)
+        return OperationReceipt(
+            session=session,
+            op=command.op,
+            state_sha256="a" * 64,
+            result_path=f".meshprobe/sessions/{session}/results/result.json",
+            state_path=f".meshprobe/sessions/{session}/state.yml",
+        )
+
+    def resolve_component(self, session: str, value: str) -> str:
+        assert session == "review"
+        return {"c2": "component-id", "assembly/idler": "component-id"}[value]
+
+    def read_result(self, receipt: OperationReceipt) -> object:
+        return {"result": {"op": receipt.op}}
+
+    def close(self, session: str) -> OperationReceipt:
+        self.closed.append(session)
+        return OperationReceipt(session=session, op="session.close")
+
+    def close_all(self) -> list[OperationReceipt]:
+        self.closed.append("all")
+        return [OperationReceipt(session="review", op="session.close")]
+
+    def kill(self, session: str) -> OperationReceipt:
+        self.killed.append(session)
+        return OperationReceipt(session=session, op="session.kill")
+
+    def kill_all(self) -> list[OperationReceipt]:
+        self.killed.append("all")
+        return [OperationReceipt(session="review", op="session.kill")]
+
+
+def test_flat_cli_uses_named_session_and_compact_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "assembly.glb"
     source.write_bytes(b"model")
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    opened = runner.invoke(app, ["--session", "review", "open", str(source)])
+    snapshotted = runner.invoke(app, ["--session", "review", "snapshot"])
+
+    assert opened.exit_code == 0
+    assert "session=review op=scene.open" in opened.stdout
+    assert snapshotted.exit_code == 0
+    assert isinstance(client.commands[0], SceneOpenCommand)
+    assert isinstance(client.commands[1], SessionSnapshotCommand)
+
+
+def test_component_commands_resolve_short_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
     result = runner.invoke(
         app,
-        ["open", str(source), "--blender", "meshprobe-blender-does-not-exist"],
+        ["--session", "review", "display", "c2", "--mode", "isolated"],
     )
-    assert result.exit_code == 2
-    assert "Blender executable not found" in result.output
 
-
-def test_validate_manifest_reports_source(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
-    path = write_manifest(tmp_path, scene_manifest)
-    result = runner.invoke(app, ["validate-manifest", str(path)])
-    payload = json.loads(result.stdout)
     assert result.exit_code == 0
-    assert payload == {
-        "components": 3,
-        "source_sha256": scene_manifest.source_sha256,
-        "valid": True,
-    }
+    command = client.commands[-1]
+    assert isinstance(command, ComponentDisplayCommand)
+    assert command.component_ids == ("component-id",)
 
 
-def test_find_command_returns_component_paths(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
-    path = write_manifest(tmp_path, scene_manifest)
-    result = runner.invoke(app, ["find", str(path), "assembly/**/idler*", "--kind", "glob"])
-    payload = json.loads(result.stdout)
-    assert result.exit_code == 0
-    assert payload["count"] == 1
-    assert payload["components"][0]["path"] == "assembly/drive/idler"
-
-
-def test_apply_exercises_renderer_independent_operations(
-    tmp_path: Path, scene_manifest: SceneManifest
+def test_close_and_kill_have_distinct_selected_and_all_semantics(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manifest_path = write_manifest(tmp_path, scene_manifest)
-    target = scene_manifest.components[-1].id
-    commands = [
-        {"request_id": "describe", "op": "scene.describe"},
-        {
-            "request_id": "find",
-            "op": "component.find",
-            "selector": {"kind": "exact_name", "pattern": "idler"},
-        },
-        {"request_id": "inspect", "op": "component.inspect", "component_id": target},
-        {
-            "request_id": "camera",
-            "op": "view.set",
-            "camera": {
-                "pose": {"position_mm": [200, 300, 400], "orientation_xyzw": [0, 0, 0, 1]},
-                "projection": {"mode": "orthographic", "scale_mm": 500},
-            },
-        },
-        {
-            "request_id": "orbit",
-            "op": "view.orbit",
-            "target_mm": [0, 0, 0],
-            "azimuth_degrees": 0,
-            "elevation_degrees": 0,
-            "distance_mm": 250,
-            "projection": {"mode": "perspective", "focal_length_mm": 85},
-        },
-        {
-            "request_id": "light",
-            "op": "illumination.set",
-            "illumination": {"preset": "raking_left"},
-        },
-        {
-            "request_id": "display",
-            "op": "component.display",
-            "component_ids": [target],
-            "mode": "isolated",
-        },
-        {
-            "request_id": "mark",
-            "op": "component.mark",
-            "component_ids": [target],
-            "mode": "highlighted",
-        },
-        {"request_id": "reset", "op": "session.reset"},
-    ]
-    commands_path = tmp_path / "commands.jsonl"
-    commands_path.write_text(
-        "\n".join(json.dumps(command) for command in commands), encoding="utf-8"
-    )
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
 
-    result = runner.invoke(app, ["apply", str(manifest_path), str(commands_path)])
-    payload = json.loads(result.stdout)
-    assert result.exit_code == 0
-    assert [item["request_id"] for item in payload["results"]] == [
-        "describe",
-        "find",
-        "inspect",
-        "camera",
-        "orbit",
-        "light",
-        "display",
-        "mark",
-        "reset",
-    ]
-    assert payload["final_state"]["camera"] == scene_manifest.imported_camera.model_dump(
-        mode="json"
-    )
+    assert runner.invoke(app, ["--session", "review", "close"]).exit_code == 0
+    assert runner.invoke(app, ["--session", "review", "kill"]).exit_code == 0
+    assert runner.invoke(app, ["close", "--all"]).exit_code == 0
+    assert runner.invoke(app, ["kill", "--all"]).exit_code == 0
+
+    assert client.closed == ["review", "all"]
+    assert client.killed == ["review", "all"]
 
 
-def test_apply_rejects_renderer_operation(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
-    manifest_path = write_manifest(tmp_path, scene_manifest)
-    commands_path = tmp_path / "commands.jsonl"
-    commands_path.write_text(
-        json.dumps(
-            {
-                "request_id": "render",
-                "op": "render.image",
-                "output_path": "evidence.png",
-            }
-        ),
-        encoding="utf-8",
-    )
-    result = runner.invoke(app, ["apply", str(manifest_path), str(commands_path)])
-    assert result.exit_code == 2
-    assert "requires the Blender worker" in result.output
+def test_json_and_raw_output_are_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
 
+    json_result = runner.invoke(app, ["--json", "snapshot"])
+    raw_result = runner.invoke(app, ["--raw", "snapshot"])
 
-def test_describe_reports_current_session_state(tmp_path, scene_manifest: SceneManifest) -> None:  # type: ignore[no-untyped-def]
-    manifest_path = write_manifest(tmp_path, scene_manifest)
-    target = scene_manifest.components[-1].id
-    commands_path = tmp_path / "commands.jsonl"
-    commands_path.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "request_id": "hide",
-                        "op": "component.display",
-                        "component_ids": [target],
-                        "mode": "hidden",
-                    }
-                ),
-                json.dumps({"request_id": "describe", "op": "scene.describe"}),
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    result = runner.invoke(app, ["apply", str(manifest_path), str(commands_path)])
-    payload = json.loads(result.stdout)
-    described = payload["results"][1]["result"]
-    assert result.exit_code == 0
-    assert described["session"]["components"][target]["display"] == "hidden"
-    assert described["scene"]["source_sha256"] == scene_manifest.source_sha256
+    assert json_result.exit_code == 0
+    assert json.loads(json_result.stdout)["result_path"].endswith("result.json")
+    assert raw_result.exit_code == 0
+    assert json.loads(raw_result.stdout) == {"op": "session.snapshot"}

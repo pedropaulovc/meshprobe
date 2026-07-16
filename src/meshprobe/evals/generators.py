@@ -22,6 +22,7 @@ from meshprobe.evals.geometry import (
     cylinder,
 )
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     Difficulty,
     EpisodeBudgets,
@@ -497,7 +498,7 @@ def generate_episodes(
         (TaskFamily.COMPONENT_DISCOVERY, _discovery_operations()),
         (FAMILY_TASKS[model.generated.family], _reasoning_operations()),
         (TaskFamily.PROJECTION_REASONING, _evidence_operations()),
-        (TaskFamily.FULL_INVESTIGATION, tuple(Operation)),
+        (TaskFamily.FULL_INVESTIGATION, EVALUATED_OPERATIONS),
     )
     return tuple(
         _episode(model, index, family, operations, model_source)
@@ -712,7 +713,7 @@ def _episode_class(model: PublishedModel, index: int) -> EpisodeClass:
 def _discovery_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
     )
@@ -721,7 +722,7 @@ def _discovery_operations() -> tuple[Operation, ...]:
 def _reasoning_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
         Operation.VIEW_ORBIT,

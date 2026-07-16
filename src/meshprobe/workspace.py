@@ -6,9 +6,10 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,6 +112,17 @@ class SessionFiles:
         return str(path.relative_to(self.workspace.parent))
 
 
+class SessionService(Protocol):
+    @property
+    def worker_pid(self) -> int | None: ...
+
+    def execute(self, command: Command) -> CommandResponse: ...
+
+    def close(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+
 class SessionManager:
     """Own durable sessions and lazily recover their Blender workers."""
 
@@ -120,15 +132,17 @@ class SessionManager:
         *,
         blender: str | None = None,
         timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
+        service_factory: Callable[[], SessionService] | None = None,
     ) -> None:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.blender = blender
         self.timeout_seconds = timeout_seconds
-        self._services: dict[str, MeshProbeService] = {}
+        self._service_factory = service_factory
+        self._services: dict[str, SessionService] = {}
         self._lock = threading.RLock()
 
-    def open(self, name: str, source: Path) -> OperationReceipt:
+    def open(self, name: str, source: Path, *, request_id: str = "open") -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
             files.create_directories()
@@ -137,7 +151,7 @@ class SessionManager:
                 existing.close()
             service = self._new_service()
             command = SceneOpenCommand(
-                request_id="open",
+                request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
             )
@@ -174,7 +188,7 @@ class SessionManager:
 
     def execute(self, name: str, command: Command) -> OperationReceipt:
         if isinstance(command, SceneOpenCommand):
-            return self.open(name, Path(command.source_path))
+            return self.open(name, Path(command.source_path), request_id=command.request_id)
         with self._lock:
             files = self._require_files(name)
             try:
@@ -189,7 +203,7 @@ class SessionManager:
             self._update_checkpoint(files, command, snapshot)
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
             self._event(files, command, "accepted", result_path=result_path)
-            artifacts = self._artifact_paths(response.result)
+            artifacts = self._artifact_paths(command.op, response.result)
             return self._receipt(files, command.op, snapshot, result_path, artifacts)
 
     def close(self, name: str) -> OperationReceipt:
@@ -237,7 +251,11 @@ class SessionManager:
         sessions_root = self.root / "sessions"
         if not sessions_root.is_dir():
             return []
-        return sorted(path.name for path in sessions_root.iterdir() if path.is_dir())
+        return sorted(
+            path.name
+            for path in sessions_root.iterdir()
+            if path.is_dir() and (path / "metadata.json").is_file()
+        )
 
     def resolve_component(self, name: str, value: str) -> str:
         files = self._require_files(name)
@@ -259,7 +277,7 @@ class SessionManager:
                 service.kill() if force else service.close()
             self._services.clear()
 
-    def _service(self, name: str, files: SessionFiles) -> MeshProbeService:
+    def _service(self, name: str, files: SessionFiles) -> SessionService:
         current = self._services.get(name)
         if current is not None:
             return current
@@ -288,11 +306,13 @@ class SessionManager:
         self._services[name] = service
         return service
 
-    def _new_service(self) -> MeshProbeService:
+    def _new_service(self) -> SessionService:
+        if self._service_factory is not None:
+            return self._service_factory()
         return MeshProbeService(blender=self.blender, timeout_seconds=self.timeout_seconds)
 
     @staticmethod
-    def _snapshot(service: MeshProbeService) -> SessionSnapshot:
+    def _snapshot(service: SessionService) -> SessionSnapshot:
         from meshprobe.protocol import SessionSnapshotCommand
 
         response = service.execute(
@@ -311,7 +331,6 @@ class SessionManager:
 
     @staticmethod
     def _write_components(files: SessionFiles, manifest: SceneManifest) -> None:
-        by_id = {component.id: component for component in manifest.components}
         ordered = sorted(manifest.components, key=lambda component: component.path)
         refs = {component.id: f"c{index}" for index, component in enumerate(ordered, start=1)}
         payload = {
@@ -361,12 +380,15 @@ class SessionManager:
     @staticmethod
     def _write_result(files: SessionFiles, request_id: str, response: CommandResponse) -> Path:
         safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", request_id)[:80] or "result"
-        path = files.results / f"{safe_id}.json"
+        root = files.snapshots if response.op == "session.snapshot" else files.results
+        path = root / f"{safe_id}.json"
         atomic_json(path, response.model_dump(mode="json"))
         return path
 
     @staticmethod
-    def _artifact_paths(result: object) -> tuple[str, ...]:
+    def _artifact_paths(operation: str, result: object) -> tuple[str, ...]:
+        if operation not in {"render.image", "render.contact_sheet"}:
+            return ()
         if not isinstance(result, dict):
             return ()
         found: list[str] = []
@@ -374,7 +396,7 @@ class SessionManager:
         def visit(value: object) -> None:
             if isinstance(value, dict):
                 path = value.get("path")
-                if isinstance(path, str):
+                if isinstance(path, str) and "sha256" in value and "bytes" in value:
                     found.append(path)
                 for child in value.values():
                     visit(child)

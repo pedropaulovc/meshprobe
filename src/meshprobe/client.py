@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -30,9 +31,7 @@ class MeshProbeClient:
         self.blender = blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
-        payload = self.request(
-            "execute", session=session, command=command.model_dump(mode="json")
-        )
+        payload = self.request("execute", session=session, command=command.model_dump(mode="json"))
         return OperationReceipt.model_validate(payload)
 
     def resolve_component(self, session: str, value: str) -> str:
@@ -56,6 +55,7 @@ class MeshProbeClient:
 
     def kill_all(self) -> list[OperationReceipt]:
         metadata = self._metadata()
+        assert metadata is not None
         payload = self.request("kill_all", start=False)
         self._ensure_stopped(int(metadata["pid"]))
         return [OperationReceipt.model_validate(item) for item in payload.get("sessions", [])]
@@ -75,6 +75,8 @@ class MeshProbeClient:
 
     def request(self, action: str, *, start: bool = True, **arguments: object) -> dict[str, Any]:
         metadata = self._ensure_daemon() if start else self._metadata()
+        if metadata is None:
+            raise ValueError("meshprobe daemon is not running")
         if not self._alive(metadata):
             if not start:
                 raise ValueError("meshprobe daemon is not running")
@@ -152,17 +154,13 @@ class MeshProbeClient:
         while time.monotonic() < deadline:
             metadata = self._metadata(optional=True)
             if metadata is not None and self._alive(metadata):
-                try:
+                with suppress(FileNotFoundError):
                     lock.unlink()
-                except FileNotFoundError:
-                    pass
                 return metadata
             time.sleep(0.05)
         if acquired:
-            try:
+            with suppress(FileNotFoundError):
                 lock.unlink()
-            except FileNotFoundError:
-                pass
         log_text = ""
         log_path = self.root / "daemon.log"
         if log_path.is_file():
@@ -191,10 +189,8 @@ class MeshProbeClient:
     def _remove_stale_metadata(self, metadata: dict[str, Any]) -> None:
         if self._alive(metadata):
             return
-        try:
+        with suppress(FileNotFoundError):
             (self.root / "daemon.json").unlink()
-        except FileNotFoundError:
-            pass
 
     @staticmethod
     def _read_line(connection: socket.socket) -> dict[str, Any]:

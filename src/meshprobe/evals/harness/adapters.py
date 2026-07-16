@@ -97,7 +97,7 @@ class CliJsonlAdapter:
         startup_closed = False
         initialization = {
             "type": "episode",
-            "protocol_version": 1,
+            "protocol_version": 2,
             "episode_id": spec.episode_id,
             "prompt": spec.prompt,
             "answer_schema": spec.answer_schema,

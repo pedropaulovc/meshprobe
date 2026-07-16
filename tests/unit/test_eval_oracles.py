@@ -78,7 +78,7 @@ def discovery_inputs(tmp_path: Path) -> OracleInputs:
         accepted_event(1, "scene.open", arguments={}, result={}),
         accepted_event(
             2,
-            "scene.describe",
+            "session.snapshot",
             arguments={},
             result={"session": {"state_sha256": state}},
             before=state,
@@ -382,7 +382,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         accepted_event(1, "scene.open", arguments={}, result={}),
         accepted_event(
             2,
-            "scene.describe",
+            "session.snapshot",
             arguments={},
             result={"session": {"state_sha256": initial_hash}},
             before=initial_hash,
@@ -703,7 +703,7 @@ def test_full_investigation_coverage_fails_when_any_operation_is_removed(
         result: object = {}
         before = state
         after = state
-        if operation is Operation.SCENE_DESCRIBE:
+        if operation is Operation.SESSION_SNAPSHOT:
             result = {"session": {"state_sha256": state}}
         if operation is Operation.COMPONENT_FIND:
             result = [{"id": target}]

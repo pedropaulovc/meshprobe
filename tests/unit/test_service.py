@@ -9,8 +9,8 @@ from meshprobe.controller import BlenderController
 from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
-    SceneDescribeCommand,
     SceneOpenCommand,
+    SessionSnapshotCommand,
 )
 from meshprobe.service import MeshProbeService
 
@@ -24,7 +24,7 @@ def test_service_requires_open_as_first_command() -> None:
     service = MeshProbeService(controller=controller)
 
     with pytest.raises(ValueError, match=r"scene\.open must be the first"):
-        service.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+        service.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot"))
 
     controller.start.assert_not_called()  # type: ignore[attr-defined]
 
@@ -40,7 +40,9 @@ def test_service_starts_once_and_returns_json_envelopes() -> None:
     opened = service.execute(
         SceneOpenCommand(request_id="open", op="scene.open", source_path="assembly.glb")
     )
-    described = service.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+    described = service.execute(
+        SessionSnapshotCommand(request_id="describe", op="session.snapshot")
+    )
 
     controller.start.assert_called_once_with()  # type: ignore[attr-defined]
     assert opened.model_dump(mode="json") == {
@@ -67,7 +69,7 @@ def test_service_closes_controller_and_requires_a_new_open() -> None:
 
     controller.close.assert_called_once_with()  # type: ignore[attr-defined]
     with pytest.raises(ValueError, match=r"scene\.open must be the first"):
-        service.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+        service.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot"))
 
 
 def test_evaluation_execution_routes_private_render_outputs(tmp_path: Path) -> None:

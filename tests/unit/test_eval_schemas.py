@@ -27,8 +27,8 @@ from meshprobe.evals.schemas import (
 )
 
 
-def test_full_investigation_requires_every_public_operation() -> None:
-    with pytest.raises(ValidationError, match="every public operation"):
+def test_full_investigation_requires_every_evaluated_operation() -> None:
+    with pytest.raises(ValidationError, match="every evaluated operation"):
         EpisodeSpec(
             episode_id="episode_0001",
             model_file="fixture.glb",
@@ -39,7 +39,7 @@ def test_full_investigation_requires_every_public_operation() -> None:
             model_source=ModelSource.PROCEDURAL,
             prompt="Inspect the complete assembly and submit all requested evidence.",
             answer_schema={"type": "object"},
-            required_operations=(Operation.SCENE_OPEN, Operation.SCENE_DESCRIBE),
+            required_operations=(Operation.SCENE_OPEN, Operation.SESSION_SNAPSHOT),
         )
 
 
@@ -93,7 +93,7 @@ def test_episode_and_ground_truth_reject_ambiguous_operation_contracts() -> None
             required_operations=(Operation.SCENE_OPEN, Operation.SCENE_OPEN),
         )
     with pytest.raises(ValidationError, match="first required"):
-        EpisodeSpec(**fields, required_operations=(Operation.SCENE_DESCRIBE,))
+        EpisodeSpec(**fields, required_operations=(Operation.SESSION_SNAPSHOT,))
 
     truth_fields = {
         "episode_id": "episode_0001",

@@ -499,7 +499,7 @@ def _reset_gate(inputs: OracleInputs) -> GateResult:
     describes = [
         event
         for event in inputs.trace
-        if event.operation is Operation.SCENE_DESCRIBE
+        if event.operation is Operation.SESSION_SNAPSHOT
         and event.status is TraceStatus.ACCEPTED
         and isinstance(event.result, dict)
     ]

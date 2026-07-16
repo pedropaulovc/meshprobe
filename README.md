@@ -12,6 +12,33 @@ private component and highlight masks plus a Depth/Normal EXR for evaluators, ra
 line-of-sight occluders, and build a focused 3×3 contact sheet with perspective context
 and six orthographic detail views.
 
+## The Playwright CLI model, for 3D
+
+If you have used Playwright CLI, MeshProbe's interaction model should feel familiar.
+Playwright opens a named browser session, applies small operations such as navigation and
+clicks, and keeps a compact page snapshot that an agent can query. MeshProbe does the same
+for a 3D model: it opens a named inspection session, applies camera, lighting, display, and
+marking operations, and writes compact state under `.meshprobe`.
+
+That makes MeshProbe useful when an agent needs to investigate a model over several turns.
+The model is imported once. Later commands reuse the same Blender worker, and a daemon
+restart reconstructs the session from its last acknowledged checkpoint. The agent usually
+reads `components.yml` and `state.yml` with `rg` or `yq`; the complete manifest remains in
+`scene.json` for `jq` queries.
+
+```bash
+uv run meshprobe --session gearbox open models/gearbox.glb
+uv run meshprobe --session gearbox find '**/idler*'
+yq '.components[] | select(.name | test("idler"; "i"))' \
+  .meshprobe/sessions/gearbox/components.yml
+uv run meshprobe --session gearbox display c7 --mode isolated
+uv run meshprobe --session gearbox illumination-set raking_left
+uv run meshprobe --session gearbox render-sheet c7
+```
+
+Normal output is a short receipt containing the result and state paths. Add `--json` for a
+machine-readable receipt or `--raw` when the full operation result is actually needed.
+
 ## Install
 
 MeshProbe uses Python 3.12 or newer, `uv`, and Blender 5.2 LTS on Linux and Windows.
@@ -43,34 +70,42 @@ uv run meshprobe schema
 uv run pytest
 ```
 
-## Try the protocol
+## Sessions and lifecycle commands
 
-Validate a scene manifest or find components in one:
+MeshProbe stores session data in the current project's `.meshprobe` directory by default.
+Use `--workspace` to choose another project root and `-s/--session` to switch sessions.
 
-```bash
-uv run meshprobe open assembly.glb > scene.json
-uv run meshprobe validate-manifest scene.json
-uv run meshprobe find scene.json 'assembly/**/idler*' --kind glob
+The lifecycle commands have deliberately different failure and persistence semantics:
+
+| Command | Renderer shutdown | Checkpoint retained | Daemon |
+| --- | --- | --- | --- |
+| `close` | Graceful, selected session | Yes | Keeps running |
+| `close --all` | Graceful, every session | Yes | Stops gracefully |
+| `kill` | Immediate, selected session | Last acknowledged state | Keeps running |
+| `kill --all` | Immediate process-tree stop | Last acknowledged state | Force-stops |
+| `delete-data` | Requires a stopped daemon | Deletes all `.meshprobe` data | Stays stopped |
+
+Use `close` at the end of ordinary work. Use `kill` to test recovery or escape a wedged
+renderer. Neither command deletes the session: the next inspection operation reopens the
+source, verifies its hash, and replays the checkpoint. `delete-data` is the explicit cleanup
+operation.
+
+Each session contains:
+
+```text
+.meshprobe/sessions/<name>/
+  metadata.json       # source, status, worker PID
+  scene.json          # complete scene manifest
+  components.yml      # deterministic c1, c2, ... reference index
+  state.yml           # camera, lighting, sparse display/mark overrides
+  checkpoint.json     # acknowledged replay log
+  events.jsonl        # accepted and rejected operations
+  results/ snapshots/ artifacts/
 ```
 
-The CLI and MCP adapter use the same Pydantic contracts. Blender runs as a
-separate factory-clean worker and receives line-delimited JSON commands. Source files
-remain untouched; renders, manifests, traces, and normalized cache entries are derived
-artifacts.
-
-For a live inspection, put the public commands in a JSONL file. The first command must
-open the scene; every later command uses the same Blender session:
-
-```json
-{"request_id":"open","op":"scene.open","source_path":"/models/assembly.glb"}
-{"request_id":"parts","op":"component.find","selector":{"kind":"glob","pattern":"**/idler*"}}
-{"request_id":"light","op":"illumination.set","illumination":{"preset":"raking_left"}}
-{"request_id":"render","op":"render.image","output_path":"evidence.png"}
-```
-
-```bash
-uv run meshprobe run inspection.jsonl
-```
+The CLI and MCP adapter share the same Pydantic operation contracts. Blender remains a
+separate factory-clean worker, and source files stay untouched. Renders, manifests, traces,
+and normalized cache entries are derived artifacts.
 
 MCP clients get the same discriminated command schema and result envelope through one
 `meshprobe` tool. Start the stdio server with:
@@ -91,15 +126,15 @@ Build the released 512-model procedural corpus and the 160-model curated track, 
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v5
+uv run meshprobe eval generate .corpora --version procedural-v6
 uv run meshprobe eval curated-generate \
   evals/curated/catalog.json .cache/meshprobe-curated .corpora \
-  --build-version curated-v2 --corpus-version curated-tasks-v5
+  --build-version curated-v2 --corpus-version curated-tasks-v6
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v5 .corpora/curated-tasks-v5 \
-  --version qualification-v5
+  .corpora/procedural-v6 .corpora/curated-tasks-v6 \
+  --version qualification-v6
 uv run meshprobe eval pin \
-  .corpora/qualification-v5 .corpora/manifests
+  .corpora/qualification-v6 .corpora/manifests-v6
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -113,7 +148,7 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v5 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v6 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -132,14 +167,41 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v5 evals/manifests/public/smoke.json \
+  .corpora/qualification-v6 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
 The command records the wheel hash, runtime versions, manifest hash, and qualification
 report hash in `clean-install-report.json`.
 
-The approved implementation and evaluation design is in [docs/plan.md](docs/plan.md).
+To migrate existing local datasets without regenerating geometry or task identities:
+
+```bash
+uv run meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v6
+uv run meshprobe eval migrate .corpora/curated-tasks-v5 .corpora \
+  --version curated-tasks-v6
+uv run meshprobe eval migrate .corpora/qualification-v5 .corpora \
+  --version qualification-v6
+uv run meshprobe eval migrate .corpora/private-v6 .corpora \
+  --version private-v7 --opaque-family opaque_family_v7
+```
+
+`eval audit-migration` verifies that model hashes, episode IDs, evaluator truth, and the
+full-investigation operation contract survived the migration. Schema-v1 corpora are rejected
+by the qualification runtime instead of being translated silently.
+
+The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes across Claude
+Opus and Codex Luna. It records exposed command trajectories and token accounting; it does
+not claim access to hidden chain of thought and does not replace release qualification:
+
+```bash
+uv run meshprobe eval ergonomics \
+  .corpora/qualification-v6 .runs/ergonomics-v1
+```
+
+The approved session and migration design is in
+[docs/session-cli-plan.md](docs/session-cli-plan.md). The broader qualification design remains
+in [docs/plan.md](docs/plan.md).
 
 ## License
 

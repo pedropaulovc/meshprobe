@@ -17,7 +17,7 @@ class EvalModel(BaseModel):
 
 class Operation(StrEnum):
     SCENE_OPEN = "scene.open"
-    SCENE_DESCRIBE = "scene.describe"
+    SESSION_SNAPSHOT = "session.snapshot"
     COMPONENT_FIND = "component.find"
     COMPONENT_INSPECT = "component.inspect"
     VIEW_SET = "view.set"
@@ -28,6 +28,9 @@ class Operation(StrEnum):
     RENDER_IMAGE = "render.image"
     RENDER_CONTACT_SHEET = "render.contact_sheet"
     SESSION_RESET = "session.reset"
+
+
+EVALUATED_OPERATIONS: tuple[Operation, ...] = tuple(Operation)
 
 
 class TaskFamily(StrEnum):
@@ -166,7 +169,7 @@ class StateRequirement(EvalModel):
 
 
 class EpisodeSpec(EvalModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     episode_id: OpaqueId
     model_file: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")]
     model_sha256: Sha256
@@ -186,14 +189,14 @@ class EpisodeSpec(EvalModel):
         if self.required_operations[0] is not Operation.SCENE_OPEN:
             raise ValueError("scene.open must be the first required operation")
         if self.family is TaskFamily.FULL_INVESTIGATION and set(self.required_operations) != set(
-            Operation
+            EVALUATED_OPERATIONS
         ):
-            raise ValueError("full investigations must require every public operation")
+            raise ValueError("full investigations must require every evaluated operation")
         return self
 
 
 class EpisodeGroundTruth(EvalModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     episode_id: OpaqueId
     model_sha256: Sha256
     generator_family: str
@@ -276,7 +279,7 @@ class GateResult(EvalModel):
 
 
 class EpisodeReport(EvalModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     episode_id: OpaqueId
     family: TaskFamily
     episode_class: EpisodeClass
@@ -302,7 +305,7 @@ class CorpusTier(StrEnum):
 
 
 class CorpusManifest(EvalModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     corpus_version: str
     tier: CorpusTier
     generator_sha256: Sha256
@@ -331,7 +334,7 @@ class CorpusManifest(EvalModel):
 class RuntimePin(EvalModel):
     meshprobe_version: str
     meshprobe_sha256: Sha256
-    protocol_version: Literal[1] = 1
+    protocol_version: Literal[2] = 2
     blender_version: str
     importer_sha256: Sha256
     render_engines: tuple[str, ...] = Field(min_length=1)
@@ -344,7 +347,7 @@ class PassThresholds(EvalModel):
 
 
 class TierManifest(EvalModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     tier: CorpusTier
     corpus_version: str
     corpus_manifest_sha256: Sha256

@@ -14,8 +14,8 @@ from meshprobe.protocol import (
     Command,
     IlluminationSetCommand,
     RenderImageCommand,
-    SceneDescribeCommand,
     SceneOpenCommand,
+    SessionSnapshotCommand,
 )
 from meshprobe.service import CommandResponse
 from meshprobe.sources import sha256_file
@@ -44,7 +44,7 @@ class FakeEvaluationService:
                     "sha256": "b" * 64,
                 },
             }
-        elif operation == "scene.describe":
+        elif operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
         elif operation == "illumination.set":
             result = {"state_sha256": "2" * 64}
@@ -100,7 +100,7 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
             source_path=active.visible_model_path,
         )
     ).ok
-    assert active.execute(SceneDescribeCommand(request_id="describe", op="scene.describe")).ok
+    assert active.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot")).ok
     assert active.execute(
         IlluminationSetCommand(
             request_id="light",
@@ -265,7 +265,9 @@ def test_broker_rejects_wrong_model_output_escape_duplicates_and_budgets(tmp_pat
             height=64,
         )
     )
-    exhausted = active.execute(SceneDescribeCommand(request_id="over-budget", op="scene.describe"))
+    exhausted = active.execute(
+        SessionSnapshotCommand(request_id="over-budget", op="session.snapshot")
+    )
 
     assert wrong_model.error is not None and wrong_model.error.code == "broker.model_path"
     assert duplicate.error is not None and duplicate.error.code == "broker.duplicate_request"
@@ -339,7 +341,9 @@ class PrivatePathErrorService(FakeEvaluationService):
 def test_broker_redacts_private_paths_from_tool_errors(tmp_path: Path) -> None:
     active = broker(tmp_path, service=PrivatePathErrorService())
 
-    rejected = active.execute(SceneDescribeCommand(request_id="private-error", op="scene.describe"))
+    rejected = active.execute(
+        SessionSnapshotCommand(request_id="private-error", op="session.snapshot")
+    )
 
     assert rejected.error is not None
     assert "<private evaluator path>" in rejected.error.message

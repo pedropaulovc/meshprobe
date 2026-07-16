@@ -48,7 +48,7 @@ class QualificationProvenance(ReportModel):
 
 
 class QualificationReport(ReportModel):
-    schema_version: int = 1
+    schema_version: int = 2
     provenance: QualificationProvenance
     overall: SliceMetrics
     full_stack: SliceMetrics

@@ -9,6 +9,7 @@ import secrets
 import socketserver
 import sys
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +68,7 @@ def dispatch(server: DaemonServer, request: dict[str, Any]) -> object:
         return server.manager.kill(session).model_dump(mode="json")
     if action in {"close_all", "kill_all"}:
         force = action == "kill_all"
-        receipts = (
-            server.manager.kill_all() if force else server.manager.close_all()
-        )
+        receipts = server.manager.kill_all() if force else server.manager.close_all()
         server.manager.shutdown(force=force)
         threading.Thread(target=server.shutdown, daemon=True).start()
         return {"sessions": [item.model_dump(mode="json") for item in receipts]}
@@ -93,10 +92,8 @@ def serve(root: Path, *, blender: str | None = None) -> None:
     finally:
         server.server_close()
         server.manager.shutdown()
-        try:
+        with suppress(FileNotFoundError):
             (root / "daemon.json").unlink()
-        except FileNotFoundError:
-            pass
 
 
 def main() -> None:

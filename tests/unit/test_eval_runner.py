@@ -21,8 +21,8 @@ from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
-    SceneDescribeCommand,
     SceneOpenCommand,
+    SessionSnapshotCommand,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -43,7 +43,7 @@ class RunnerService:
         operation = command.op
         request_id = command.request_id
         result: JsonValue = {"source_sha256": "a" * 64}
-        if operation == "scene.describe":
+        if operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
         if operation == "component.find":
             result = [{"id": self.target_id}]
@@ -76,7 +76,7 @@ class PassingAdapter:
                 source_path=broker.visible_model_path,
             )
         )
-        broker.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+        broker.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot"))
         broker.execute(
             ComponentFindCommand(
                 request_id="find",

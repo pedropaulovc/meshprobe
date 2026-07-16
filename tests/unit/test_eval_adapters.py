@@ -43,7 +43,7 @@ class AdapterService:
     ) -> CommandResponse:
         del evaluator_output_dir
         result: JsonValue = {"source_sha256": "a" * 64}
-        if command.op == "scene.describe":
+        if command.op == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
         return CommandResponse(request_id=command.request_id, op=command.op, result=result)
 
@@ -65,7 +65,7 @@ def test_cli_adapter_runs_interactive_tool_calls_and_submission(tmp_path: Path) 
         "'source_path': episode['model_path']}})\n"
         "json.loads(sys.stdin.readline())\n"
         "send({'type': 'tool_call', 'command': {"
-        "'request_id': 'describe', 'op': 'scene.describe'}})\n"
+        "'request_id': 'describe', 'op': 'session.snapshot'}})\n"
         "json.loads(sys.stdin.readline())\n"
         f"answer = {answer!r}\n"
         "send({'type': 'submission', 'submission': {"
@@ -92,7 +92,7 @@ def test_cli_adapter_runs_interactive_tool_calls_and_submission(tmp_path: Path) 
     assert run.returncode == 0
     assert run.submission is not None
     assert run.submission.answer == episode.ground_truth.answer
-    assert [event.operation for event in broker.events] == ["scene.open", "scene.describe"]
+    assert [event.operation for event in broker.events] == ["scene.open", "session.snapshot"]
 
 
 def test_cli_adapter_reports_invalid_protocol_without_tool_execution(tmp_path: Path) -> None:
@@ -168,7 +168,7 @@ def test_cli_adapter_scores_agent_that_closes_before_tool_result(tmp_path: Path)
             "type": "tool_call",
             "command": {
                 "request_id": "describe",
-                "op": "scene.describe",
+                "op": "session.snapshot",
             },
         }
     ).encode()
@@ -203,7 +203,7 @@ def test_mcp_adapter_serves_same_broker_contract_and_accepts_submission(tmp_path
         "request(3,'tools/call',{'name':'meshprobe','arguments':{'command':{"
         "'request_id':'open','op':'scene.open','source_path':episode['model_path']}}})\n"
         "request(4,'tools/call',{'name':'meshprobe','arguments':{'command':{"
-        "'request_id':'describe','op':'scene.describe'}}})\n"
+        "'request_id':'describe','op':'session.snapshot'}}})\n"
         f"answer={answer!r}\n"
         "request(5,'tools/call',{'name':'submit','arguments':{"
         "'episode_id':episode['episode_id'],'answer':answer}})\n",
@@ -229,7 +229,7 @@ def test_mcp_adapter_serves_same_broker_contract_and_accepts_submission(tmp_path
     assert run.returncode == 0
     assert run.submission is not None
     assert run.submission.answer == episode.ground_truth.answer
-    assert [event.operation for event in broker.events] == ["scene.open", "scene.describe"]
+    assert [event.operation for event in broker.events] == ["scene.open", "session.snapshot"]
 
 
 def test_mcp_adapter_interoperates_with_official_python_sdk_stdio(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_mcp_adapter_interoperates_with_official_python_sdk_stdio(tmp_path: Path
         "      await session.call_tool('meshprobe', {'command': {'request_id':'open',"
         "'op':'scene.open','source_path':episode['model_path']}})\n"
         "      await session.call_tool('meshprobe', {'command': {'request_id':'describe',"
-        "'op':'scene.describe'}})\n"
+        "'op':'session.snapshot'}})\n"
         "      await session.call_tool('submit', {'episode_id':episode['episode_id'],"
         "'answer':answer})\n"
         "anyio.run(main)\n",
@@ -280,7 +280,7 @@ def test_mcp_adapter_interoperates_with_official_python_sdk_stdio(tmp_path: Path
     assert run.returncode == 0, run.stderr
     assert run.submission is not None
     assert run.submission.answer == episode.ground_truth.answer
-    assert [event.operation for event in broker.events] == ["scene.open", "scene.describe"]
+    assert [event.operation for event in broker.events] == ["scene.open", "session.snapshot"]
 
 
 def test_mcp_adapter_json_rpc_validation_and_tool_error_paths(tmp_path: Path) -> None:

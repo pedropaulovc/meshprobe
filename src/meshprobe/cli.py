@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import uuid
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -10,11 +12,11 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
-from meshprobe.camera import orbit_camera
-from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderWorkerError
+from meshprobe.client import MeshProbeClient
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
 from meshprobe.evals.curated_build import build_curated_variants
 from meshprobe.evals.curated_tasks import build_curated_corpus
+from meshprobe.evals.ergonomics import run_ergonomics_pilot
 from meshprobe.evals.factory import CorpusBuild, build_corpus, merge_corpora, validate_corpus
 from meshprobe.evals.generators import PUBLIC_GENERATOR_FAMILIES, GeneratorFamily
 from meshprobe.evals.harness.adapters import (
@@ -23,8 +25,9 @@ from meshprobe.evals.harness.adapters import (
     ReferenceAgentAdapter,
 )
 from meshprobe.evals.harness.suite import run_tier
+from meshprobe.evals.migration import audit_migration, migrate_corpus_v2
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
-from meshprobe.models import SceneManifest
+from meshprobe.models import DisplayMode, IlluminationPreset, MarkMode, Projection, RenderEngine
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -32,30 +35,51 @@ from meshprobe.protocol import (
     ComponentInspectCommand,
     ComponentMarkCommand,
     IlluminationSetCommand,
-    SceneDescribeCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
     SessionResetCommand,
+    SessionSnapshotCommand,
     ViewOrbitCommand,
     ViewSetCommand,
     command_json_schema,
-    parse_command_json,
 )
-from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
+from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.service import MeshProbeService
-from meshprobe.session import InspectionSession
+from meshprobe.workspace import OperationReceipt
 
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
+DEFAULT_WORKSPACE = Path.cwd()
+
+
+class CliOptions:
+    def __init__(self, session: str, workspace: Path, output: str) -> None:
+        self.session = session
+        self.workspace = workspace
+        self.output = output
+
+
+@app.callback()
+def global_options(
+    ctx: typer.Context,
+    session: Annotated[str, typer.Option("--session", "-s")] = "default",
+    workspace: Annotated[Path, typer.Option("--workspace", file_okay=False)] = DEFAULT_WORKSPACE,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    raw: Annotated[bool, typer.Option("--raw")] = False,
+) -> None:
+    """Select a durable named session and receipt output format."""
+
+    if json_output and raw:
+        raise typer.BadParameter("--json and --raw are mutually exclusive")
+    output = "raw" if raw else "json" if json_output else "receipt"
+    ctx.obj = CliOptions(session, workspace, output)
 
 
 class AgentAdapterKind(StrEnum):
     CLI = "cli"
     MCP = "mcp"
     REFERENCE = "reference"
-
-
-def _load_manifest(path: Path) -> SceneManifest:
-    return SceneManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def _emit(value: object) -> None:
@@ -75,7 +99,7 @@ def schema() -> None:
 @eval_app.command("generate")
 def generate_eval_corpus(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v1",
+    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v6",
     families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
     seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
     seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
@@ -108,13 +132,48 @@ def validate_eval_corpus(
     _emit(_corpus_summary(build))
 
 
+@eval_app.command("migrate")
+def migrate_eval_corpus(
+    source: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    corpus_version: Annotated[str, typer.Option("--version")],
+    opaque_family: Annotated[str | None, typer.Option("--opaque-family")] = None,
+) -> None:
+    """Migrate a schema-v1 corpus without regenerating models or task identities."""
+
+    try:
+        build, audit = migrate_corpus_v2(
+            source,
+            output_root,
+            corpus_version=corpus_version,
+            opaque_family=opaque_family,
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit({**_corpus_summary(build), "audit": audit.__dict__})
+
+
+@eval_app.command("audit-migration")
+def audit_eval_migration(
+    source: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    destination: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+) -> None:
+    """Prove identity and evaluator truth were preserved by a corpus migration."""
+
+    try:
+        audit = audit_migration(source.resolve(), destination.resolve())
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(audit.__dict__)
+
+
 @eval_app.command("curated-generate")
 def generate_curated_eval_corpus(
     catalog_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     work_root: Annotated[Path, typer.Argument(file_okay=False)],
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    build_version: Annotated[str, typer.Option("--build-version")] = "curated-v1",
-    corpus_version: Annotated[str, typer.Option("--corpus-version")] = "curated-tasks-v1",
+    build_version: Annotated[str, typer.Option("--build-version")] = "curated-v2",
+    corpus_version: Annotated[str, typer.Option("--corpus-version")] = "curated-tasks-v6",
     blender: Annotated[str, typer.Option("--blender")] = "blender",
     workers: Annotated[int, typer.Option("--workers", min=1, max=64)] = 8,
 ) -> None:
@@ -145,7 +204,7 @@ def generate_curated_eval_corpus(
 def merge_eval_corpora(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v1",
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v6",
 ) -> None:
     """Combine validated procedural and curated corpora without rewriting artifacts."""
 
@@ -243,6 +302,34 @@ def run_eval_tier(
     )
 
 
+@eval_app.command("ergonomics")
+def run_cli_ergonomics(
+    corpus_root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    per_difficulty: Annotated[int, typer.Option("--per-difficulty", min=1, max=50)] = 12,
+    canary_pairs: Annotated[int, typer.Option("--canary-pairs", min=1, max=24)] = 4,
+) -> None:
+    """Run the paired Claude Opus and Codex Luna CLI ergonomics pilot."""
+
+    try:
+        result = run_ergonomics_pilot(
+            corpus_root,
+            output_root,
+            per_difficulty=per_difficulty,
+            canary_pairs=canary_pairs,
+        )
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(
+        {
+            "root": str(result.root),
+            "attempts": len(result.attempts),
+            "report": str(result.report_path),
+            "qualification": False,
+        }
+    )
+
+
 def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
     return {
         "valid": True,
@@ -255,150 +342,378 @@ def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
     }
 
 
+def _options(ctx: typer.Context) -> CliOptions:
+    if not isinstance(ctx.obj, CliOptions):
+        raise RuntimeError("CLI context is unavailable")
+    return ctx.obj
+
+
+def _client(ctx: typer.Context, *, blender: str | None = None) -> MeshProbeClient:
+    return MeshProbeClient(_options(ctx).workspace, blender=blender)
+
+
+def _request_id(operation: str) -> str:
+    return f"{operation}-{uuid.uuid4().hex[:12]}"
+
+
+def _emit_receipt(
+    ctx: typer.Context,
+    client: MeshProbeClient,
+    receipt: OperationReceipt,
+) -> None:
+    output = _options(ctx).output
+    if output == "json":
+        typer.echo(receipt.model_dump_json(indent=2))
+        return
+    if output == "raw":
+        envelope = client.read_result(receipt)
+        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        _emit(result)
+        return
+    fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
+    if receipt.result_path:
+        fields.append(f"result={receipt.result_path}")
+    if receipt.state_path:
+        fields.append(f"state={receipt.state_path}")
+    if receipt.artifact_paths:
+        fields.append(f"artifacts={','.join(receipt.artifact_paths)}")
+    typer.echo(" ".join(fields))
+
+
+def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None) -> None:
+    client = _client(ctx, blender=blender)
+    try:
+        receipt = client.execute(_options(ctx).session, command)
+    except (OSError, RuntimeError, ValueError, ValidationError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit_receipt(ctx, client, receipt)
+
+
+def _component_ids(ctx: typer.Context, components: list[str]) -> tuple[str, ...]:
+    client = _client(ctx)
+    try:
+        return tuple(
+            client.resolve_component(_options(ctx).session, component) for component in components
+        )
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+
+
 @app.command("open")
 def open_scene(
+    ctx: typer.Context,
     source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
-        DEFAULT_WORKER_TIMEOUT_SECONDS
-    ),
 ) -> None:
-    """Open a model in a factory-clean Blender worker and print its manifest."""
+    """Open a model in the selected durable session."""
 
-    command = parse_command_json(
-        json.dumps({"request_id": "open", "op": "scene.open", "source_path": str(source)})
+    from meshprobe.protocol import SceneOpenCommand
+
+    _execute(
+        ctx,
+        SceneOpenCommand(request_id=_request_id("open"), op="scene.open", source_path=str(source)),
+        blender=blender,
     )
-    try:
-        with MeshProbeService(blender=blender, timeout_seconds=timeout_seconds) as service:
-            manifest = service.execute(command).result
-    except (BlenderWorkerError, OSError, ValueError) as error:
-        raise typer.BadParameter(str(error)) from error
-    _emit(manifest)
 
 
-@app.command("run")
-def run_commands(
-    commands: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
-    blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
-        DEFAULT_WORKER_TIMEOUT_SECONDS
-    ),
-) -> None:
-    """Execute JSONL commands in one persistent Blender session."""
+@app.command("snapshot")
+def snapshot(ctx: typer.Context) -> None:
+    """Write and return the current scene/session snapshot."""
 
-    results: list[dict[str, object]] = []
-    try:
-        with MeshProbeService(blender=blender, timeout_seconds=timeout_seconds) as service:
-            for line_number, line in enumerate(
-                commands.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if not line.strip():
-                    continue
-                try:
-                    command = parse_command_json(line)
-                    response = service.execute(command)
-                except (ValidationError, ValueError) as error:
-                    raise typer.BadParameter(f"line {line_number}: {error}") from error
-                results.append(response.model_dump(mode="json"))
-    except BlenderWorkerError as error:
-        raise typer.BadParameter(str(error)) from error
-    _emit({"results": results})
-
-
-@app.command("validate-manifest")
-def validate_manifest(
-    manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
-) -> None:
-    """Validate a renderer-produced scene manifest."""
-
-    scene = _load_manifest(manifest)
-    _emit(
-        {"valid": True, "components": len(scene.components), "source_sha256": scene.source_sha256}
+    _execute(
+        ctx,
+        SessionSnapshotCommand(request_id=_request_id("snapshot"), op="session.snapshot"),
     )
 
 
 @app.command("find")
 def find_components(
-    manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    ctx: typer.Context,
     pattern: Annotated[str, typer.Argument()],
     kind: Annotated[SelectorKind, typer.Option("--kind")] = SelectorKind.GLOB,
 ) -> None:
-    """Find components in an existing scene manifest."""
+    """Find components in the selected session."""
 
-    scene = _load_manifest(manifest)
-    matches = ComponentIndex(scene).find(ComponentSelector(kind=kind, pattern=pattern))
-    _emit(
-        {
-            "count": len(matches),
-            "components": [
-                {"id": component.id, "path": component.path, "name": component.display_name}
-                for component in matches
-            ],
-        }
+    _execute(
+        ctx,
+        ComponentFindCommand(
+            request_id=_request_id("find"),
+            op="component.find",
+            selector=ComponentSelector(kind=kind, pattern=pattern),
+        ),
     )
 
 
-@app.command("apply")
-def apply_commands(
-    manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
-    commands: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+@app.command("inspect")
+def inspect_component(ctx: typer.Context, component: Annotated[str, typer.Argument()]) -> None:
+    """Inspect one component by ref, stable ID, or exact path."""
+
+    component_id = _component_ids(ctx, [component])[0]
+    _execute(
+        ctx,
+        ComponentInspectCommand(
+            request_id=_request_id("inspect"),
+            op="component.inspect",
+            component_id=component_id,
+        ),
+    )
+
+
+@app.command("view-set")
+def view_set(
+    ctx: typer.Context,
+    camera_json: Annotated[str, typer.Option("--camera-json")],
+    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
-    """Validate and apply JSONL inspection commands without a renderer."""
+    """Set an exact camera from a JSON object."""
 
-    scene = _load_manifest(manifest)
-    index = ComponentIndex(scene)
-    session = InspectionSession(scene)
-    results: list[dict[str, object]] = []
+    from meshprobe.models import Camera
 
-    for line_number, line in enumerate(commands.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            command = parse_command_json(line)
-            result = _apply_one(command, scene, index, session)
-        except (ValidationError, ValueError) as error:
-            raise typer.BadParameter(f"line {line_number}: {error}") from error
-        results.append({"request_id": command.request_id, "result": result})
-
-    _emit({"results": results, "final_state": session.snapshot().model_dump(mode="json")})
+    camera = Camera.model_validate_json(camera_json)
+    _execute(
+        ctx,
+        ViewSetCommand(
+            request_id=_request_id("view-set"),
+            op="view.set",
+            camera=camera,
+            focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
+            aspect_ratio=aspect_ratio,
+        ),
+    )
 
 
-def _apply_one(
-    command: Command,
-    scene: SceneManifest,
-    index: ComponentIndex,
-    session: InspectionSession,
-) -> object:
-    if isinstance(command, SceneDescribeCommand):
-        return {
-            "scene": scene.model_dump(mode="json"),
-            "session": session.snapshot().model_dump(mode="json"),
-        }
-    if isinstance(command, ComponentFindCommand):
-        return [component.model_dump(mode="json") for component in index.find(command.selector)]
-    if isinstance(command, ComponentInspectCommand):
-        return index.by_id(command.component_id).model_dump(mode="json")
-    if isinstance(command, ViewSetCommand):
-        return session.set_camera(command.camera).model_dump(mode="json")
-    if isinstance(command, ViewOrbitCommand):
-        camera = orbit_camera(
-            target_mm=command.target_mm,
-            azimuth_degrees=command.azimuth_degrees,
-            elevation_degrees=command.elevation_degrees,
-            roll_degrees=command.roll_degrees,
-            distance_mm=command.distance_mm,
-            projection=command.projection,
-        )
-        return session.set_camera(camera).model_dump(mode="json")
-    if isinstance(command, IlluminationSetCommand):
-        return session.set_illumination(command.illumination).model_dump(mode="json")
-    if isinstance(command, ComponentDisplayCommand):
-        return session.display(command.component_ids, command.mode).model_dump(mode="json")
-    if isinstance(command, ComponentMarkCommand):
-        return session.mark(command.component_ids, command.mode).model_dump(mode="json")
-    if isinstance(command, SessionResetCommand):
-        return session.reset().model_dump(mode="json")
-    raise ValueError(f"operation {command.op} requires the Blender worker")
+@app.command("view-orbit")
+def view_orbit(
+    ctx: typer.Context,
+    target: Annotated[tuple[float, float, float], typer.Option("--target")],
+    azimuth: Annotated[float, typer.Option("--azimuth")],
+    elevation: Annotated[float, typer.Option("--elevation")],
+    distance: Annotated[float, typer.Option("--distance", min=0.000001)],
+    projection_json: Annotated[str, typer.Option("--projection-json")],
+    roll: Annotated[float, typer.Option("--roll")] = 0.0,
+    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+) -> None:
+    """Orbit the camera around a target point."""
+
+    from pydantic import TypeAdapter
+
+    projection: Projection = TypeAdapter(Projection).validate_json(projection_json)
+    _execute(
+        ctx,
+        ViewOrbitCommand(
+            request_id=_request_id("view-orbit"),
+            op="view.orbit",
+            target_mm=target,
+            azimuth_degrees=azimuth,
+            elevation_degrees=elevation,
+            roll_degrees=roll,
+            distance_mm=distance,
+            projection=projection,
+            focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
+            aspect_ratio=aspect_ratio,
+        ),
+    )
+
+
+@app.command("illumination-set")
+def illumination_set(
+    ctx: typer.Context,
+    preset: Annotated[IlluminationPreset, typer.Argument()],
+) -> None:
+    """Apply a named illumination preset."""
+
+    from meshprobe.models import PresetIllumination
+
+    _execute(
+        ctx,
+        IlluminationSetCommand(
+            request_id=_request_id("illumination"),
+            op="illumination.set",
+            illumination=PresetIllumination(preset=preset),
+        ),
+    )
+
+
+@app.command("display")
+def display_components(
+    ctx: typer.Context,
+    components: Annotated[list[str], typer.Argument()],
+    mode: Annotated[DisplayMode, typer.Option("--mode")],
+) -> None:
+    """Change component visibility using short refs, IDs, or exact paths."""
+
+    _execute(
+        ctx,
+        ComponentDisplayCommand(
+            request_id=_request_id("display"),
+            op="component.display",
+            component_ids=_component_ids(ctx, components),
+            mode=mode,
+        ),
+    )
+
+
+@app.command("mark")
+def mark_components(
+    ctx: typer.Context,
+    components: Annotated[list[str], typer.Argument()],
+    mode: Annotated[MarkMode, typer.Option("--mode")],
+) -> None:
+    """Mark components using short refs, IDs, or exact paths."""
+
+    _execute(
+        ctx,
+        ComponentMarkCommand(
+            request_id=_request_id("mark"),
+            op="component.mark",
+            component_ids=_component_ids(ctx, components),
+            mode=mode,
+        ),
+    )
+
+
+@app.command("render-image")
+def render_image(
+    ctx: typer.Context,
+    output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
+    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = 1024,
+    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 1024,
+    samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
+    engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
+) -> None:
+    """Render the selected session to an image artifact."""
+
+    options = _options(ctx)
+    destination = output or (
+        options.workspace.resolve()
+        / ".meshprobe"
+        / "sessions"
+        / options.session
+        / "artifacts"
+        / f"render-{uuid.uuid4().hex[:12]}.png"
+    )
+    _execute(
+        ctx,
+        RenderImageCommand(
+            request_id=_request_id("render-image"),
+            op="render.image",
+            output_path=str(destination),
+            width=width,
+            height=height,
+            samples=samples,
+            engine=engine,
+        ),
+    )
+
+
+@app.command("render-sheet")
+def render_sheet(
+    ctx: typer.Context,
+    focus: Annotated[list[str], typer.Argument()],
+    output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
+    panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 768,
+    panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 768,
+    samples: Annotated[int, typer.Option("--samples", min=1)] = 32,
+    engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
+) -> None:
+    """Render the focused 3x3 diagnostic sheet."""
+
+    options = _options(ctx)
+    destination = output or (
+        options.workspace.resolve()
+        / ".meshprobe"
+        / "sessions"
+        / options.session
+        / "artifacts"
+        / f"sheet-{uuid.uuid4().hex[:12]}.png"
+    )
+    _execute(
+        ctx,
+        RenderContactSheetCommand(
+            request_id=_request_id("render-sheet"),
+            op="render.contact_sheet",
+            output_path=str(destination),
+            focus_component_ids=_component_ids(ctx, focus),
+            panel_width=panel_width,
+            panel_height=panel_height,
+            samples=samples,
+            engine=engine,
+        ),
+    )
+
+
+@app.command("reset")
+def reset(ctx: typer.Context) -> None:
+    """Reset visual state to the imported scene defaults."""
+
+    _execute(ctx, SessionResetCommand(request_id=_request_id("reset"), op="session.reset"))
+
+
+@app.command("list")
+def list_sessions(ctx: typer.Context) -> None:
+    """List durable sessions and renderer status."""
+
+    client = _client(ctx)
+    try:
+        sessions = client.list_sessions()
+    except ValueError as error:
+        if "not running" not in str(error):
+            raise typer.BadParameter(str(error)) from error
+        sessions = []
+    if _options(ctx).output in {"json", "raw"}:
+        _emit({"sessions": sessions})
+        return
+    for session in sessions:
+        typer.echo(f"{session['name']}\t{session['status']}\t{session['source_path']}")
+
+
+@app.command("close")
+def close_session(
+    ctx: typer.Context,
+    all_sessions: Annotated[bool, typer.Option("--all")] = False,
+) -> None:
+    """Gracefully checkpoint and stop one renderer, or all renderers and the daemon."""
+
+    client = _client(ctx)
+    try:
+        receipts = client.close_all() if all_sessions else [client.close(_options(ctx).session)]
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    for receipt in receipts:
+        _emit_receipt(ctx, client, receipt)
+
+
+@app.command("kill")
+def kill_session(
+    ctx: typer.Context,
+    all_sessions: Annotated[bool, typer.Option("--all")] = False,
+) -> None:
+    """Force-stop one renderer, or the daemon and its complete process tree."""
+
+    client = _client(ctx)
+    try:
+        receipts = client.kill_all() if all_sessions else [client.kill(_options(ctx).session)]
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    for receipt in receipts:
+        _emit_receipt(ctx, client, receipt)
+
+
+@app.command("delete-data")
+def delete_data(ctx: typer.Context) -> None:
+    """Delete the stopped workspace's `.meshprobe` state."""
+
+    client = _client(ctx)
+    try:
+        deleted = client.delete_data()
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    if _options(ctx).output in {"json", "raw"}:
+        _emit({"deleted": str(deleted)})
+        return
+    typer.echo(f"deleted {deleted}")
 
 
 def main() -> None:

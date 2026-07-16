@@ -625,7 +625,7 @@ def main() -> None:
     client = ProtocolClient()
     required = set(envelope.get("required_operations", ()))
     manifest = client.call("scene.open", source_path=envelope["model_path"])
-    client.call("scene.describe")
+    client.call("session.snapshot")
 
     answer_properties = envelope["answer_schema"]["properties"]["values"]["properties"]
     curated = "target_path" in answer_properties
