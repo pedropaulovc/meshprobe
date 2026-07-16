@@ -103,6 +103,8 @@ codex exec --model gpt-5.6-luna --json --ephemeral --ignore-user-config --ignore
 ```
 
 Preflight checks versions, authentication, and model availability with no model fallback.
+It also opens and closes a real public model inside the final sandbox layout, proves the
+assigned model is read-only, and proves the repository path is absent.
 Run a four-pair canary before the remaining twenty. Infrastructure or provider failures may
 be retried once; semantic failures are not retried. The harness silently enforces a
 256,000-token ceiling per attempt from the live provider usage stream, alongside the episode

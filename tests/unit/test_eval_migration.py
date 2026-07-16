@@ -179,6 +179,31 @@ def test_ergonomics_mounts_complete_blender_distribution(
     assert ergonomics._blender_runtime() == runtime
 
 
+def test_ergonomics_runtime_preflight_checks_mount_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = tmp_path / "corpus"
+    models = corpus / "public" / "models"
+    models.mkdir(parents=True)
+    (models / "model.glb").write_bytes(b"model")
+    observed: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        ergonomics,
+        "_sandboxed_agent_command",
+        lambda command, **kwargs: observed.append(command) or ("/bin/true",),
+    )
+
+    assert ergonomics._preflight_runtime_boundary(corpus, tmp_path / "run", tmp_path) == (
+        "available"
+    )
+    script = observed[0][-1]
+    assert "runtime-proof open" in script
+    assert "runtime-proof/state.yml" in script
+    assert "pyproject.toml" in script
+    assert ".write-probe" in script
+
+
 def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:
     started = datetime(2026, 7, 16, 18, 0, tzinfo=UTC)
     events = tmp_path / ".meshprobe" / "sessions" / "review" / "events.jsonl"

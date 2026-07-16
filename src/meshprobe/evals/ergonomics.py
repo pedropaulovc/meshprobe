@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -312,6 +313,49 @@ def _sandboxed_agent_command(
     )
 
 
+def _preflight_runtime_boundary(
+    corpus_root: Path,
+    output_root: Path,
+    cli_runtime: Path,
+) -> str:
+    root = output_root / "preflight-runtime"
+    input_root = root / "input"
+    workspace = root / "workspace"
+    input_root.mkdir(parents=True, exist_ok=True)
+    model = sorted((corpus_root / "public" / "models").glob("*.glb"))[0]
+    assigned = input_root / model.name
+    shutil.copy2(model, assigned)
+    repository = Path(__file__).parents[3]
+    visible_model = ERGONOMICS_INPUT / assigned.name
+    script = "\n".join(
+        (
+            "set -eu",
+            f"test ! -e {shlex.quote(str(repository / 'pyproject.toml'))}",
+            f"! touch {shlex.quote(str(ERGONOMICS_INPUT / '.write-probe'))}",
+            f"meshprobe -s runtime-proof open {shlex.quote(str(visible_model))}",
+            "test -f .meshprobe/sessions/runtime-proof/state.yml",
+            "meshprobe -s runtime-proof close",
+        )
+    )
+    command = _sandboxed_agent_command(
+        ("/usr/bin/bash", "-lc", script),
+        agent=ErgonomicsAgent.CODEX,
+        root=root,
+        cli_runtime=cli_runtime,
+        wall_seconds=90,
+        output_bytes=50 * 1024**2,
+        input_root=input_root,
+        workspace=workspace,
+    )
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=90)
+    if completed.returncode != 0:
+        output = (completed.stdout + completed.stderr).strip()
+        raise RuntimeError(
+            f"sandbox runtime preflight failed ({completed.returncode}): {output[-4000:]}"
+        )
+    return "available"
+
+
 def run_ergonomics_pilot(
     corpus_root: Path,
     output_root: Path,
@@ -330,6 +374,11 @@ def run_ergonomics_pilot(
         preflight = preflight_agents(
             sandbox_root=output_root / "preflight-sandbox",
             cli_runtime=cli_runtime,
+        )
+        preflight["runtime_boundary"] = _preflight_runtime_boundary(
+            corpus_root,
+            output_root,
+            cli_runtime,
         )
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         atomic_json(
