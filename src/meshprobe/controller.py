@@ -164,7 +164,7 @@ class BlenderController:
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self.close()
             raise
-        if event.get("protocol_version") != 1:
+        if event.get("protocol_version") != 2:
             self.close()
             raise BlenderWorkerError(
                 f"unsupported worker protocol: {event.get('protocol_version')}"
@@ -315,6 +315,31 @@ class BlenderController:
             self._accepted_commands.append((operation, arguments))
             return SessionSnapshot.model_validate(result)
         return result
+
+    @property
+    def worker_pid(self) -> int | None:
+        """Return the renderer process id while the worker is alive."""
+
+        process = self._process
+        if process is None or process.poll() is not None:
+            return None
+        return process.pid
+
+    def kill(self) -> None:
+        """Immediately terminate the renderer without a shutdown checkpoint."""
+
+        process = self._process
+        self._process = None
+        self.ready_event = None
+        if process is None:
+            return
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        reader_thread = self._reader_thread
+        self._reader_thread = None
+        if reader_thread is not None and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=2)
 
     def _cache_environment_map(
         self,

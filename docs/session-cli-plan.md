@@ -1,0 +1,127 @@
+# Stateful CLI and evaluation migration plan
+
+## Goal
+
+MeshProbe should behave like Playwright CLI for 3D inspection: an agent opens a named
+session once, applies small operations to it, and queries compact durable state instead of
+reloading a scene or consuming a full response on every turn. MeshProbe owns this state in a
+project-local `.meshprobe` directory. Agents can inspect it efficiently with `rg`, `jq`, and
+`yq`.
+
+## CLI surface
+
+The flat command set is:
+
+- `open`, `snapshot`, `find`, and `inspect`
+- `view-set`, `view-orbit`, and `illumination-set`
+- `display`, `mark`, `render-image`, `render-sheet`, and `reset`
+- `list`, `close [--all]`, `kill [--all]`, and `delete-data`
+
+Global options select the named session and workspace and control output:
+`-s/--session`, `--workspace`, `--json`, and `--raw`.
+
+`close` gracefully checkpoints and stops the selected renderer. `close --all` does this for
+every session and stops the daemon. `kill` immediately terminates the selected renderer and
+leaves its last acknowledged checkpoint available for recovery. `kill --all` forcibly stops
+the daemon and its renderer process tree. `delete-data` removes `.meshprobe` only after the
+daemon is stopped.
+
+Components receive deterministic short references (`c1`, `c2`, and so on) in sorted path
+order. Commands accept a short reference, a full stable component ID, or an exact component
+path.
+
+## Durable state
+
+Each workspace has one authenticated loopback daemon. Each active session has one Blender
+worker. The filesystem contract is:
+
+```text
+.meshprobe/
+  daemon.json
+  daemon.log
+  sessions/<name>/
+    metadata.json
+    scene.json
+    components.yml
+    state.yml
+    checkpoint.json
+    events.jsonl
+    results/
+    snapshots/
+    artifacts/
+```
+
+`components.yml` is a compact static reference/path/name index. `state.yml` contains exact
+camera and illumination values plus component display/mark defaults and sparse overrides.
+`scene.json` retains the complete manifest for `jq`. `events.jsonl` records accepted and
+rejected operations. Normal stdout is a small receipt pointing to these files; `--json`
+prints that receipt as JSON and `--raw` prints the operation result.
+
+The daemon uses newline-delimited JSON over loopback with a per-workspace token, startup
+locking, and stale-process recovery. The durable checkpoint stores controller-normalized
+accepted state commands. A restarted daemon reopens the source, verifies its hash, and
+replays only acknowledged commands. `MeshProbeClient.execute` is the shared client boundary;
+CLI and MCP use it while qualification evaluation can inject an in-process `SessionManager`.
+
+## Evaluation dataset migration
+
+Runtime and evaluation protocol version 2 replaces `scene.describe` with
+`session.snapshot`. `EVALUATED_OPERATIONS` explicitly excludes administrative lifecycle
+commands.
+
+Publish these versioned corpora without changing geometry or task identity:
+
+- `procedural-v6`
+- `curated-tasks-v6`, still based on curated geometry build `curated-v2`
+- `qualification-v6`, with the same model and episode counts
+- `private-v7`, with the same counts and a production `opaque_family_v7` builder that
+  codifies the current private-family construction
+
+The migration audit must prove that model IDs, model hashes, episode IDs, and truth payloads
+are unchanged; only the schema/protocol version and operation rename may differ. Full
+investigations may contain evaluated operations only. Public and private tier manifests are
+repinned to protocol 2 and the final package hash. Existing corpora and reports remain
+available. A clean-install v6 report is committed, while full public/private qualification is
+deferred.
+
+Version 1 evaluation inputs are rejected clearly rather than translated at runtime.
+
+## CLI ergonomics pilot
+
+The diagnostic pilot is separate from qualification and runs through `meshprobe eval
+ergonomics`. It uses 24 paired public episodes: 12 basic and 12 intermediate, deterministically
+stratified. Claude and Codex receive the same minimal prompt, a fresh workspace/session for
+each attempt, alternating run order, and sequential Blender access. Every attempt is
+checkpointed.
+
+The required agent commands are:
+
+```text
+claude -p --model opus --output-format stream-json --verbose \
+  --no-session-persistence --safe-mode
+codex exec --model luna --json --ephemeral --ignore-user-config --ignore-rules
+```
+
+Preflight checks versions, authentication, and model availability with no model fallback.
+Run a four-pair canary before the remaining twenty. Infrastructure or provider failures may
+be retried once; semantic failures are not retried.
+
+Metrics cover correctness and evidence gates, time and tokens to open, help and invalid
+calls, retries, reference use, `rg`/`jq`/`yq` use, bytes read, full raw reads, redundant calls,
+operations, renders, elapsed time, receipt comprehension, and final-answer quality. Claude
+token accounting includes input, output, cache creation, and cache reads. Codex accounting
+includes input, cached input, output, and reasoning-output tokens. Analysis is limited to
+exposed reasoning summaries and command trajectories; it does not claim access to hidden
+chain of thought.
+
+Raw attempts live under ignored `.runs/ergonomics-v1`. A concise JSON and Markdown report is
+committed under `evals/reports/ergonomics-v1`. The pilot may inform CLI fixes, but it is not a
+release qualification result.
+
+## Delivery and verification
+
+Verification includes unit and daemon integration tests, a real Blender crash/recovery test,
+CLI/MCP parity, explicit rejection of v1 eval inputs, migration audits, formatting, lint,
+strict mypy, full pytest and coverage, a clean wheel install, and CI. The PR becomes ready at
+code complete so review and verification overlap. It can merge after CI and reviews are
+clean; the deferred full qualification run is not a merge gate.
