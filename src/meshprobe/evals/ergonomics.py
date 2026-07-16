@@ -85,6 +85,7 @@ class ErgonomicsAttempt(BaseModel):
     provider_error: str | None = None
     final: dict[str, Any] | None = None
     metrics: ErgonomicsMetrics
+    prompt_path: str
     raw_stream_path: str
 
 
@@ -422,6 +423,7 @@ def _run_attempt(
         spec,
         Path(visible_input_path(assigned_model)),
     )
+    prompt_path = _persist_prompt(root, prompt)
     command = (*AGENT_COMMANDS[agent], prompt)
     sandbox_command = _sandboxed_agent_command(
         command,
@@ -498,8 +500,15 @@ def _run_attempt(
         provider_error=provider_error,
         final=final,
         metrics=metrics,
+        prompt_path=str(prompt_path),
         raw_stream_path=str(raw_path),
     )
+
+
+def _persist_prompt(root: Path, prompt: str) -> Path:
+    path = root / "prompt.txt"
+    atomic_text(path, prompt)
+    return path
 
 
 def _retryable_provider_failure(attempt: ErgonomicsAttempt) -> bool:

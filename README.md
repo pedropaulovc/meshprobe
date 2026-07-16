@@ -204,7 +204,8 @@ uv run meshprobe eval ergonomics \
 ```
 
 Live provider streams and stderr are saved beneath
-`.runs/ergonomics-v1/attempts/<episode>/<agent>/attempt-<n>/`.
+`.runs/ergonomics-v1/attempts/<episode>/<agent>/attempt-<n>/`; the exact prompt is saved there
+as `prompt.txt`.
 The ergonomics pilot currently runs on Linux; Windows support will use AppContainer isolation
 and will not fall back to an unsandboxed agent.
 

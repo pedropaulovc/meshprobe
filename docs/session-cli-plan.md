@@ -115,7 +115,8 @@ attempt directory. The repository, corpus root, private truth, and prior attempt
 mounted. Codex also receives `workspace-write` for its inner managed sandbox so it can create
 `.meshprobe` under the attempt directory. Raw provider streams and stderr remain readable on
 the host at `attempts/<episode>/<agent>/attempt-<n>/{stream.jsonl,stderr.log}` while a run is in
-progress.
+progress. The exact evaluated prompt is persisted beside them as `prompt.txt` and referenced
+from the attempt record in the checkpoint report.
 
 Windows ergonomics runs remain disabled until the pilot supports the same boundary through
 the existing AppContainer launcher, including provider network access, credential-file

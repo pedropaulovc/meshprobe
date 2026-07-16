@@ -95,6 +95,16 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
     assert "token limit" not in prompt.casefold()
 
 
+def test_ergonomics_attempt_persists_exact_prompt(tmp_path: Path) -> None:
+    prompt = "inspect this assigned model exactly"
+    path = tmp_path / "prompt.txt"
+
+    persisted = ergonomics._persist_prompt(tmp_path, prompt)
+
+    assert persisted == path
+    assert path.read_text(encoding="utf-8") == prompt
+
+
 def test_ergonomics_markdown_is_explicitly_diagnostic() -> None:
     report = {
         "summary": {
