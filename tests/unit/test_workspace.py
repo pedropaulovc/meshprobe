@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -266,6 +267,7 @@ def test_renderer_choice_is_persisted_and_reused_for_recovery(
     assert checkpoint["blender"] == "/opt/pinned/blender"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX file mode bits")
 def test_atomic_json_enforces_private_mode(tmp_path: Path) -> None:
     path = tmp_path / "daemon.json"
 

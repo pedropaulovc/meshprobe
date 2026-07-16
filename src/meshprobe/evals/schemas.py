@@ -100,6 +100,7 @@ class EpisodeBudgets(EvalModel):
 
 class EvidenceKind(StrEnum):
     TARGET_VISIBLE = "target_visible"
+    TARGET_SCREEN_SPAN = "target_screen_span"
     TARGET_HIGHLIGHTED = "target_highlighted"
     COMPONENT_ABSENT = "component_absent"
     PROJECTION = "projection"
@@ -125,6 +126,7 @@ class EvidenceRequirement(EvalModel):
             raise ValueError("evidence minimum must not exceed maximum")
         component_kinds = {
             EvidenceKind.TARGET_VISIBLE,
+            EvidenceKind.TARGET_SCREEN_SPAN,
             EvidenceKind.TARGET_HIGHLIGHTED,
             EvidenceKind.COMPONENT_ABSENT,
             EvidenceKind.TARGET_CONTRAST,

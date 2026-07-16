@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -426,6 +427,10 @@ def _evidence_satisfied(
         fraction = _component_fraction(render, component_id)
         if kind is EvidenceKind.TARGET_VISIBLE and _within(fraction, minimum, maximum):
             return True
+        if kind is EvidenceKind.TARGET_SCREEN_SPAN:
+            span = _component_screen_span(render, component_id)
+            if _within(span, minimum, maximum):
+                return True
         if kind is EvidenceKind.COMPONENT_ABSENT and _within(fraction, minimum, maximum):
             return True
         if kind is EvidenceKind.TARGET_HIGHLIGHTED:
@@ -600,11 +605,62 @@ def _component_fraction(render: RenderManifest, component_id: str) -> float:
     if not _artifact_intact(render.evaluator.component_ids):
         return 0.0
     expected = render.evaluator.component_colors[component_id]
-    with Image.open(render.evaluator.component_ids.path) as image:
+    count, total, _width_span, _height_span = _component_mask_stats(
+        render.evaluator.component_ids.path,
+        render.evaluator.component_ids.sha256,
+        expected,
+    )
+    return count / total if total else 0.0
+
+
+def _component_screen_span(render: RenderManifest, component_id: str) -> float:
+    if render.evaluator is None or component_id not in render.evaluator.component_colors:
+        return 0.0
+    if not _artifact_intact(render.evaluator.component_ids):
+        return 0.0
+    expected = render.evaluator.component_colors[component_id]
+    _count, _total, width_span, height_span = _component_mask_stats(
+        render.evaluator.component_ids.path,
+        render.evaluator.component_ids.sha256,
+        expected,
+    )
+    return max(width_span, height_span)
+
+
+@lru_cache(maxsize=512)
+def _component_mask_stats(
+    path: str,
+    sha256: str,
+    expected: tuple[int, int, int],
+) -> tuple[int, int, float, float]:
+    del sha256  # Keep the digest in the cache key so rewritten artifacts cannot reuse results.
+    with Image.open(path) as image:
         pixels = image.convert("RGB")
+        width, height = pixels.size
+        minimum_x = width
+        minimum_y = height
+        maximum_x = -1
+        maximum_y = -1
+        count = 0
         data = cast(Iterable[tuple[int, int, int]], pixels.get_flattened_data())
-        count = sum(pixel == expected for pixel in data)
-        return count / (pixels.width * pixels.height)
+        for index, pixel in enumerate(data):
+            if pixel != expected:
+                continue
+            x = index % width
+            y = index // width
+            count += 1
+            minimum_x = min(minimum_x, x)
+            minimum_y = min(minimum_y, y)
+            maximum_x = max(maximum_x, x)
+            maximum_y = max(maximum_y, y)
+    if not count:
+        return 0, width * height, 0.0, 0.0
+    return (
+        count,
+        width * height,
+        (maximum_x - minimum_x + 1) / width,
+        (maximum_y - minimum_y + 1) / height,
+    )
 
 
 def _highlighted_fraction(render: RenderManifest, component_id: str) -> float:

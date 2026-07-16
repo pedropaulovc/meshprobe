@@ -72,6 +72,8 @@ def test_answer_evidence_and_state_require_context() -> None:
     with pytest.raises(ValidationError, match="component_role"):
         EvidenceRequirement(kind=EvidenceKind.TARGET_VISIBLE)
     with pytest.raises(ValidationError, match="component_role"):
+        EvidenceRequirement(kind=EvidenceKind.TARGET_SCREEN_SPAN, minimum=0.2)
+    with pytest.raises(ValidationError, match="component_role"):
         StateRequirement(predicate=StatePredicate.COMPONENT_DISPLAY, expected="hidden")
 
 

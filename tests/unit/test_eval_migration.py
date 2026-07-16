@@ -265,6 +265,7 @@ def test_ergonomics_mounts_complete_blender_distribution(
     assert ergonomics._blender_runtime() == runtime
 
 
+@pytest.mark.skipif(os.name == "nt", reason="ergonomics runtime uses Bubblewrap paths")
 def test_ergonomics_runtime_preflight_checks_mount_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -295,6 +296,7 @@ def test_ergonomics_runtime_preflight_checks_mount_boundary(
     assert ".python-batch-probe.json" in script
 
 
+@pytest.mark.skipif(os.name == "nt", reason="shell discovery helper uses POSIX executable bits")
 def test_ergonomics_runtime_installs_shell_discovery_helper(tmp_path: Path) -> None:
     runtime = tmp_path / "runtime"
     (runtime / "bin").mkdir(parents=True)

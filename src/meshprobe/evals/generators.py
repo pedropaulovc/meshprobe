@@ -835,6 +835,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             render_group="context_85",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="idler",
+            minimum=0.2,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="idler",
             minimum=0.01,
@@ -868,6 +874,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             render_group="surface_left",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="arrow",
+            minimum=0.1,
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.PROJECTION,
             expected="orthographic",
             render_group="surface_left",
@@ -881,6 +893,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="arrow",
             minimum=0.005,
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="arrow",
+            minimum=0.1,
             render_group="surface_right",
         ),
         EvidenceRequirement(

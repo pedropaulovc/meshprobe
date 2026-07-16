@@ -449,6 +449,7 @@ An episode passes only if every applicable gate succeeds:
 Private image oracles inspect component masks, depth, and luminance. For example:
 
 - a highlighted target must contribute the expected highlight pixels;
+- a small target must meet both exact-mask area and longest-axis screen-span thresholds;
 - a hidden blocker must contribute no visible pixels after the hide operation;
 - a focal-length render must use the expected projection matrix within numeric
   tolerance;

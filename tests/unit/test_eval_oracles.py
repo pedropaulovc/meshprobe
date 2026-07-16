@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
+import meshprobe.evals.oracles as oracles
 from meshprobe.camera import camera_diagnostics
 from meshprobe.evals.generators import (
     GeneratorFamily,
@@ -18,6 +19,7 @@ from meshprobe.evals.oracles import OracleInputs, score_episode
 from meshprobe.evals.schemas import (
     AnswerStatus,
     EpisodeSubmission,
+    EvidenceKind,
     GateStatus,
     Operation,
     StatePredicate,
@@ -308,6 +310,40 @@ def evidence_render(
             crushed_fraction=0,
             clipped_fraction=0,
         ),
+    )
+
+
+def test_target_screen_span_rejects_a_target_that_is_too_small(tmp_path: Path) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
+    render = evidence_render(
+        tmp_path,
+        name="target-span",
+        source_sha256=model.sha256,
+        component_ids=model.component_ids,
+        projection=PerspectiveProjection(focal_length_mm=85),
+        illumination=IlluminationPreset.NEUTRAL_STUDIO,
+        visible_roles={"idler"},
+    )
+    target = model.component_ids["idler"]
+
+    assert oracles._component_screen_span(render, target) == 0.5
+    assert oracles._evidence_satisfied(
+        EvidenceKind.TARGET_SCREEN_SPAN,
+        None,
+        0.5,
+        None,
+        target,
+        (render,),
+        (),
+    )
+    assert not oracles._evidence_satisfied(
+        EvidenceKind.TARGET_SCREEN_SPAN,
+        None,
+        0.6,
+        None,
+        target,
+        (render,),
+        (),
     )
 
 

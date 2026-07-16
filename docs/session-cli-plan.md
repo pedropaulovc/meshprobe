@@ -84,6 +84,12 @@ repinned to protocol 2 and the final package hash. Existing corpora and reports 
 available. A clean-install v6 report is committed, while full public/private qualification is
 deferred.
 
+When qualification datasets are next regenerated, rendered small-feature tasks pair exact
+component-mask area requirements with `target_screen_span` in the same render group. This
+rejects wide context images where the named detail is technically present but too small to
+identify. Existing schema-v2 corpora remain readable, but do not gain this legibility
+requirement until they are regenerated and repinned.
+
 Version 1 evaluation inputs are rejected clearly rather than translated at runtime.
 
 ## CLI ergonomics pilot

@@ -375,6 +375,12 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
             render_group="context_85",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="target",
+            minimum=0.2,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="target",
             minimum=0.005,
@@ -405,6 +411,12 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="target",
             minimum=0.01,
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="target",
+            minimum=0.2,
             render_group="orthographic_rake",
         ),
         EvidenceRequirement(
