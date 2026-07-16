@@ -12,17 +12,28 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
-from meshprobe.camera import orbit_camera
+from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
+    ContactSheetCallout,
     ContactSheetManifest,
     ContactSheetPanel,
+    ContactSheetPanelSpec,
+    CustomIllumination,
+    EnvironmentMap,
+    Illumination,
+    IlluminationPreset,
+    NormalizedGeometryArtifact,
+    OccluderRemovalStep,
+    OcclusionEvidence,
     OrthographicProjection,
     PerspectiveProjection,
+    PresetIllumination,
     Projection,
     RenderManifest,
     SceneManifest,
@@ -32,6 +43,7 @@ from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -40,12 +52,15 @@ from meshprobe.selectors import ComponentIndex
 from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
 
 __all__ = [
+    "DEFAULT_WORKER_TIMEOUT_SECONDS",
     "BlenderController",
     "BlenderWorkerCrashed",
     "BlenderWorkerError",
     "BlenderWorkerTimeout",
     "sha256_file",
 ]
+
+DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
 
 STATE_OPERATIONS = {
     "view.set",
@@ -54,6 +69,16 @@ STATE_OPERATIONS = {
     "component.display",
     "component.mark",
 }
+
+
+def _default_cache_root() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if os.name == "nt" and local_app_data:
+        return Path(local_app_data) / "MeshProbe" / "cache"
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "meshprobe"
+    return Path.home() / ".cache" / "meshprobe"
 
 
 class BlenderWorkerError(RuntimeError):
@@ -71,14 +96,24 @@ class BlenderWorkerTimeout(BlenderWorkerError):
 class BlenderController:
     """Own one factory-clean Blender worker and its line-oriented protocol."""
 
-    def __init__(self, executable: str | Path | None = None, timeout_seconds: float = 30) -> None:
+    def __init__(
+        self,
+        executable: str | Path | None = None,
+        timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root: str | Path | None = None,
+    ) -> None:
         configured = str(executable or os.environ.get("MESHPROBE_BLENDER", "blender"))
         self.executable = Path(configured)
         self.timeout_seconds = timeout_seconds
+        configured_cache = artifact_cache_root or os.environ.get("MESHPROBE_CACHE")
+        self._artifact_cache = ArtifactCache(
+            Path(configured_cache) if configured_cache else _default_cache_root()
+        )
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
+        self._worker_path = Path(__file__).with_name("blender") / "worker.py"
         self.ready_event: dict[str, Any] | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
@@ -99,7 +134,6 @@ class BlenderController:
         self.executable = Path(resolved)
         output_queue: queue.Queue[str | None] = queue.Queue()
         self._lines = output_queue
-        worker_path = Path(__file__).with_name("blender") / "worker.py"
         self._process = subprocess.Popen(
             [
                 str(self.executable),
@@ -107,7 +141,7 @@ class BlenderController:
                 "--factory-startup",
                 "--disable-autoexec",
                 "--python",
-                str(worker_path),
+                str(self._worker_path),
                 "--",
             ],
             stdin=subprocess.PIPE,
@@ -178,17 +212,74 @@ class BlenderController:
             result = self.request(
                 "scene.open", source_path=str(source), source_sha256=before.sha256
             )
-        after = snapshot_source(source)
-        if before != after:
+        after_import = snapshot_source(source)
+        if before != after_import:
             raise BlenderWorkerError("source asset bundle changed during read-only import")
         manifest = SceneManifest.model_validate(result)
         if manifest.source_sha256 != before.sha256:
             raise BlenderWorkerError("worker source hash does not match controller source hash")
+        if self.ready_event is not None:
+            manifest = self._attach_normalized_geometry(manifest, source, before.sha256)
+        after_normalization = snapshot_source(source)
+        if before != after_normalization:
+            raise BlenderWorkerError("source asset bundle changed during geometry normalization")
         self._source_path = source
         self._source_sha256 = manifest.source_sha256
         self._manifest = manifest
         self._source_snapshot = before
         return manifest
+
+    def _attach_normalized_geometry(
+        self,
+        manifest: SceneManifest,
+        source: Path,
+        source_sha256: str,
+    ) -> SceneManifest:
+        importer_version = self._normalizer_version()
+        parameters: dict[str, JsonValue] = {
+            "apply_modifiers": True,
+            "coordinate_system": "gltf_y_up",
+            "format": "glb",
+            "include_cameras": False,
+            "include_lights": False,
+            "units": "meter",
+        }
+
+        def write_outputs(payload: Path) -> None:
+            output = payload / "scene.glb"
+            try:
+                self.request("scene.export_normalized", output_path=str(output))
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self.close()
+                self.start()
+                self.request("scene.open", source_path=str(source), source_sha256=source_sha256)
+                self.request("scene.export_normalized", output_path=str(output))
+
+        entry = self._artifact_cache.publish(
+            source_sha256,
+            importer_version,
+            parameters,
+            write_outputs,
+        )
+        output = entry.outputs[0]
+        normalized = NormalizedGeometryArtifact(
+            cache_key=entry.key,
+            path=str(entry.output_path(output.relative_path)),
+            sha256=output.sha256,
+            bytes=output.bytes,
+            importer_version=entry.importer_version,
+            normalization_parameters=entry.normalization_parameters,
+        )
+        return manifest.model_copy(update={"normalized_geometry": normalized})
+
+    def _normalizer_version(self) -> str:
+        if self.ready_event is None:
+            raise BlenderWorkerError("worker is not ready")
+        blender_version = self.ready_event.get("blender_version")
+        if not isinstance(blender_version, str) or not blender_version:
+            raise BlenderWorkerError("worker did not report its Blender version")
+        worker_path = Path(__file__).with_name("blender") / "worker.py"
+        return f"blender-{blender_version}+meshprobe-normalizer-v1-{sha256_file(worker_path)[:16]}"
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
@@ -208,6 +299,10 @@ class BlenderController:
             return self.render_contact_sheet(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        if isinstance(command, IlluminationSetCommand):
+            arguments["illumination"] = self._cache_environment_map(
+                command.illumination
+            ).model_dump(mode="json")
         try:
             result = self.request(operation, **arguments)
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
@@ -220,6 +315,46 @@ class BlenderController:
             self._accepted_commands.append((operation, arguments))
             return SessionSnapshot.model_validate(result)
         return result
+
+    def _cache_environment_map(
+        self,
+        illumination: Illumination,
+    ) -> Illumination:
+        if not isinstance(illumination, CustomIllumination):
+            return illumination
+        environment = illumination.environment_map
+        if environment is None:
+            return illumination
+        source = Path(environment.path).expanduser().resolve(strict=True)
+        if not source.is_file():
+            raise BlenderWorkerError(f"environment map is not a file: {source}")
+        before = sha256_file(source)
+        if before != environment.sha256:
+            raise BlenderWorkerError("environment map hash does not match its declaration")
+        suffix = source.suffix.lower()
+        if suffix not in {".hdr", ".exr"}:
+            raise BlenderWorkerError("environment map must be an HDR or EXR image")
+
+        def write_output(payload: Path) -> None:
+            shutil.copyfile(source, payload / f"environment{suffix}")
+
+        entry = self._artifact_cache.publish(
+            environment.sha256,
+            "meshprobe-environment-v1",
+            {"extension": suffix, "projection": environment.projection},
+            write_output,
+        )
+        if sha256_file(source) != before:
+            raise BlenderWorkerError("environment map changed while it was cached")
+        output = entry.outputs[0]
+        cached_environment = EnvironmentMap(
+            path=str(entry.output_path(output.relative_path)),
+            sha256=output.sha256,
+            strength=environment.strength,
+            rotation_degrees=environment.rotation_degrees,
+            projection=environment.projection,
+        )
+        return illumination.model_copy(update={"environment_map": cached_environment})
 
     def render_image(
         self,
@@ -307,10 +442,19 @@ class BlenderController:
                 )
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("contact-sheet output must not overwrite a source asset")
+        if command.recipe == "custom_3x3":
+            return self._render_custom_contact_sheet(
+                command,
+                output,
+                panel_paths,
+                evaluator_root,
+                focus_ids,
+            )
 
         accepted_commands = list(self._accepted_commands)
         panels: list[ContactSheetPanel] = []
         removed_occluders: tuple[str, ...] = ()
+        occlusion: OcclusionEvidence | None = None
         try:
             self.request("session.reset")
             self.request("illumination.set", illumination={"preset": "neutral_studio"})
@@ -323,6 +467,7 @@ class BlenderController:
                 30,
                 PerspectiveProjection(),
                 panel_aspect,
+                focus_ids,
             )
             panels.append(
                 self._render_contact_panel(
@@ -345,20 +490,26 @@ class BlenderController:
                 )
             )
 
-            ranking = self.request("component.occluders", component_ids=list(focus_ids))
-            removed_occluders = tuple(item["component_id"] for item in ranking.get("occluders", []))
-            if removed_occluders:
-                self.request(
-                    "component.display",
-                    component_ids=list(removed_occluders),
-                    mode="hidden",
+            occlusion = self._remove_occluders(command, focus_ids)
+            removed_occluders = tuple(step.component_id for step in occlusion.steps)
+            third_caption = "Occluders removed"
+            if not removed_occluders:
+                self._set_orbit(
+                    scene_center,
+                    scene_span,
+                    -45,
+                    20,
+                    PerspectiveProjection(),
+                    panel_aspect,
+                    focus_ids,
                 )
+                third_caption = "Alternate context"
             panels.append(
                 self._render_contact_panel(
                     command,
                     panel_paths[2],
                     3,
-                    "Occluders removed",
+                    third_caption,
                     evaluator_root,
                 )
             )
@@ -386,6 +537,7 @@ class BlenderController:
                     elevation,
                     projection,
                     panel_aspect,
+                    focus_ids,
                 )
                 panels.append(
                     self._render_contact_panel(
@@ -404,15 +556,242 @@ class BlenderController:
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
-        captions = tuple((Path(panel.render.color.path), panel.caption) for panel in panels)
+        captions = tuple(
+            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+        )
         sheet = compose_contact_sheet(captions, output, command.panel_width, command.panel_height)
+        if occlusion is None:
+            raise BlenderWorkerError("contact-sheet occlusion analysis did not run")
         return ContactSheetManifest(
             recipe=command.recipe,
             focus_component_ids=focus_ids,
             removed_occluder_ids=removed_occluders,
+            occlusion=occlusion,
             sheet=sheet,
             panels=tuple(panels),
         )
+
+    def _render_custom_contact_sheet(
+        self,
+        command: RenderContactSheetCommand,
+        output: Path,
+        panel_paths: tuple[Path, ...],
+        evaluator_root: Path | None,
+        focus_ids: tuple[str, ...],
+    ) -> ContactSheetManifest:
+        if self._manifest is None or self._source_snapshot is None:
+            raise BlenderWorkerError("cannot render before a scene is open")
+        accepted_commands = list(self._accepted_commands)
+        panels: list[ContactSheetPanel] = []
+        aspect_ratio = command.panel_width / command.panel_height
+        try:
+            for index, (spec, panel_path) in enumerate(
+                zip(command.panels, panel_paths, strict=True),
+                start=1,
+            ):
+                self.request("session.reset")
+                illumination = spec.illumination or PresetIllumination(
+                    preset=IlluminationPreset.NEUTRAL_STUDIO
+                )
+                illumination = self._cache_environment_map(illumination)
+                self.request(
+                    "illumination.set",
+                    illumination=illumination.model_dump(mode="json"),
+                )
+                if spec.display == "isolated":
+                    self.request(
+                        "component.display",
+                        component_ids=list(focus_ids),
+                        mode="isolated",
+                    )
+                if spec.mark.value != "unmarked":
+                    self.request(
+                        "component.mark",
+                        component_ids=list(focus_ids),
+                        mode=spec.mark.value,
+                    )
+                if spec.camera is not None:
+                    self.request(
+                        "view.set",
+                        camera=spec.camera.model_dump(mode="json"),
+                        focus_component_ids=list(focus_ids),
+                        aspect_ratio=aspect_ratio,
+                    )
+                else:
+                    self._set_custom_orbit(spec, focus_ids, aspect_ratio)
+                panels.append(
+                    self._render_contact_panel(
+                        command,
+                        panel_path,
+                        index,
+                        self._custom_panel_caption(spec, illumination),
+                        evaluator_root,
+                        experiment=spec.experiment,
+                    )
+                )
+        finally:
+            self.request("session.reset")
+            for operation, arguments in accepted_commands:
+                self.request(operation, **arguments)
+
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
+        composed_panels = tuple(
+            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+        )
+        sheet = compose_contact_sheet(
+            composed_panels,
+            output,
+            command.panel_width,
+            command.panel_height,
+        )
+        return ContactSheetManifest(
+            recipe=command.recipe,
+            focus_component_ids=focus_ids,
+            sheet=sheet,
+            panels=tuple(panels),
+        )
+
+    def _set_custom_orbit(
+        self,
+        spec: ContactSheetPanelSpec,
+        focus_ids: tuple[str, ...],
+        aspect_ratio: float,
+    ) -> None:
+        if self._manifest is None or spec.orbit is None:
+            raise BlenderWorkerError("custom orbit is not available")
+        orbit = spec.orbit
+        bounds = (
+            self._focus_bounds(focus_ids) if orbit.target == "focus" else self._manifest.root_bounds
+        )
+        target, _ = self._bounds_center_span(bounds)
+        distance = orbit.distance_mm
+        if spec.experiment == "dolly_zoom":
+            projection = orbit.projection
+            if not isinstance(projection, PerspectiveProjection):
+                raise BlenderWorkerError("dolly_zoom requires perspective projection")
+            if orbit.reference_focal_length_mm is None or orbit.reference_distance_mm is None:
+                raise BlenderWorkerError("dolly_zoom reference is incomplete")
+            distance = (
+                orbit.reference_distance_mm
+                * projection.focal_length_mm
+                / orbit.reference_focal_length_mm
+            )
+        self.request(
+            "view.orbit",
+            target_mm=list(target),
+            azimuth_degrees=orbit.azimuth_degrees,
+            elevation_degrees=orbit.elevation_degrees,
+            roll_degrees=orbit.roll_degrees,
+            distance_mm=distance,
+            projection=orbit.projection.model_dump(mode="json"),
+            focus_component_ids=list(focus_ids),
+            aspect_ratio=aspect_ratio,
+        )
+
+    @staticmethod
+    def _custom_panel_caption(
+        spec: ContactSheetPanelSpec,
+        illumination: Illumination,
+    ) -> str:
+        if spec.camera is not None:
+            projection = spec.camera.projection
+        elif spec.orbit is not None:
+            projection = spec.orbit.projection
+        else:
+            raise BlenderWorkerError("custom panel has no declared view")
+        projection_label = (
+            f"perspective {projection.focal_length_mm:g}mm"
+            if isinstance(projection, PerspectiveProjection)
+            else f"orthographic {projection.scale_mm:g}mm"
+        )
+        illumination_label = illumination.preset
+        properties = [projection_label, str(illumination_label)]
+        if spec.experiment != "declared":
+            properties.append(spec.experiment)
+        return f"{spec.caption} [{'; '.join(properties)}]"[:256]
+
+    def _remove_occluders(
+        self,
+        command: RenderContactSheetCommand,
+        focus_ids: tuple[str, ...],
+    ) -> OcclusionEvidence:
+        width, height = self._visibility_dimensions(command.panel_width, command.panel_height)
+
+        def measure() -> dict[str, Any]:
+            return self.request(
+                "component.visibility",
+                component_ids=list(focus_ids),
+                width=width,
+                height=height,
+            )
+
+        initial = measure()
+        before = float(initial["visible_fraction"])
+        after = before
+        steps: list[OccluderRemovalStep] = []
+        sample_count = 0
+        stop_reason: Literal[
+            "threshold_met_initial",
+            "threshold_met",
+            "budget_exhausted",
+            "no_blockers",
+            "focus_not_projected",
+        ]
+        if not initial.get("projected"):
+            stop_reason = "focus_not_projected"
+        elif before >= command.visibility_threshold:
+            stop_reason = "threshold_met_initial"
+        else:
+            stop_reason = "budget_exhausted"
+            for _ in range(command.occluder_budget):
+                ranking = self.request(
+                    "component.occluders",
+                    component_ids=list(focus_ids),
+                )
+                sample_count = max(sample_count, int(ranking.get("sample_count", 0)))
+                ranked = [
+                    item
+                    for item in ranking.get("occluders", [])
+                    if item["component_id"] not in {step.component_id for step in steps}
+                ]
+                if not ranked:
+                    stop_reason = "no_blockers"
+                    break
+                blocker = ranked[0]
+                component_id = str(blocker["component_id"])
+                self.request(
+                    "component.display",
+                    component_ids=[component_id],
+                    mode="hidden",
+                )
+                measured = measure()
+                after = float(measured["visible_fraction"])
+                steps.append(
+                    OccluderRemovalStep(
+                        component_id=component_id,
+                        ray_hit_count=int(blocker["blocked_rays"]),
+                        visible_fraction_after=after,
+                    )
+                )
+                if after >= command.visibility_threshold:
+                    stop_reason = "threshold_met"
+                    break
+        return OcclusionEvidence(
+            visibility_threshold=command.visibility_threshold,
+            removal_budget=command.occluder_budget,
+            sample_count=sample_count,
+            visible_fraction_before=before,
+            visible_fraction_after=after,
+            steps=tuple(steps),
+            stop_reason=stop_reason,
+        )
+
+    @staticmethod
+    def _visibility_dimensions(width: int, height: int) -> tuple[int, int]:
+        scale = min(1.0, 256 / max(width, height))
+        return max(64, round(width * scale)), max(64, round(height * scale))
 
     def _render_contact_panel(
         self,
@@ -421,6 +800,7 @@ class BlenderController:
         index: int,
         caption: str,
         evaluator_root: Path | None,
+        experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared",
     ) -> ContactSheetPanel:
         evaluator_dir = None
         if evaluator_root is not None:
@@ -436,7 +816,47 @@ class BlenderController:
         )
         render = RenderManifest.model_validate(result)
         self._verify_render_artifacts(render)
-        return ContactSheetPanel(index=index, caption=caption, render=render)
+        return ContactSheetPanel(
+            index=index,
+            caption=caption,
+            render=render,
+            callouts=self._contact_panel_callouts(render, command.focus_component_ids),
+            experiment=experiment,
+        )
+
+    def _contact_panel_callouts(
+        self,
+        render: RenderManifest,
+        focus_component_ids: tuple[str, ...],
+    ) -> tuple[ContactSheetCallout, ...]:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot build callouts before a scene is open")
+        labels = {component.id: component.display_name for component in self._manifest.components}
+        callouts: list[ContactSheetCallout] = []
+        for number, component_id in enumerate(dict.fromkeys(focus_component_ids), start=1):
+            bounds = render.session.camera_diagnostics.projected_bounds.get(component_id)
+            if (
+                bounds is None
+                or bounds.projection_status != "in_front"
+                or bounds.minimum_image_xy is None
+                or bounds.maximum_image_xy is None
+            ):
+                continue
+            center = (
+                (bounds.minimum_image_xy[0] + bounds.maximum_image_xy[0]) / 2,
+                (bounds.minimum_image_xy[1] + bounds.maximum_image_xy[1]) / 2,
+            )
+            if any(value < 0 or value > 1 for value in center):
+                continue
+            callouts.append(
+                ContactSheetCallout(
+                    number=number,
+                    component_id=component_id,
+                    label=labels[component_id][:64],
+                    image_xy=center,
+                )
+            )
+        return tuple(callouts)
 
     @staticmethod
     def _render_output_paths(
@@ -464,6 +884,7 @@ class BlenderController:
         elevation: float,
         projection: Projection,
         aspect_ratio: float,
+        focus_component_ids: tuple[str, ...] = (),
     ) -> None:
         distance = max(span * 2, 100.0)
         if isinstance(projection, PerspectiveProjection):
@@ -475,15 +896,17 @@ class BlenderController:
                 (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25,
                 100.0,
             )
-        camera = orbit_camera(
-            target_mm=target,
+        self.request(
+            "view.orbit",
+            target_mm=list(target),
             azimuth_degrees=azimuth,
             elevation_degrees=elevation,
-            roll_degrees=0,
+            roll_degrees=0.0,
             distance_mm=distance,
-            projection=projection,
+            projection=projection.model_dump(mode="json"),
+            aspect_ratio=aspect_ratio,
+            focus_component_ids=list(focus_component_ids),
         )
-        self.request("view.set", camera=camera.model_dump(mode="json"))
 
     def _focus_bounds(self, focus_ids: tuple[str, ...]) -> Bounds:
         if self._manifest is None:
@@ -618,6 +1041,11 @@ class BlenderController:
 
     def _crash_message(self) -> str:
         process = self._process
-        return_code = process.poll() if process is not None else None
+        return_code = None
+        if process is not None:
+            return_code = process.poll()
+            if return_code is None:
+                with suppress(subprocess.TimeoutExpired):
+                    return_code = process.wait(timeout=1)
         recent_logs = "\n".join(self._logs[-20:])
         return f"Blender worker exited with code {return_code}. Recent output:\n{recent_logs}"

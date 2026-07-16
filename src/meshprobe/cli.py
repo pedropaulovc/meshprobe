@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -10,9 +11,19 @@ import typer
 from pydantic import ValidationError
 
 from meshprobe.camera import orbit_camera
-from meshprobe.controller import BlenderWorkerError
-from meshprobe.evals.factory import CorpusBuild, build_corpus, validate_corpus
-from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderWorkerError
+from meshprobe.evals.curated import ingest_curated_sources, load_catalog
+from meshprobe.evals.curated_build import build_curated_variants
+from meshprobe.evals.curated_tasks import build_curated_corpus
+from meshprobe.evals.factory import CorpusBuild, build_corpus, merge_corpora, validate_corpus
+from meshprobe.evals.generators import PUBLIC_GENERATOR_FAMILIES, GeneratorFamily
+from meshprobe.evals.harness.adapters import (
+    CliJsonlAdapter,
+    McpStdioAdapter,
+    ReferenceAgentAdapter,
+)
+from meshprobe.evals.harness.suite import run_tier
+from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import SceneManifest
 from meshprobe.protocol import (
     Command,
@@ -35,6 +46,12 @@ from meshprobe.session import InspectionSession
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
+
+
+class AgentAdapterKind(StrEnum):
+    CLI = "cli"
+    MCP = "mcp"
+    REFERENCE = "reference"
 
 
 def _load_manifest(path: Path) -> SceneManifest:
@@ -65,7 +82,7 @@ def generate_eval_corpus(
 ) -> None:
     """Generate an atomic, checkpointed procedural evaluation corpus."""
 
-    selected_families = tuple(families) if families else tuple(GeneratorFamily)
+    selected_families = tuple(families) if families else PUBLIC_GENERATOR_FAMILIES
     try:
         build = build_corpus(
             output_root,
@@ -91,6 +108,141 @@ def validate_eval_corpus(
     _emit(_corpus_summary(build))
 
 
+@eval_app.command("curated-generate")
+def generate_curated_eval_corpus(
+    catalog_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    work_root: Annotated[Path, typer.Argument(file_okay=False)],
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    build_version: Annotated[str, typer.Option("--build-version")] = "curated-v1",
+    corpus_version: Annotated[str, typer.Option("--corpus-version")] = "curated-tasks-v1",
+    blender: Annotated[str, typer.Option("--blender")] = "blender",
+    workers: Annotated[int, typer.Option("--workers", min=1, max=64)] = 8,
+) -> None:
+    """Fetch, verify, build, inspect, and publish the pinned curated corpus."""
+
+    try:
+        catalog = load_catalog(catalog_path.resolve())
+        sources = ingest_curated_sources(catalog, work_root / "cache", workers=workers)
+        build = build_curated_variants(
+            catalog,
+            sources,
+            work_root / "builds",
+            version=build_version,
+            blender=blender,
+        )
+        corpus = build_curated_corpus(
+            build,
+            output_root,
+            corpus_version=corpus_version,
+            blender=blender,
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(_corpus_summary(corpus))
+
+
+@eval_app.command("merge")
+def merge_eval_corpora(
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v1",
+) -> None:
+    """Combine validated procedural and curated corpora without rewriting artifacts."""
+
+    try:
+        build = merge_corpora(corpus_roots, output_root, corpus_version=corpus_version)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(_corpus_summary(build))
+
+
+@eval_app.command("pin")
+def pin_eval_tiers(
+    corpus_root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    private: Annotated[bool, typer.Option("--private")] = False,
+    blender: Annotated[str, typer.Option("--blender")] = "blender",
+) -> None:
+    """Pin exact public tiers or one held-out private tier to the current runtime."""
+
+    try:
+        runtime = current_runtime_pin(blender)
+        manifests = (
+            (pin_private_tier(corpus_root, output_root, runtime=runtime),)
+            if private
+            else pin_standard_tiers(corpus_root, output_root, runtime=runtime)
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(
+        {
+            "manifests": [
+                {
+                    "tier": manifest.tier,
+                    "corpus_version": manifest.corpus_version,
+                    "episodes": len(manifest.episodes),
+                    "models": len(manifest.model_sha256),
+                    "path": str(output_root.resolve() / f"{manifest.tier}.json"),
+                }
+                for manifest in manifests
+            ]
+        }
+    )
+
+
+@eval_app.command("run-tier")
+def run_eval_tier(
+    corpus_root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tier_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output_root: Annotated[Path, typer.Argument(file_okay=False)],
+    agent_command_json: Annotated[str | None, typer.Option("--agent-command-json")] = None,
+    adapter_kind: Annotated[AgentAdapterKind, typer.Option("--adapter")] = AgentAdapterKind.CLI,
+    blender: Annotated[str, typer.Option("--blender")] = "blender",
+    workers: Annotated[int, typer.Option("--workers", min=1, max=64)] = 1,
+) -> None:
+    """Run an isolated agent over every episode in an exact pinned tier."""
+
+    try:
+        adapter: ReferenceAgentAdapter | CliJsonlAdapter | McpStdioAdapter
+        if adapter_kind is AgentAdapterKind.REFERENCE:
+            if agent_command_json is not None:
+                raise ValueError("the reference adapter does not accept an agent command")
+            adapter = ReferenceAgentAdapter()
+        else:
+            if agent_command_json is None:
+                raise ValueError("CLI and MCP adapters require --agent-command-json")
+            command_payload = json.loads(agent_command_json)
+            if not isinstance(command_payload, list) or not all(
+                isinstance(item, str) for item in command_payload
+            ):
+                raise ValueError("agent command must be a JSON array of strings")
+            command = tuple(command_payload)
+            adapter = (
+                CliJsonlAdapter(command)
+                if adapter_kind is AgentAdapterKind.CLI
+                else McpStdioAdapter(command)
+            )
+        result = run_tier(
+            corpus_root=corpus_root,
+            tier_manifest_path=tier_manifest,
+            adapter=adapter,
+            output_root=output_root,
+            service_factory=lambda: MeshProbeService(blender=blender),
+            runtime_provider=lambda: current_runtime_pin(blender),
+            workers=workers,
+        )
+    except (json.JSONDecodeError, OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit(
+        {
+            "root": str(result.root),
+            "completed": result.completed,
+            "report": str(result.report_path),
+            "passed_thresholds": result.report.passed_thresholds,
+        }
+    )
+
+
 def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
     return {
         "valid": True,
@@ -107,7 +259,9 @@ def _corpus_summary(build: CorpusBuild) -> dict[str, object]:
 def open_scene(
     source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
+        DEFAULT_WORKER_TIMEOUT_SECONDS
+    ),
 ) -> None:
     """Open a model in a factory-clean Blender worker and print its manifest."""
 
@@ -126,7 +280,9 @@ def open_scene(
 def run_commands(
     commands: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = 30,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1)] = (
+        DEFAULT_WORKER_TIMEOUT_SECONDS
+    ),
 ) -> None:
     """Execute JSONL commands in one persistent Blender session."""
 

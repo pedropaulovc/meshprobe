@@ -11,6 +11,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StringConstraints,
     field_validator,
     model_validator,
@@ -141,6 +142,52 @@ class Camera(ContractModel):
     projection: Projection
 
 
+class ProjectedComponentBounds(ContractModel):
+    projection_status: Literal["in_front", "behind", "crosses_camera_plane"]
+    minimum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
+    maximum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
+    minimum_depth_mm: FiniteFloat
+    maximum_depth_mm: FiniteFloat
+
+    @model_validator(mode="after")
+    def validate_projection(self) -> Self:
+        if self.minimum_depth_mm > self.maximum_depth_mm:
+            raise ValueError("minimum_depth_mm must not exceed maximum_depth_mm")
+        has_minimum = self.minimum_image_xy is not None
+        if has_minimum != (self.maximum_image_xy is not None):
+            raise ValueError("projected image bounds must be both present or both absent")
+        if self.projection_status == "crosses_camera_plane":
+            if has_minimum:
+                raise ValueError("camera-plane intersections cannot have finite image bounds")
+            return self
+        if not has_minimum or self.maximum_image_xy is None or self.minimum_image_xy is None:
+            raise ValueError(
+                "finite projected image bounds are required away from the camera plane"
+            )
+        if any(
+            low > high
+            for low, high in zip(
+                self.minimum_image_xy,
+                self.maximum_image_xy,
+                strict=True,
+            )
+        ):
+            raise ValueError("minimum_image_xy must not exceed maximum_image_xy")
+        return self
+
+
+class CameraDiagnostics(ContractModel):
+    aspect_ratio: PositiveFiniteFloat
+    horizontal_fov_degrees: Annotated[float, Field(gt=0, lt=180, allow_inf_nan=False)] | None
+    vertical_fov_degrees: Annotated[float, Field(gt=0, lt=180, allow_inf_nan=False)] | None
+    right: Vec3
+    up: Vec3
+    forward: Vec3
+    frustum_corners_mm: tuple[Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3]
+    target_depth_mm: FiniteFloat
+    projected_bounds: dict[Identifier, ProjectedComponentBounds]
+
+
 class LightType(StrEnum):
     AREA = "area"
     POINT = "point"
@@ -214,11 +261,20 @@ class PresetIllumination(ContractModel):
     preset: IlluminationPreset
 
 
+class EnvironmentMap(ContractModel):
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    strength: PositiveFiniteFloat = 1.0
+    rotation_degrees: FiniteFloat = 0.0
+    projection: Literal["equirectangular"] = "equirectangular"
+
+
 class CustomIllumination(ContractModel):
     preset: Literal["custom"] = "custom"
     background_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat]
     ambient_strength: NonNegativeFiniteFloat
-    lights: tuple[Light, ...] = Field(min_length=1, max_length=32)
+    lights: tuple[Light, ...] = Field(default=(), max_length=32)
+    environment_map: EnvironmentMap | None = None
 
     @field_validator("lights")
     @classmethod
@@ -231,12 +287,13 @@ class CustomIllumination(ContractModel):
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
         background_contributes = self.ambient_strength > 0 and any(self.background_rgb)
+        environment_contributes = self.environment_map is not None
         light_contributes = any(
             light.color_temperature_k is not None
             or (light.linear_rgb is not None and any(light.linear_rgb))
             for light in self.lights
         )
-        if not background_contributes and not light_contributes:
+        if not background_contributes and not light_contributes and not environment_contributes:
             raise ValueError("custom illumination must have non-zero light output")
         return self
 
@@ -284,6 +341,7 @@ class ComponentVisualState(ContractModel):
 
 class SessionSnapshot(ContractModel):
     camera: Camera
+    camera_diagnostics: CameraDiagnostics
     illumination: Illumination
     components: dict[Identifier, ComponentVisualState]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -300,6 +358,19 @@ class SceneCapabilities(ContractModel):
     component_names: Literal["source", "generated"]
     materials: Literal["preserved", "partial", "absent"]
     textures: Literal["preserved", "partial", "absent"]
+    animations: Literal["absent", "static_pose"] = "absent"
+    procedural_materials: Literal["absent", "unsupported"] = "absent"
+
+
+class NormalizedGeometryArtifact(ContractModel):
+    cache_key: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    bytes: Annotated[int, Field(ge=1)]
+    importer_version: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    normalization_parameters: dict[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)], JsonValue
+    ]
 
 
 class SceneManifest(ContractModel):
@@ -313,6 +384,7 @@ class SceneManifest(ContractModel):
     imported_illumination: Illumination
     capabilities: SceneCapabilities
     warnings: tuple[CapabilityWarning, ...] = ()
+    normalized_geometry: NormalizedGeometryArtifact | None = None
 
     @model_validator(mode="after")
     def validate_graph(self) -> Self:
@@ -457,13 +529,85 @@ class ContactSheetPanel(ContractModel):
     index: Annotated[int, Field(ge=1)]
     caption: Annotated[str, StringConstraints(min_length=1, max_length=256)]
     render: RenderManifest
+    callouts: tuple[ContactSheetCallout, ...] = ()
+    experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
+
+
+class ContactSheetCallout(ContractModel):
+    number: Annotated[int, Field(ge=1, le=99)]
+    component_id: Identifier
+    label: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    image_xy: tuple[
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+        Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
+    ]
+
+
+class ContactSheetOrbit(ContractModel):
+    target: Literal["focus", "scene"] = "focus"
+    azimuth_degrees: FiniteFloat
+    elevation_degrees: FiniteFloat
+    roll_degrees: FiniteFloat = 0.0
+    distance_mm: PositiveFiniteFloat
+    projection: Projection
+    reference_focal_length_mm: PositiveFiniteFloat | None = None
+    reference_distance_mm: PositiveFiniteFloat | None = None
+
+
+class ContactSheetPanelSpec(ContractModel):
+    caption: Annotated[str, StringConstraints(min_length=1, max_length=160)]
+    camera: Camera | None = None
+    orbit: ContactSheetOrbit | None = None
+    illumination: Illumination | None = None
+    display: Literal["context", "isolated"] = "context"
+    mark: MarkMode = MarkMode.HIGHLIGHTED
+    experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
+
+    @model_validator(mode="after")
+    def validate_view_experiment(self) -> Self:
+        if (self.camera is None) == (self.orbit is None):
+            raise ValueError("custom panel must declare exactly one of camera or orbit")
+        if self.experiment == "fixed_pose_focal_study" and (
+            self.camera is None or not isinstance(self.camera.projection, PerspectiveProjection)
+        ):
+            raise ValueError("fixed_pose_focal_study requires a perspective camera")
+        if self.experiment != "dolly_zoom":
+            return self
+        if self.orbit is None or not isinstance(self.orbit.projection, PerspectiveProjection):
+            raise ValueError("dolly_zoom requires a perspective orbit")
+        if self.orbit.reference_focal_length_mm is None or self.orbit.reference_distance_mm is None:
+            raise ValueError("dolly_zoom requires reference focal length and distance")
+        return self
+
+
+class OccluderRemovalStep(ContractModel):
+    component_id: Identifier
+    ray_hit_count: Annotated[int, Field(ge=1)]
+    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
+class OcclusionEvidence(ContractModel):
+    visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    removal_budget: Annotated[int, Field(ge=0, le=32)]
+    sample_count: Annotated[int, Field(ge=0)]
+    visible_fraction_before: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    steps: tuple[OccluderRemovalStep, ...] = ()
+    stop_reason: Literal[
+        "threshold_met_initial",
+        "threshold_met",
+        "budget_exhausted",
+        "no_blockers",
+        "focus_not_projected",
+    ]
 
 
 class ContactSheetManifest(ContractModel):
     schema_version: Literal[1] = 1
-    recipe: Literal["focused_3x3"]
+    recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()
+    occlusion: OcclusionEvidence | None = None
     sheet: ImageArtifact
     panels: tuple[ContactSheetPanel, ...] = Field(min_length=9, max_length=9)
 

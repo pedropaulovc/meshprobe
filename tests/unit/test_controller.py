@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -9,6 +11,7 @@ from typing import Any, cast
 import pytest
 from PIL import Image
 
+from meshprobe.camera import orbit_camera
 from meshprobe.controller import (
     BlenderController,
     BlenderWorkerCrashed,
@@ -18,9 +21,11 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
-    Camera,
+    CustomIllumination,
     DisplayMode,
+    EnvironmentMap,
     MarkMode,
+    OrthographicProjection,
     PerspectiveProjection,
     PresetIllumination,
     RenderManifest,
@@ -43,8 +48,8 @@ from meshprobe.sources import snapshot_source
 
 
 def make_fake_blender(tmp_path: Path, protocol_version: int = 1) -> Path:
-    executable = tmp_path / "fake-blender"
-    executable.write_text(
+    script = tmp_path / "fake_blender_worker.py"
+    script.write_text(
         """#!/usr/bin/env python3
 import json
 import os
@@ -72,6 +77,10 @@ for line in sys.stdin:
             "result": 1,
         }), flush=True)
         continue
+    if command["op"] == "protocol.truncated":
+        sys.stdout.write('{"request_id":"' + command["request_id"])
+        sys.stdout.flush()
+        os._exit(23)
     result = {"operation": command["op"]}
     print(json.dumps({
         "request_id": command["request_id"],
@@ -83,6 +92,15 @@ for line in sys.stdin:
 """.replace("__PROTOCOL_VERSION__", str(protocol_version)),
         encoding="utf-8",
     )
+    if os.name == "nt":
+        executable = tmp_path / "fake-blender.cmd"
+        executable.write_text(
+            f'@"{sys.executable}" "{script}"\r\n',
+            encoding="utf-8",
+        )
+        return executable
+    executable = tmp_path / "fake-blender"
+    script.replace(executable)
     executable.chmod(0o755)
     return executable
 
@@ -160,6 +178,15 @@ def test_worker_nonobject_result_is_rejected(tmp_path: Path) -> None:
         pytest.raises(BlenderWorkerError, match="non-object"),
     ):
         controller.request("protocol.scalar")
+
+
+def test_truncated_worker_response_fails_as_a_crash(tmp_path: Path) -> None:
+    with (
+        BlenderController(executable=make_fake_blender(tmp_path)) as controller,
+        pytest.raises(BlenderWorkerCrashed, match="exited with code 23"),
+    ):
+        controller.request("protocol.truncated")
+    assert any(line.startswith('{"request_id":') for line in controller.logs)
 
 
 def test_open_scene_validates_hash_and_manifest(
@@ -539,6 +566,17 @@ def render_manifest_for(
                 },
                 "projection": {"mode": "perspective", "focal_length_mm": 50},
             },
+            "camera_diagnostics": {
+                "aspect_ratio": 1,
+                "horizontal_fov_degrees": 40,
+                "vertical_fov_degrees": 40,
+                "right": [1, 0, 0],
+                "up": [0, 1, 0],
+                "forward": [0, 0, -1],
+                "frustum_corners_mm": [[0, 0, 0]] * 8,
+                "target_depth_mm": 100,
+                "projected_bounds": {},
+            },
             "illumination": {"preset": "neutral_studio"},
             "components": {},
             "state_sha256": "b" * 64,
@@ -649,10 +687,21 @@ def test_render_validates_worker_artifact_digests(
         controller._verify_render_artifacts(manifest)
 
 
+@pytest.mark.parametrize(
+    ("visibility", "expected_removed", "expected_stop", "third_caption"),
+    [
+        ((0.2, 0.8), ("blocker",), "threshold_met", "Occluders removed"),
+        ((0.8,), (), "threshold_met_initial", "Alternate context"),
+    ],
+)
 def test_contact_sheet_orchestrates_evidence_and_restores_state(
     tmp_path: Path,
     scene_manifest: SceneManifest,
     monkeypatch: pytest.MonkeyPatch,
+    visibility: tuple[float, ...],
+    expected_removed: tuple[str, ...],
+    expected_stop: str,
+    third_caption: str,
 ) -> None:
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")
@@ -670,6 +719,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         ("component.mark", {"component_ids": [focus_id], "mode": "selected"})
     ]
     calls: list[str] = []
+    visibility_measurements = iter(visibility)
 
     def request(operation: str, **arguments: object) -> dict[str, Any]:
         calls.append(operation)
@@ -678,8 +728,21 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         if operation == "illumination.set":
             illumination = PresetIllumination.model_validate(arguments["illumination"])
             return session.set_illumination(illumination).model_dump(mode="json")
-        if operation == "view.set":
-            camera = Camera.model_validate(arguments["camera"])
+        if operation == "view.orbit":
+            projection_payload = cast(dict[str, object], arguments["projection"])
+            projection = (
+                PerspectiveProjection.model_validate(projection_payload)
+                if projection_payload["mode"] == "perspective"
+                else OrthographicProjection.model_validate(projection_payload)
+            )
+            camera = orbit_camera(
+                target_mm=cast(tuple[float, float, float], arguments["target_mm"]),
+                azimuth_degrees=cast(float, arguments["azimuth_degrees"]),
+                elevation_degrees=cast(float, arguments["elevation_degrees"]),
+                roll_degrees=cast(float, arguments["roll_degrees"]),
+                distance_mm=cast(float, arguments["distance_mm"]),
+                projection=projection,
+            )
             return session.set_camera(camera).model_dump(mode="json")
         if operation == "component.mark":
             snapshot = session.mark(
@@ -694,7 +757,16 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
             )
             return snapshot.model_dump(mode="json")
         if operation == "component.occluders":
-            return {"occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}]}
+            return {
+                "sample_count": 6,
+                "occluders": [{"component_id": blocker_id, "blocked_rays": 3, "fraction": 0.5}],
+            }
+        if operation == "component.visibility":
+            fraction = next(visibility_measurements)
+            return {
+                "visible_fraction": fraction,
+                "projected": True,
+            }
         if operation == "render.image":
             output = Path(cast(str, arguments["output_path"]))
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -721,7 +793,15 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     )
 
     assert sheet.focus_component_ids == (focus_id,)
-    assert sheet.removed_occluder_ids == (blocker_id,)
+    resolved_removed = tuple(blocker_id if item == "blocker" else item for item in expected_removed)
+    assert sheet.removed_occluder_ids == resolved_removed
+    assert sheet.occlusion.visible_fraction_before == visibility[0]
+    assert sheet.occlusion.visible_fraction_after == visibility[-1]
+    assert sheet.occlusion.stop_reason == expected_stop
+    if resolved_removed:
+        assert sheet.occlusion.steps[0].ray_hit_count == 3
+    assert sheet.panels[2].caption == third_caption
+    assert len({panel.render.state_sha256 for panel in sheet.panels}) == 9
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
@@ -790,10 +870,11 @@ def test_perspective_orbit_framing_uses_limiting_panel_dimension(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     controller = BlenderController()
-    cameras: list[Camera] = []
+    distances: list[float] = []
 
     def request(operation: str, **arguments: object) -> dict[str, object]:
-        cameras.append(Camera.model_validate(arguments["camera"]))
+        assert operation == "view.orbit"
+        distances.append(cast(float, arguments["distance_mm"]))
         return {}
 
     monkeypatch.setattr(controller, "request", request)
@@ -801,5 +882,39 @@ def test_perspective_orbit_framing_uses_limiting_panel_dimension(
     controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 2.0)
     controller._set_orbit((0, 0, 0), 100, 45, 30, projection, 0.5)
 
-    distances = [sum(value**2 for value in camera.pose.position_mm) ** 0.5 for camera in cameras]
     assert distances[1] > distances[0]
+
+
+def test_environment_maps_are_verified_and_copied_into_content_cache(tmp_path: Path) -> None:
+    source = tmp_path / "studio.exr"
+    source.write_bytes(b"declared environment content")
+    source_hash = sha256_file(source)
+    controller = BlenderController(artifact_cache_root=tmp_path / "cache")
+    illumination = CustomIllumination(
+        background_rgb=(0, 0, 0),
+        ambient_strength=0,
+        environment_map=EnvironmentMap(path=str(source), sha256=source_hash),
+    )
+
+    cached = controller._cache_environment_map(illumination)
+
+    assert isinstance(cached, CustomIllumination)
+    assert cached.environment_map is not None
+    cached_path = Path(cached.environment_map.path)
+    assert cached_path != source
+    assert cached_path.read_bytes() == source.read_bytes()
+    assert cached.environment_map.sha256 == source_hash
+
+
+def test_environment_map_declaration_must_match_file_hash(tmp_path: Path) -> None:
+    source = tmp_path / "studio.hdr"
+    source.write_bytes(b"actual")
+    controller = BlenderController(artifact_cache_root=tmp_path / "cache")
+    illumination = CustomIllumination(
+        background_rgb=(0, 0, 0),
+        ambient_strength=0,
+        environment_map=EnvironmentMap(path=str(source), sha256="a" * 64),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="hash does not match"):
+        controller._cache_environment_map(illumination)

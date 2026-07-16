@@ -57,6 +57,12 @@ class Difficulty(StrEnum):
     FULL_STACK = "full_stack"
 
 
+class ModelSource(StrEnum):
+    PROCEDURAL = "procedural"
+    CURATED = "curated"
+    PRIVATE = "private"
+
+
 class AnswerStatus(StrEnum):
     ANSWERED = "answered"
     INDETERMINATE = "indeterminate"
@@ -108,6 +114,7 @@ class EvidenceRequirement(EvalModel):
     expected: JsonValue = None
     minimum: float | None = None
     maximum: float | None = None
+    render_group: str | None = None
 
     @model_validator(mode="after")
     def validate_bounds(self) -> Self:
@@ -121,6 +128,11 @@ class EvidenceRequirement(EvalModel):
         }
         if self.kind in component_kinds and self.component_role is None:
             raise ValueError(f"{self.kind} evidence requires component_role")
+        if self.render_group is not None and self.kind in {
+            EvidenceKind.CONTACT_SHEET_PANELS,
+            EvidenceKind.DISTINCT_VIEWS,
+        }:
+            raise ValueError(f"{self.kind} cannot belong to a single-render group")
         return self
 
 
@@ -137,6 +149,7 @@ class StateRequirement(EvalModel):
     predicate: StatePredicate
     expected: JsonValue
     component_role: str | None = None
+    state_group: str | None = None
 
     @model_validator(mode="after")
     def validate_role(self) -> Self:
@@ -160,6 +173,7 @@ class EpisodeSpec(EvalModel):
     family: TaskFamily
     episode_class: EpisodeClass
     difficulty: Difficulty
+    model_source: ModelSource
     prompt: Annotated[str, StringConstraints(min_length=20, max_length=8_000)]
     answer_schema: dict[str, JsonValue]
     required_operations: tuple[Operation, ...] = Field(min_length=1)
@@ -182,6 +196,7 @@ class EpisodeGroundTruth(EvalModel):
     schema_version: Literal[1] = 1
     episode_id: OpaqueId
     model_sha256: Sha256
+    generator_family: str
     answer: StructuredAnswer
     component_roles: dict[str, str]
     component_paths: dict[str, str]
@@ -291,6 +306,7 @@ class CorpusManifest(EvalModel):
     corpus_version: str
     tier: CorpusTier
     generator_sha256: Sha256
+    model_sources: tuple[ModelSource, ...] = Field(min_length=1)
     generator_families: tuple[str, ...] = Field(min_length=1)
     generator_seeds: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
     model_sha256: dict[Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")], Sha256]
@@ -299,6 +315,8 @@ class CorpusManifest(EvalModel):
 
     @model_validator(mode="after")
     def validate_episode_hashes(self) -> Self:
+        if len(set(self.model_sources)) != len(self.model_sources):
+            raise ValueError("model sources must be unique")
         if len(set(self.generator_families)) != len(self.generator_families):
             raise ValueError("generator families must be unique")
         if len(set(self.generator_seeds)) != len(self.generator_seeds):
@@ -307,4 +325,40 @@ class CorpusManifest(EvalModel):
             raise ValueError("tier episodes must be unique")
         if set(self.episodes) != self.episode_sha256.keys():
             raise ValueError("episode_sha256 must exactly cover tier episodes")
+        return self
+
+
+class RuntimePin(EvalModel):
+    meshprobe_version: str
+    meshprobe_sha256: Sha256
+    protocol_version: Literal[1] = 1
+    blender_version: str
+    importer_sha256: Sha256
+    render_engines: tuple[str, ...] = Field(min_length=1)
+
+
+class PassThresholds(EvalModel):
+    overall: Annotated[float, Field(ge=0, le=1)]
+    full_stack: Annotated[float, Field(ge=0, le=1)]
+    per_operation: Annotated[float, Field(ge=0, le=1)]
+
+
+class TierManifest(EvalModel):
+    schema_version: Literal[1] = 1
+    tier: CorpusTier
+    corpus_version: str
+    corpus_manifest_sha256: Sha256
+    generator_sha256: Sha256
+    runtime: RuntimePin
+    thresholds: PassThresholds
+    episodes: tuple[OpaqueId, ...] = Field(min_length=1)
+    episode_sha256: dict[OpaqueId, Sha256]
+    model_sha256: dict[str, Sha256]
+
+    @model_validator(mode="after")
+    def validate_membership(self) -> Self:
+        if len(set(self.episodes)) != len(self.episodes):
+            raise ValueError("tier episodes must be unique")
+        if set(self.episodes) != self.episode_sha256.keys():
+            raise ValueError("tier episode hashes must exactly cover its episodes")
         return self

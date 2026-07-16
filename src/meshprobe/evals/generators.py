@@ -30,6 +30,7 @@ from meshprobe.evals.schemas import (
     EpisodeSpec,
     EvidenceKind,
     EvidenceRequirement,
+    ModelSource,
     Operation,
     StatePredicate,
     StateRequirement,
@@ -56,6 +57,26 @@ class GeneratorFamily(StrEnum):
     COPLANAR_MARKER = "coplanar_marker"
     MISSING_MATERIAL = "missing_material"
     AMBIGUOUS_TWIN = "ambiguous_twin"
+
+
+PUBLIC_GENERATOR_FAMILIES = (
+    GeneratorFamily.HIDDEN_CLIP,
+    GeneratorFamily.STAMPED_ARROW,
+    GeneratorFamily.COAXIAL_DEPTH,
+    GeneratorFamily.CLEARANCE_SLOT,
+    GeneratorFamily.OCCLUDED_FASTENER,
+    GeneratorFamily.AXIAL_GAP,
+    GeneratorFamily.MIRRORED_HANDEDNESS,
+    GeneratorFamily.DUPLICATE_NAME,
+    GeneratorFamily.NESTED_HIERARCHY,
+    GeneratorFamily.REFLECTIVE_CAVITY,
+    GeneratorFamily.LOW_CONTRAST_RELIEF,
+    GeneratorFamily.EXTREME_SCALE,
+    GeneratorFamily.TRANSPARENT_SHELL,
+    GeneratorFamily.COPLANAR_MARKER,
+    GeneratorFamily.MISSING_MATERIAL,
+    GeneratorFamily.AMBIGUOUS_TWIN,
+)
 
 
 class MetamorphicVariant(StrEnum):
@@ -177,7 +198,10 @@ def build_model(
     names = _component_names(rng)
     if selected_variant is MetamorphicVariant.RENAME:
         names = _component_names(random.Random(_seed_int(family, seed) ^ 0x5A17C0DE))
-    if family in {GeneratorFamily.DUPLICATE_NAME, GeneratorFamily.AMBIGUOUS_TWIN}:
+    if family in {
+        GeneratorFamily.DUPLICATE_NAME,
+        GeneratorFamily.AMBIGUOUS_TWIN,
+    }:
         names["distractor"] = names["idler"]
 
     mirror = (
@@ -193,7 +217,7 @@ def build_model(
         horizontal_flip = {"left": "right", "right": "left"}
         arrow_direction = horizontal_flip.get(arrow_direction, arrow_direction)
     clearance_mm = round(rng.uniform(80.0, 420.0), 3)
-    near_ring = rng.choice(("near_ring", "far_ring"))
+    near_ring_position = rng.choice(("near_ring", "far_ring"))
 
     muted = MaterialSpec("muted-alloy", (0.14, 0.16, 0.18, 1), metallic=0.75, roughness=0.18)
     steel = MaterialSpec("brushed-steel", (0.42, 0.48, 0.54, 1), metallic=0.8, roughness=0.32)
@@ -348,8 +372,8 @@ def build_model(
     )
     ring_rotation = (math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))
     ring_positions = {
-        near_ring: -0.45,
-        "far_ring" if near_ring == "near_ring" else "near_ring": 0.55,
+        near_ring_position: -0.45,
+        "far_ring" if near_ring_position == "near_ring" else "near_ring": 0.55,
     }
     for role, radius in (("near_ring", 0.9), ("far_ring", 0.62)):
         scene.add(
@@ -410,14 +434,28 @@ def build_model(
             )
         )
 
-    role_order = None
+    order_seed = _seed_int(family, seed) ^ 0xA11CE5EED
     if selected_variant is MetamorphicVariant.REORDER_HIERARCHY:
-        role_order = _random_topological_order(scene, rng)
+        order_seed ^= 0x5EED0F00D
+    role_order = _random_topological_order(scene, random.Random(order_seed))
+    ring_world_positions = {
+        role: _apply_root_transform(
+            (0.0, ring_y, 3.7),
+            translation=root_translation,
+            rotation_xyzw=root_rotation,
+            scale=root_scale,
+        )
+        for role, ring_y in ring_positions.items()
+    }
+    nearer_ring_role = min(
+        ring_world_positions,
+        key=lambda role: math.dist(ring_world_positions[role], camera_position),
+    )
     semantic_answers: dict[str, str | float | int] = {
         "contacted_shaft": contacted_shaft,
         "clip_side": "positive" if clip_sign > 0 else "negative",
         "arrow_direction": arrow_direction,
-        "near_ring_role": near_ring,
+        "near_ring_role": nearer_ring_role,
         "clearance_mm": round(clearance_mm * physical_scale, 3),
         "handedness": "mirrored" if mirror < 0 else "standard",
     }
@@ -450,7 +488,11 @@ def publish_model(generated: GeneratedModel, models_dir: Path) -> PublishedModel
     )
 
 
-def generate_episodes(model: PublishedModel) -> tuple[GeneratedEpisode, ...]:
+def generate_episodes(
+    model: PublishedModel,
+    *,
+    model_source: ModelSource = ModelSource.PROCEDURAL,
+) -> tuple[GeneratedEpisode, ...]:
     tasks = (
         (TaskFamily.COMPONENT_DISCOVERY, _discovery_operations()),
         (FAMILY_TASKS[model.generated.family], _reasoning_operations()),
@@ -458,7 +500,7 @@ def generate_episodes(model: PublishedModel) -> tuple[GeneratedEpisode, ...]:
         (TaskFamily.FULL_INVESTIGATION, tuple(Operation)),
     )
     return tuple(
-        _episode(model, index, family, operations)
+        _episode(model, index, family, operations, model_source)
         for index, (family, operations) in enumerate(tasks)
     )
 
@@ -468,31 +510,21 @@ def _episode(
     index: int,
     task_family: TaskFamily,
     operations: tuple[Operation, ...],
+    model_source: ModelSource,
 ) -> GeneratedEpisode:
     digest = hashlib.sha256(
         f"{model.generated.family}:{model.generated.seed}:{index}".encode()
     ).hexdigest()
     episode_id = f"ep_{digest[:24]}"
-    answers: dict[str, JsonValue] = {
-        key: value for key, value in model.generated.semantic_answers.items()
-    }
-    answers["target_component_id"] = model.component_ids["idler"]
+    answers = _answer_values(model, index)
     status = AnswerStatus.ANSWERED
     conflicts: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
-    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN and index == 1:
+    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN and index > 0:
         status = AnswerStatus.INDETERMINATE
         answers = {}
         conflicts = (model.component_ids["idler"], model.component_ids["distractor"])
-    if model.generated.family is GeneratorFamily.MISSING_MATERIAL and index == 1:
-        status = AnswerStatus.INDETERMINATE
-        answers = {}
-        missing = ("arrow material",)
-    if index == 3 and model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN:
-        status = AnswerStatus.INDETERMINATE
-        answers = {}
-        conflicts = (model.component_ids["idler"], model.component_ids["distractor"])
-    if index == 3 and model.generated.family is GeneratorFamily.MISSING_MATERIAL:
+    if model.generated.family is GeneratorFamily.MISSING_MATERIAL and index > 0:
         status = AnswerStatus.INDETERMINATE
         answers = {}
         missing = ("arrow material",)
@@ -511,8 +543,9 @@ def _episode(
         family=task_family,
         episode_class=_episode_class(model, index),
         difficulty=tuple(Difficulty)[index],
+        model_source=model_source,
         prompt=prompt,
-        answer_schema=_answer_schema(),
+        answer_schema=_answer_schema(index),
         required_operations=operations,
         budgets=EpisodeBudgets(
             tool_calls=40 if index == 0 else 120,
@@ -523,10 +556,11 @@ def _episode(
         ),
     )
     state_requirements = () if index == 0 else _state_requirements(index)
-    evidence_requirements = () if index == 0 else _evidence_requirements(index)
+    evidence_requirements = () if index == 0 else _evidence_requirements(model, index)
     truth = EpisodeGroundTruth(
         episode_id=episode_id,
         model_sha256=model.sha256,
+        generator_family=model.generated.family.value,
         answer=answer,
         component_roles=model.component_ids,
         component_paths=model.component_paths,
@@ -543,21 +577,36 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
     if index == 0:
         return (
             f"Open the assigned model, locate every component named {target!r}, inspect the exact "
-            "hierarchy candidates, and return the stable ID and full path of the intended idler."
+            "hierarchy candidates, and return target_component_id plus target_component_path for "
+            "the intended idler."
+        )
+    qualification = ""
+    if model.generated.family is GeneratorFamily.MISSING_MATERIAL:
+        qualification = (
+            " The conclusion also requires the arrow material. If the capability report proves "
+            "that material is absent, return indeterminate and name the missing capability."
+        )
+    if model.generated.family is GeneratorFamily.AMBIGUOUS_TWIN:
+        qualification = (
+            " If the named idler cannot be uniquely distinguished, return indeterminate with "
+            "every conflicting stable component ID in hierarchy order."
         )
     if index == 1:
         return (
             f"Investigate {target!r}. Determine the numbered shaft it contacts, "
             "the local-X side carrying its retaining clip, the stamped arrow direction, and which "
-            "coaxial ring is nearer the starting camera. Use camera, display, marking, projection, "
-            "and illumination changes required by the geometry; submit rendered evidence."
+            "coaxial ring is nearer the starting camera. Submit an 85 mm perspective context "
+            "render with the cover hidden and target highlighted, isolated orthographic arrow "
+            "renders under both raking directions, and an orthographic backlit gap render. Return "
+            "the exact fields declared by the answer schema." + qualification
         )
     if index == 2:
         return (
             f"Produce comparative evidence for {target!r}: an 85 mm perspective context render, an "
             "orthographic clearance view, opposing raking-light detail evidence, "
             "a backlit gap view, "
-            "and a focused 3x3 contact sheet. Report the geometric conclusions in structured JSON."
+            "and a focused 3x3 contact sheet. Report every field declared by the answer schema."
+            + qualification
         )
     return (
         f"Perform a complete inspection of {target!r}. Exercise every MeshProbe operation, "
@@ -565,28 +614,95 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
         "distinguish the nearer coaxial ring, measure the declared clearance, hide the cover, "
         "highlight the target, submit "
         "the focused contact sheet and supporting renders, then reset the session before answering."
+        + qualification
     )
 
 
-def _answer_schema() -> dict[str, JsonValue]:
+def _answer_values(model: PublishedModel, index: int) -> dict[str, JsonValue]:
+    values: dict[str, JsonValue] = {
+        "target_component_id": model.component_ids["idler"],
+        "target_component_path": model.component_paths["idler"],
+    }
+    if index == 0:
+        return values
+    contacted_shaft = int(model.generated.semantic_answers["contacted_shaft"])
+    near_ring_role = str(model.generated.semantic_answers["near_ring_role"])
+    values.update(
+        {
+            "contacted_shaft_component_id": model.component_ids[
+                "shaft_one" if contacted_shaft == 1 else "shaft_two"
+            ],
+            "clip_side": model.generated.semantic_answers["clip_side"],
+            "arrow_direction": model.generated.semantic_answers["arrow_direction"],
+            "nearer_ring_component_id": model.component_ids[near_ring_role],
+        }
+    )
+    if index >= 2:
+        values["clearance_mm"] = model.generated.semantic_answers["clearance_mm"]
+    return values
+
+
+def _answer_schema(index: int) -> dict[str, JsonValue]:
+    properties: dict[str, JsonValue] = {
+        "target_component_id": {"type": "string", "description": "stable component ID"},
+        "target_component_path": {"type": "string", "description": "complete hierarchy path"},
+    }
+    if index > 0:
+        properties.update(
+            {
+                "contacted_shaft_component_id": {
+                    "type": "string",
+                    "description": "stable ID of the shaft geometrically contacted by the idler",
+                },
+                "clip_side": {
+                    "enum": ["positive", "negative"],
+                    "description": "retaining-clip side along the idler parent-local X axis",
+                },
+                "arrow_direction": {"enum": ["left", "right", "up", "down"]},
+                "nearer_ring_component_id": {
+                    "type": "string",
+                    "description": "stable ID of the coaxial ring nearer the starting camera",
+                },
+            }
+        )
+    if index >= 2:
+        properties["clearance_mm"] = {
+            "type": "number",
+            "description": "orthographically measured gap between the clearance blocks in mm",
+        }
+    required_values: list[JsonValue] = [key for key in properties]
     return {
         "type": "object",
         "required": ["status", "values"],
         "additionalProperties": False,
         "properties": {
             "status": {"enum": ["answered", "indeterminate"]},
-            "values": {"type": "object"},
+            "values": {
+                "type": "object",
+                "properties": properties,
+                "additionalProperties": False,
+            },
             "conflicting_component_ids": {"type": "array", "items": {"type": "string"}},
             "missing_capabilities": {"type": "array", "items": {"type": "string"}},
         },
+        "allOf": [
+            {
+                "if": {"properties": {"status": {"const": "answered"}}},
+                "then": {"properties": {"values": {"required": required_values}}},
+            }
+        ],
     }
 
 
 def _episode_class(model: PublishedModel, index: int) -> EpisodeClass:
-    if model.generated.family in {
-        GeneratorFamily.AMBIGUOUS_TWIN,
-        GeneratorFamily.MISSING_MATERIAL,
-    } and index in {1, 3}:
+    if (
+        model.generated.family
+        in {
+            GeneratorFamily.AMBIGUOUS_TWIN,
+            GeneratorFamily.MISSING_MATERIAL,
+        }
+        and index > 0
+    ):
         return EpisodeClass.NEGATIVE
     if index == 0 or (index == 3 and model.generated.seed % 4 == 0):
         return EpisodeClass.POSITIVE
@@ -632,19 +748,74 @@ def _evidence_operations() -> tuple[Operation, ...]:
 
 def _state_requirements(index: int) -> tuple[StateRequirement, ...]:
     requirements = [
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="orthographic"),
-        StateRequirement(predicate=StatePredicate.PROJECTION_MODE, expected="perspective"),
-        StateRequirement(predicate=StatePredicate.FOCAL_LENGTH_MM, expected=85.0),
-        StateRequirement(predicate=StatePredicate.ILLUMINATION_PRESET, expected="raking_left"),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="perspective",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.FOCAL_LENGTH_MM,
+            expected=85.0,
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+            state_group="context_85",
+        ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_DISPLAY,
             component_role="cover",
             expected="hidden",
+            state_group="context_85",
         ),
         StateRequirement(
             predicate=StatePredicate.COMPONENT_MARK,
             component_role="idler",
             expected="highlighted",
+            state_group="context_85",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="raking_left",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="arrow",
+            expected="isolated",
+            state_group="surface_left",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="raking_right",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="arrow",
+            expected="isolated",
+            state_group="surface_right",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+            state_group="gap_backlit",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="backlit",
+            state_group="gap_backlit",
         ),
     ]
     if index == 3:
@@ -654,33 +825,113 @@ def _state_requirements(index: int) -> tuple[StateRequirement, ...]:
     return tuple(requirements)
 
 
-def _evidence_requirements(index: int) -> tuple[EvidenceRequirement, ...]:
+def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceRequirement, ...]:
     requirements = [
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="idler",
             minimum=0.02,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="idler",
             minimum=0.01,
+            render_group="context_85",
         ),
         EvidenceRequirement(
             kind=EvidenceKind.COMPONENT_ABSENT,
             component_role="cover",
             maximum=0.0,
+            render_group="context_85",
         ),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="orthographic"),
-        EvidenceRequirement(kind=EvidenceKind.PROJECTION, expected="perspective"),
-        EvidenceRequirement(kind=EvidenceKind.FOCAL_LENGTH, expected=85.0),
-        EvidenceRequirement(kind=EvidenceKind.ILLUMINATION, expected="raking_left"),
         EvidenceRequirement(
-            kind=EvidenceKind.TARGET_CONTRAST,
+            kind=EvidenceKind.PROJECTION,
+            expected="perspective",
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.FOCAL_LENGTH,
+            expected=85.0,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="neutral_studio",
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
             component_role="arrow",
-            minimum=0.04,
+            minimum=0.005,
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="raking_left",
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="arrow",
+            minimum=0.005,
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="raking_right",
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="gap_left",
+            minimum=0.001,
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_VISIBLE,
+            component_role="gap_right",
+            minimum=0.001,
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.PROJECTION,
+            expected="orthographic",
+            render_group="gap_backlit",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.ILLUMINATION,
+            expected="backlit",
+            render_group="gap_backlit",
         ),
     ]
+    if model.generated.family is not GeneratorFamily.MISSING_MATERIAL:
+        requirements.extend(
+            (
+                EvidenceRequirement(
+                    kind=EvidenceKind.TARGET_CONTRAST,
+                    component_role="arrow",
+                    minimum=0.04,
+                    render_group="surface_left",
+                ),
+                EvidenceRequirement(
+                    kind=EvidenceKind.TARGET_CONTRAST,
+                    component_role="arrow",
+                    minimum=0.04,
+                    render_group="surface_right",
+                ),
+            )
+        )
     if index >= 2:
         requirements.extend(
             (
@@ -712,10 +963,14 @@ def _component_names(rng: random.Random) -> dict[str, str]:
     )
     pairs = [(adjective, noun) for adjective in _ADJECTIVES for noun in _NOUNS]
     rng.shuffle(pairs)
+    suffixes = rng.sample(range(10, 100), len(roles))
     return {
-        role: f"{adjective}-{noun}-{index:02d}"
-        for index, (role, (adjective, noun)) in enumerate(
-            zip(roles, pairs[: len(roles)], strict=True)
+        role: f"{adjective}-{noun}-{suffix:02d}"
+        for role, (adjective, noun), suffix in zip(
+            roles,
+            pairs[: len(roles)],
+            suffixes,
+            strict=True,
         )
     }
 
@@ -732,6 +987,34 @@ def _random_topological_order(scene: GlbScene, rng: random.Random) -> tuple[str,
             emitted.append(role)
             del pending[role]
     return tuple(emitted)
+
+
+def _apply_root_transform(
+    point: tuple[float, float, float],
+    *,
+    translation: tuple[float, float, float],
+    rotation_xyzw: tuple[float, float, float, float],
+    scale: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    scaled = tuple(value * factor for value, factor in zip(point, scale, strict=True))
+    x, y, z, w = rotation_xyzw
+    q_vector = (x, y, z)
+    cross = (
+        q_vector[1] * scaled[2] - q_vector[2] * scaled[1],
+        q_vector[2] * scaled[0] - q_vector[0] * scaled[2],
+        q_vector[0] * scaled[1] - q_vector[1] * scaled[0],
+    )
+    twice_cross = tuple(2 * value for value in cross)
+    nested = (
+        q_vector[1] * twice_cross[2] - q_vector[2] * twice_cross[1],
+        q_vector[2] * twice_cross[0] - q_vector[0] * twice_cross[2],
+        q_vector[0] * twice_cross[1] - q_vector[1] * twice_cross[0],
+    )
+    rotated = tuple(
+        original + w * first + second
+        for original, first, second in zip(scaled, twice_cross, nested, strict=True)
+    )
+    return tuple(offset + value for offset, value in zip(translation, rotated, strict=True))  # type: ignore[return-value]
 
 
 def _seed_int(family: GeneratorFamily, seed: int) -> int:

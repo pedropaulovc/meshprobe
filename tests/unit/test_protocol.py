@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     ComponentFindCommand,
+    RenderContactSheetCommand,
     RenderImageCommand,
     command_json_schema,
     parse_command_json,
@@ -103,5 +104,78 @@ def test_render_command_bounds_engine_and_samples() -> None:
                 "op": "render.image",
                 "output_path": "evidence.png",
                 "width": 20_000,
+            }
+        )
+
+
+def test_custom_contact_sheet_requires_nine_declared_panels() -> None:
+    panel = {
+        "caption": "inspection",
+        "orbit": {
+            "azimuth_degrees": 45,
+            "elevation_degrees": 20,
+            "distance_mm": 1_000,
+            "projection": {"mode": "orthographic", "scale_mm": 500},
+        },
+        "illumination": {"preset": "raking_left"},
+    }
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "custom-sheet",
+            "op": "render.contact_sheet",
+            "recipe": "custom_3x3",
+            "focus_component_ids": ["cmp_target"],
+            "output_path": "sheet.png",
+            "panels": [panel] * 9,
+        }
+    )
+
+    assert isinstance(command, RenderContactSheetCommand)
+    assert len(command.panels) == 9
+    with pytest.raises(ValidationError, match="exactly nine"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "short-sheet",
+                "op": "render.contact_sheet",
+                "recipe": "custom_3x3",
+                "focus_component_ids": ["cmp_target"],
+                "output_path": "sheet.png",
+                "panels": [panel] * 8,
+            }
+        )
+    with pytest.raises(ValidationError, match="does not accept custom"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "focused-sheet",
+                "op": "render.contact_sheet",
+                "focus_component_ids": ["cmp_target"],
+                "output_path": "sheet.png",
+                "panels": [panel],
+            }
+        )
+
+
+def test_dolly_zoom_requires_perspective_reference() -> None:
+    with pytest.raises(ValidationError, match="reference focal length and distance"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "dolly-sheet",
+                "op": "render.contact_sheet",
+                "recipe": "custom_3x3",
+                "focus_component_ids": ["cmp_target"],
+                "output_path": "sheet.png",
+                "panels": [
+                    {
+                        "caption": "dolly",
+                        "experiment": "dolly_zoom",
+                        "orbit": {
+                            "azimuth_degrees": 45,
+                            "elevation_degrees": 20,
+                            "distance_mm": 1_000,
+                            "projection": {"mode": "perspective", "focal_length_mm": 85},
+                        },
+                    }
+                ]
+                * 9,
             }
         )

@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from meshprobe.evals.factory import build_corpus
+from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.evals.harness.adapters import AdapterRun, CliJsonlAdapter
+from meshprobe.evals.harness.broker import EvaluationBroker
+from meshprobe.evals.harness.suite import _run_identity, run_tier
+from meshprobe.evals.schemas import (
+    CorpusTier,
+    EpisodeGroundTruth,
+    EpisodeSpec,
+    EpisodeSubmission,
+    PassThresholds,
+    RuntimePin,
+    TierManifest,
+)
+from meshprobe.protocol import Command
+from meshprobe.service import CommandResponse
+from meshprobe.sources import sha256_file
+
+
+class NoopService:
+    def execute_for_evaluation(
+        self,
+        command: Command,
+        *,
+        evaluator_output_dir: str,
+    ) -> CommandResponse:
+        del command, evaluator_output_dir
+        raise AssertionError("answer-only adapter must not execute tools")
+
+    def close(self) -> None:
+        pass
+
+
+class AnswerAdapter:
+    command = ("test-answer-agent",)
+
+    def __init__(self, answers: dict[str, EpisodeSubmission]) -> None:
+        self.answers = answers
+        self.calls = 0
+
+    def run(
+        self,
+        *,
+        spec: EpisodeSpec,
+        broker: EvaluationBroker,
+        input_root: Path,
+        artifact_root: Path,
+    ) -> AdapterRun:
+        del broker, input_root, artifact_root
+        self.calls += 1
+        return AdapterRun(
+            submission=self.answers[spec.episode_id],
+            returncode=0,
+            stderr="",
+            elapsed_seconds=0.01,
+            timed_out=False,
+            protocol_error=None,
+        )
+
+
+class FailingAdapter:
+    command = ("test-failing-agent",)
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(
+        self,
+        *,
+        spec: EpisodeSpec,
+        broker: EvaluationBroker,
+        input_root: Path,
+        artifact_root: Path,
+    ) -> AdapterRun:
+        del spec, broker, input_root, artifact_root
+        self.calls += 1
+        raise RuntimeError("adapter failed")
+
+
+def test_tier_runner_checkpoints_reports_and_resumes(tmp_path: Path) -> None:
+    corpus = build_corpus(
+        tmp_path / "corpora",
+        corpus_version="test-v1",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    answers: dict[str, EpisodeSubmission] = {}
+    for episode_id in corpus.manifest.episodes:
+        truth = EpisodeGroundTruth.model_validate_json(
+            (corpus.root / "private" / "ground_truth" / f"{episode_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        answers[episode_id] = EpisodeSubmission(
+            episode_id=episode_id,
+            answer=truth.answer,
+        )
+    adapter = AnswerAdapter(answers)
+    tier = TierManifest(
+        tier=CorpusTier.SMOKE,
+        corpus_version=corpus.manifest.corpus_version,
+        corpus_manifest_sha256=sha256_file(corpus.root / "public" / "manifest.json"),
+        generator_sha256=corpus.manifest.generator_sha256,
+        runtime=RuntimePin(
+            meshprobe_version="test",
+            meshprobe_sha256="b" * 64,
+            blender_version="test",
+            importer_sha256="a" * 64,
+            render_engines=("eevee",),
+        ),
+        thresholds=PassThresholds(overall=0, full_stack=0, per_operation=0),
+        episodes=corpus.manifest.episodes,
+        episode_sha256=corpus.manifest.episode_sha256,
+        model_sha256=corpus.manifest.model_sha256,
+    )
+    tier_path = tmp_path / "smoke.json"
+    tier_path.write_text(tier.model_dump_json(), encoding="utf-8")
+
+    first = run_tier(
+        corpus_root=corpus.root,
+        tier_manifest_path=tier_path,
+        adapter=adapter,
+        output_root=tmp_path / "runs",
+        service_factory=NoopService,
+        runtime_provider=lambda: tier.runtime,
+        workers=2,
+    )
+    checkpoint = first.root / "checkpoint.json"
+    checkpoint_payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    checkpoint_payload["completed"].pop()
+    checkpoint.write_text(json.dumps(checkpoint_payload), encoding="utf-8")
+    second = run_tier(
+        corpus_root=corpus.root,
+        tier_manifest_path=tier_path,
+        adapter=adapter,
+        output_root=tmp_path / "runs",
+        service_factory=NoopService,
+        runtime_provider=lambda: tier.runtime,
+        workers=2,
+    )
+
+    assert first.completed == 4
+    assert first.report_path.is_file()
+    assert first.report.provenance.workers == 2
+    assert second == first
+    assert adapter.calls == 4
+
+    failing = FailingAdapter()
+    with pytest.raises(RuntimeError, match="adapter failed"):
+        run_tier(
+            corpus_root=corpus.root,
+            tier_manifest_path=tier_path,
+            adapter=failing,
+            output_root=tmp_path / "failed-runs",
+            service_factory=NoopService,
+            runtime_provider=lambda: tier.runtime,
+            workers=2,
+        )
+    assert failing.calls <= 2
+
+
+def test_run_identity_changes_when_agent_script_changes(tmp_path: Path) -> None:
+    corpus_manifest = tmp_path / "corpus.json"
+    tier_manifest = tmp_path / "tier.json"
+    agent = tmp_path / "agent.py"
+    corpus_manifest.write_text("corpus", encoding="utf-8")
+    tier_manifest.write_text("tier", encoding="utf-8")
+    agent.write_text("print('first')", encoding="utf-8")
+    adapter = CliJsonlAdapter((sys.executable, str(agent)))
+    first = _run_identity(corpus_manifest, tier_manifest, adapter)
+    different_workers = _run_identity(corpus_manifest, tier_manifest, adapter, workers=2)
+
+    agent.write_text("print('second')", encoding="utf-8")
+
+    assert different_workers != first
+    assert _run_identity(corpus_manifest, tier_manifest, adapter) != first

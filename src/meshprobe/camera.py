@@ -5,7 +5,15 @@ from __future__ import annotations
 import math
 from typing import cast
 
-from meshprobe.models import Camera, Pose, Projection, Quaternion, Vec3
+from meshprobe.models import (
+    Camera,
+    CameraDiagnostics,
+    OrthographicProjection,
+    Pose,
+    Projection,
+    Quaternion,
+    Vec3,
+)
 
 _EPSILON = 1e-12
 
@@ -45,6 +53,85 @@ def orbit_camera(
     return Camera(
         pose=Pose(position_mm=position, orientation_xyzw=orientation),
         projection=projection,
+    )
+
+
+def camera_diagnostics(
+    camera: Camera,
+    *,
+    target_mm: Vec3,
+    aspect_ratio: float = 1.0,
+) -> CameraDiagnostics:
+    """Describe camera basis and world-space frustum without a renderer."""
+
+    right = _rotate_vector(camera.pose.orientation_xyzw, (1.0, 0.0, 0.0))
+    up = _rotate_vector(camera.pose.orientation_xyzw, (0.0, 1.0, 0.0))
+    forward = _rotate_vector(camera.pose.orientation_xyzw, (0.0, 0.0, -1.0))
+    projection = camera.projection
+    near = projection.near_clip_mm
+    far = projection.far_clip_mm
+    frustum: list[Vec3] = []
+    for depth in (near, far):
+        if isinstance(projection, OrthographicProjection):
+            half_height = projection.scale_mm / 2
+            half_width = half_height * aspect_ratio
+        else:
+            half_width = depth * math.tan(
+                math.radians(projection.horizontal_fov_degrees(aspect_ratio)) / 2
+            )
+            half_height = depth * math.tan(
+                math.radians(projection.vertical_fov_degrees(aspect_ratio)) / 2
+            )
+        for vertical in (-half_height, half_height):
+            for horizontal in (-half_width, half_width):
+                frustum.append(
+                    cast(
+                        Vec3,
+                        tuple(
+                            origin
+                            + forward_axis * depth
+                            + right_axis * horizontal
+                            + up_axis * vertical
+                            for origin, forward_axis, right_axis, up_axis in zip(
+                                camera.pose.position_mm,
+                                forward,
+                                right,
+                                up,
+                                strict=True,
+                            )
+                        ),
+                    )
+                )
+    target_offset = cast(
+        Vec3,
+        tuple(
+            target - origin
+            for target, origin in zip(target_mm, camera.pose.position_mm, strict=True)
+        ),
+    )
+    return CameraDiagnostics(
+        aspect_ratio=aspect_ratio,
+        horizontal_fov_degrees=(
+            None
+            if isinstance(projection, OrthographicProjection)
+            else projection.horizontal_fov_degrees(aspect_ratio)
+        ),
+        vertical_fov_degrees=(
+            None
+            if isinstance(projection, OrthographicProjection)
+            else projection.vertical_fov_degrees(aspect_ratio)
+        ),
+        right=right,
+        up=up,
+        forward=forward,
+        frustum_corners_mm=cast(
+            tuple[Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3], tuple(frustum)
+        ),
+        target_depth_mm=sum(
+            offset * forward_axis
+            for offset, forward_axis in zip(target_offset, forward, strict=True)
+        ),
+        projected_bounds={},
     )
 
 
@@ -97,6 +184,25 @@ def _multiply_quaternions(left: Quaternion, right: Quaternion) -> Quaternion:
         lw * ry - lx * rz + ly * rw + lz * rx,
         lw * rz + lx * ry - ly * rx + lz * rw,
         lw * rw - lx * rx - ly * ry - lz * rz,
+    )
+
+
+def _rotate_vector(quaternion: Quaternion, vector: Vec3) -> Vec3:
+    x, y, z, w = quaternion
+    q_vector = (x, y, z)
+    twice_cross = cast(Vec3, tuple(2 * value for value in _cross(q_vector, vector)))
+    nested_cross = _cross(q_vector, twice_cross)
+    return cast(
+        Vec3,
+        tuple(
+            original + w * first_cross + second_cross
+            for original, first_cross, second_cross in zip(
+                vector,
+                twice_cross,
+                nested_cross,
+                strict=True,
+            )
+        ),
     )
 
 

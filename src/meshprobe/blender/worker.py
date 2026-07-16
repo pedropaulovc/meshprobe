@@ -14,6 +14,7 @@ import os
 import shlex
 import struct
 import sys
+import tempfile
 import traceback
 from collections import Counter
 from copy import deepcopy
@@ -26,8 +27,30 @@ from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-foun
 
 PROTOCOL_VERSION = 1
 MILLIMETERS_PER_METER = 1_000.0
+PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
+SUPPORTED_GLTF_EXTENSIONS = {
+    "EXT_mesh_gpu_instancing",
+    "KHR_draco_mesh_compression",
+    "KHR_lights_punctual",
+    "KHR_materials_anisotropy",
+    "KHR_materials_clearcoat",
+    "KHR_materials_emissive_strength",
+    "KHR_materials_ior",
+    "KHR_materials_iridescence",
+    "KHR_materials_pbrSpecularGlossiness",
+    "KHR_materials_sheen",
+    "KHR_materials_specular",
+    "KHR_materials_transmission",
+    "KHR_materials_unlit",
+    "KHR_materials_variants",
+    "KHR_materials_volume",
+    "KHR_mesh_quantization",
+    "KHR_texture_basisu",
+    "KHR_texture_transform",
+    "KHR_xmp_json_ld",
+}
 MANIFEST: dict[str, Any] | None = None
 COMPONENT_OBJECTS: dict[str, bpy.types.Object] = {}
 ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
@@ -35,6 +58,7 @@ ORIGINAL_VISIBILITY: dict[str, tuple[bool, bool]] = {}
 COMPONENT_STATES: dict[str, dict[str, str]] = {}
 IMPORTED_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA: dict[str, Any] | None = None
+CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
@@ -368,7 +392,12 @@ def camera_object() -> bpy.types.Object:
     return camera
 
 
-def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
+def apply_camera(
+    camera: dict[str, Any],
+    focus_component_ids: list[str] | tuple[str, ...] = (),
+    aspect_ratio: float = 1.0,
+    target_mm: list[float] | tuple[float, float, float] | None = None,
+) -> dict[str, Any]:
     obj = camera_object()
     pose = camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
@@ -394,8 +423,14 @@ def apply_camera(camera: dict[str, Any]) -> dict[str, Any]:
         if sensor_fit not in {"auto", "horizontal", "vertical"}:
             raise ValueError(f"unknown sensor fit: {sensor_fit}")
         data.sensor_fit = sensor_fit.upper()
-    global CURRENT_CAMERA
+    global CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
     CURRENT_CAMERA = deepcopy(camera)
+    CURRENT_CAMERA_DIAGNOSTICS = camera_diagnostics(
+        obj,
+        focus_component_ids,
+        aspect_ratio,
+        target_mm,
+    )
     orient_component_labels()
     return session_snapshot()
 
@@ -427,7 +462,164 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         },
         "projection": command["projection"],
     }
-    return apply_camera(camera)
+    return apply_camera(
+        camera,
+        command.get("focus_component_ids", ()),
+        command.get("aspect_ratio", 1.0),
+        command["target_mm"],
+    )
+
+
+def camera_diagnostics(
+    camera: bpy.types.Object,
+    focus_component_ids: list[str] | tuple[str, ...],
+    aspect_ratio: float,
+    target_mm: list[float] | tuple[float, float, float] | None,
+) -> dict[str, Any]:
+    focus_ids = set(focus_component_ids)
+    unknown = focus_ids - COMPONENT_OBJECTS.keys()
+    if unknown:
+        raise ValueError(f"unknown focus component ids: {sorted(unknown)}")
+    if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
+        raise ValueError("aspect_ratio must be between 0.01 and 100")
+
+    matrix = camera.matrix_world
+    right = matrix.to_3x3().col[0].normalized()
+    up = matrix.to_3x3().col[1].normalized()
+    forward = -matrix.to_3x3().col[2].normalized()
+    y_resolution = 1_000
+    x_resolution = max(1, round(y_resolution * aspect_ratio))
+    projection = camera.calc_matrix_camera(
+        bpy.context.evaluated_depsgraph_get(),
+        x=x_resolution,
+        y=y_resolution,
+        scale_x=1.0,
+        scale_y=1.0,
+    )
+    inverse_projection = projection.inverted()
+    frustum: list[list[float]] = []
+    for clip_z in (-1.0, 1.0):
+        for clip_y in (-1.0, 1.0):
+            for clip_x in (-1.0, 1.0):
+                local_homogeneous = inverse_projection @ Vector((clip_x, clip_y, clip_z, 1.0))
+                local = local_homogeneous.xyz / local_homogeneous.w
+                world = matrix @ local
+                frustum.append([value * MILLIMETERS_PER_METER for value in world])
+
+    if target_mm is None:
+        target_mm = focus_center_mm(focus_ids) if focus_ids else scene_center_mm()
+    target_world = Vector(value / MILLIMETERS_PER_METER for value in target_mm)
+    target_camera = matrix.inverted() @ target_world
+    projected = {
+        component_id: projected_component_bounds(
+            camera,
+            projection,
+            COMPONENT_OBJECTS[component_id],
+        )
+        for component_id in sorted(focus_ids)
+    }
+    horizontal_fov, vertical_fov = camera_fov_degrees(camera.data, aspect_ratio)
+    return {
+        "aspect_ratio": aspect_ratio,
+        "horizontal_fov_degrees": horizontal_fov,
+        "vertical_fov_degrees": vertical_fov,
+        "right": list(right),
+        "up": list(up),
+        "forward": list(forward),
+        "frustum_corners_mm": frustum,
+        "target_depth_mm": -target_camera.z * MILLIMETERS_PER_METER,
+        "projected_bounds": projected,
+    }
+
+
+def camera_fov_degrees(
+    camera: bpy.types.Camera,
+    aspect_ratio: float,
+) -> tuple[float | None, float | None]:
+    if camera.type == "ORTHO":
+        return None, None
+    sensor_fit = camera.sensor_fit
+    if sensor_fit == "AUTO":
+        sensor_fit = "HORIZONTAL" if aspect_ratio >= 1 else "VERTICAL"
+    sensor_width = camera.sensor_width
+    sensor_height = camera.sensor_height
+    if sensor_fit == "VERTICAL":
+        sensor_width = sensor_height * aspect_ratio
+    else:
+        sensor_height = sensor_width / aspect_ratio
+    horizontal = math.degrees(2 * math.atan(sensor_width / (2 * camera.lens)))
+    vertical = math.degrees(2 * math.atan(sensor_height / (2 * camera.lens)))
+    return horizontal, vertical
+
+
+def scene_center_mm() -> list[float]:
+    manifest = require_session()
+    minimum = manifest["root_bounds"]["minimum_mm"]
+    maximum = manifest["root_bounds"]["maximum_mm"]
+    return [(low + high) / 2 for low, high in zip(minimum, maximum, strict=True)]
+
+
+def focus_center_mm(focus_ids: set[str]) -> list[float]:
+    components = {component["id"]: component for component in require_session()["components"]}
+    minimum = [
+        min(
+            components[component_id]["world_bounds"]["minimum_mm"][axis]
+            for component_id in focus_ids
+        )
+        for axis in range(3)
+    ]
+    maximum = [
+        max(
+            components[component_id]["world_bounds"]["maximum_mm"][axis]
+            for component_id in focus_ids
+        )
+        for axis in range(3)
+    ]
+    return [(low + high) / 2 for low, high in zip(minimum, maximum, strict=True)]
+
+
+def projected_component_bounds(
+    camera: bpy.types.Object,
+    projection: Matrix,
+    obj: bpy.types.Object,
+) -> dict[str, Any]:
+    world_to_camera = camera.matrix_world.inverted()
+    points = [world_to_camera @ (obj.matrix_world @ Vector(corner)) for corner in obj.bound_box]
+    depths = [-point.z * MILLIMETERS_PER_METER for point in points]
+    in_front = [depth > 0 for depth in depths]
+    if any(in_front) and not all(in_front):
+        return {
+            "projection_status": "crosses_camera_plane",
+            "minimum_image_xy": None,
+            "maximum_image_xy": None,
+            "minimum_depth_mm": min(depths),
+            "maximum_depth_mm": max(depths),
+        }
+    image_points: list[tuple[float, float]] = []
+    for point in points:
+        clip = projection @ point.to_4d()
+        if abs(clip.w) <= 1e-12:
+            return {
+                "projection_status": "crosses_camera_plane",
+                "minimum_image_xy": None,
+                "maximum_image_xy": None,
+                "minimum_depth_mm": min(depths),
+                "maximum_depth_mm": max(depths),
+            }
+        image_points.append(((clip.x / clip.w + 1) / 2, (clip.y / clip.w + 1) / 2))
+    return {
+        "projection_status": "in_front" if all(in_front) else "behind",
+        "minimum_image_xy": [
+            min(point[0] for point in image_points),
+            min(point[1] for point in image_points),
+        ],
+        "maximum_image_xy": [
+            max(point[0] for point in image_points),
+            max(point[1] for point in image_points),
+        ],
+        "minimum_depth_mm": min(depths),
+        "maximum_depth_mm": max(depths),
+    }
 
 
 def linear_rgb_from_temperature(kelvin: float) -> list[float]:
@@ -479,6 +671,27 @@ def scene_center_and_span() -> tuple[Vector, float]:
     return center, max(span, 100.0)
 
 
+def scene_frame() -> tuple[Vector, Vector, Vector]:
+    manifest = require_session()
+    roots = [component for component in manifest["components"] if component["parent_id"] is None]
+    if len(roots) != 1:
+        return Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))
+    transform = roots[0]["world_transform"]
+    axes = tuple(
+        Vector((transform[index], transform[4 + index], transform[8 + index])).normalized()
+        for index in range(3)
+    )
+    if any(axis.length_squared == 0 for axis in axes):
+        return Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))
+    return axes
+
+
+def frame_offset(
+    frame: tuple[Vector, Vector, Vector], values: tuple[float, float, float]
+) -> Vector:
+    return sum((axis * value for axis, value in zip(frame, values, strict=True)), Vector())
+
+
 def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
     rotation = (target_mm - position_mm).to_track_quat("-Z", "Y").normalized()
     return [rotation.x, rotation.y, rotation.z, rotation.w]
@@ -486,35 +699,67 @@ def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
 
 def preset_lights(preset: str) -> dict[str, Any]:
     center, span = scene_center_and_span()
+    frame = scene_frame()
+    power_scale = (span / PRESET_REFERENCE_SPAN_MM) ** 2
     background = [0.03, 0.03, 0.03]
     ambient = 0.15
     definitions: list[tuple[str, Vector, float, float]] = []
     if preset == "neutral_studio":
         definitions = [
-            ("key", center + Vector((span, -span, span)), 900.0, span),
-            ("fill", center + Vector((-span, -span / 2, span / 2)), 450.0, span),
-            ("rim", center + Vector((0, span, span)), 600.0, span / 2),
+            ("key", center + frame_offset(frame, (span, -span, span)), 900.0, span),
+            (
+                "fill",
+                center + frame_offset(frame, (-span, -span / 2, span / 2)),
+                450.0,
+                span,
+            ),
+            ("rim", center + frame_offset(frame, (0, span, span)), 600.0, span / 2),
         ]
     elif preset == "high_key":
         background = [0.25, 0.25, 0.25]
         ambient = 0.45
         definitions = [
-            ("key", center + Vector((span, -span, span)), 1_200.0, span * 1.5),
-            ("fill", center + Vector((-span, -span, span)), 1_000.0, span * 1.5),
-            ("under", center + Vector((0, 0, -span)), 700.0, span * 1.5),
+            (
+                "key",
+                center + frame_offset(frame, (span, -span, span)),
+                1_200.0,
+                span * 1.5,
+            ),
+            (
+                "fill",
+                center + frame_offset(frame, (-span, -span, span)),
+                1_000.0,
+                span * 1.5,
+            ),
+            (
+                "under",
+                center + frame_offset(frame, (0, 0, -span)),
+                700.0,
+                span * 1.5,
+            ),
         ]
     elif preset in {"raking_left", "raking_right"}:
         side = -1 if preset == "raking_left" else 1
         definitions = [
-            ("rake", center + Vector((side * span * 2, -span / 4, span / 8)), 1_000.0, span / 3)
+            (
+                "rake",
+                center + frame_offset(frame, (side * span * 2, -span / 4, span / 8)),
+                1_000.0,
+                span / 3,
+            )
         ]
     elif preset == "backlit":
-        definitions = [("back", center + Vector((0, span * 2, 0)), 1_200.0, span)]
+        definitions = [("back", center + frame_offset(frame, (0, span * 2, 0)), 1_200.0, span)]
     elif preset == "flat_diagnostic":
         background = [0.18, 0.18, 0.18]
         ambient = 0.25
         definitions = [
-            (f"axis-{index}", center + direction * span, 500.0, span * 2)
+            (
+                f"axis-{index}",
+                center + frame_offset(frame, tuple(direction * span)),
+                500.0,
+                span * 2,
+            )
             for index, direction in enumerate(
                 (
                     Vector((1, 0, 0)),
@@ -535,7 +780,7 @@ def preset_lights(preset: str) -> dict[str, Any]:
             "type": "area",
             "position_mm": list(position),
             "orientation_xyzw": look_orientation(position, center),
-            "power_w": power,
+            "power_w": power * power_scale,
             "linear_rgb": [1.0, 1.0, 1.0],
             "size_mm": max(size, 1.0),
         }
@@ -549,13 +794,49 @@ def preset_lights(preset: str) -> dict[str, Any]:
     }
 
 
-def configure_world(background_rgb: list[float], ambient_strength: float) -> None:
+def configure_world(
+    background_rgb: list[float],
+    ambient_strength: float,
+    environment_map: dict[str, Any] | None,
+) -> None:
     world = bpy.context.scene.world or bpy.data.worlds.new("MeshProbeWorld")
     bpy.context.scene.world = world
     world.use_nodes = True
-    background = world.node_tree.nodes.get("Background")
-    background.inputs["Color"].default_value = (*background_rgb, 1.0)
-    background.inputs["Strength"].default_value = ambient_strength
+    nodes = world.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputWorld")
+    ambient = nodes.new("ShaderNodeBackground")
+    ambient.name = "MeshProbeAmbient"
+    ambient.inputs["Color"].default_value = (*background_rgb, 1.0)
+    ambient.inputs["Strength"].default_value = ambient_strength
+    if environment_map is None:
+        world.node_tree.links.new(ambient.outputs["Background"], output.inputs["Surface"])
+        return
+
+    path = Path(environment_map["path"]).expanduser().resolve(strict=True)
+    if sha256_file(path) != environment_map["sha256"]:
+        raise ValueError("environment map hash does not match its declared content")
+    texture_coordinates = nodes.new("ShaderNodeTexCoord")
+    mapping = nodes.new("ShaderNodeMapping")
+    mapping.vector_type = "POINT"
+    mapping.inputs["Rotation"].default_value[2] = math.radians(environment_map["rotation_degrees"])
+    texture = nodes.new("ShaderNodeTexEnvironment")
+    texture.name = "MeshProbeEnvironment"
+    texture.projection = "EQUIRECTANGULAR"
+    image = bpy.data.images.load(str(path), check_existing=False)
+    image.name = f"MeshProbeEnvironment-{environment_map['sha256'][:16]}"
+    texture.image = image
+    environment = nodes.new("ShaderNodeBackground")
+    environment.name = "MeshProbeEnvironmentBackground"
+    environment.inputs["Strength"].default_value = environment_map["strength"]
+    add = nodes.new("ShaderNodeAddShader")
+    links = world.node_tree.links
+    links.new(texture_coordinates.outputs["Generated"], mapping.inputs["Vector"])
+    links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
+    links.new(texture.outputs["Color"], environment.inputs["Color"])
+    links.new(ambient.outputs["Background"], add.inputs[0])
+    links.new(environment.outputs["Background"], add.inputs[1])
+    links.new(add.outputs["Shader"], output.inputs["Surface"])
 
 
 def create_light(spec: dict[str, Any]) -> None:
@@ -592,7 +873,11 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
         else illumination
     )
     clear_lights()
-    configure_world(runtime["background_rgb"], runtime["ambient_strength"])
+    configure_world(
+        runtime["background_rgb"],
+        runtime["ambient_strength"],
+        runtime.get("environment_map"),
+    )
     for light in runtime["lights"]:
         create_light(light)
     global CURRENT_ILLUMINATION
@@ -750,15 +1035,23 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def session_snapshot() -> dict[str, Any]:
-    if CURRENT_CAMERA is None or CURRENT_ILLUMINATION is None:
+    if CURRENT_CAMERA is None or CURRENT_CAMERA_DIAGNOSTICS is None or CURRENT_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
-    payload = {
+    state = {
         "camera": CURRENT_CAMERA,
         "illumination": CURRENT_ILLUMINATION,
         "components": {key: COMPONENT_STATES[key] for key in sorted(COMPONENT_STATES)},
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return {**deepcopy(payload), "state_sha256": hashlib.sha256(canonical).hexdigest()}
+    hashed_state = deepcopy(state)
+    environment = hashed_state["illumination"].get("environment_map")
+    if environment is not None:
+        environment.pop("path", None)
+    canonical = json.dumps(hashed_state, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        **deepcopy(state),
+        "camera_diagnostics": deepcopy(CURRENT_CAMERA_DIAGNOSTICS),
+        "state_sha256": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def reset_session() -> dict[str, Any]:
@@ -781,6 +1074,8 @@ def reset_session() -> dict[str, Any]:
 
 def runtime_diagnostics() -> dict[str, Any]:
     camera = camera_object()
+    world_nodes = bpy.context.scene.world.node_tree.nodes
+    environment = world_nodes.get("MeshProbeEnvironment")
     return {
         "components": {
             component_id: {
@@ -807,6 +1102,14 @@ def runtime_diagnostics() -> dict[str, Any]:
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+        "environment_map": (
+            {
+                "path": environment.image.filepath,
+                "projection": environment.projection,
+            }
+            if environment is not None and environment.image is not None
+            else None
+        ),
         "render": {
             "engine": bpy.context.scene.render.engine,
             "eevee_samples": eevee_render_samples(),
@@ -975,10 +1278,12 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
     original_look = scene.view_settings.look
     original_exposure = scene.view_settings.exposure
     original_gamma = scene.view_settings.gamma
+    original_dither = scene.render.dither_intensity
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     scene.view_settings.exposure = 0.0
     scene.view_settings.gamma = 1.0
+    scene.render.dither_intensity = 0.0
     scene.render.engine = eevee_engine()
     try:
         for obj in other_visibility:
@@ -1015,6 +1320,65 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         scene.view_settings.look = original_look
         scene.view_settings.exposure = original_exposure
         scene.view_settings.gamma = original_gamma
+        scene.render.dither_intensity = original_dither
+
+
+def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) -> int:
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        pixels = image.pixels[:]
+        count = 0
+        for offset in range(0, len(pixels), 4):
+            color = tuple(round(pixels[offset + channel] * 255) for channel in range(3))
+            if color in selected_colors:
+                count += 1
+        return count
+    finally:
+        bpy.data.images.remove(image)
+
+
+def component_visibility(command: dict[str, Any]) -> dict[str, Any]:
+    focus_ids = selected_component_ids(command)
+    width = int(command.get("width", 256))
+    height = int(command.get("height", 256))
+    if not 64 <= width <= 1_024 or not 64 <= height <= 1_024:
+        raise ValueError("component.visibility dimensions must be between 64 and 1024")
+    configure_render(
+        {
+            "engine": "eevee",
+            "width": width,
+            "height": height,
+            "samples": 1,
+        }
+    )
+    colors = component_pass_colors()
+    selected_colors = {colors[component_id] for component_id in focus_ids}
+    original_visibility = {
+        component_id: obj.hide_render for component_id, obj in COMPONENT_OBJECTS.items()
+    }
+    with tempfile.TemporaryDirectory(prefix="meshprobe-visibility-") as directory:
+        root = Path(directory)
+        context_path = root / "context.png"
+        isolated_path = root / "isolated.png"
+        try:
+            render_mask(context_path, colors)
+            visible_pixels = count_mask_pixels(context_path, selected_colors)
+            for component_id, obj in COMPONENT_OBJECTS.items():
+                obj.hide_render = component_id not in focus_ids
+            render_mask(isolated_path, colors)
+            isolated_pixels = count_mask_pixels(isolated_path, selected_colors)
+        finally:
+            for component_id, hidden in original_visibility.items():
+                COMPONENT_OBJECTS[component_id].hide_render = hidden
+    return {
+        "focus_component_ids": sorted(focus_ids),
+        "width": width,
+        "height": height,
+        "visible_pixels": visible_pixels,
+        "isolated_pixels": isolated_pixels,
+        "visible_fraction": visible_pixels / isolated_pixels if isolated_pixels else 0.0,
+        "projected": isolated_pixels > 0,
+    }
 
 
 def render_evaluator_passes(output_dir: Path, stem: str) -> dict[str, Any]:
@@ -1131,6 +1495,27 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "evaluator": evaluator,
         "luminance": luminance,
     }
+
+
+def export_normalized(command: dict[str, Any]) -> dict[str, Any]:
+    require_session()
+    output = Path(command["output_path"]).expanduser().resolve()
+    if output.suffix.lower() != ".glb":
+        raise ValueError("scene.export_normalized output_path must end in .glb")
+    if output.exists():
+        raise ValueError("scene.export_normalized refuses to overwrite an existing file")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = bpy.ops.export_scene.gltf(
+        filepath=str(output),
+        export_format="GLB",
+        export_apply=True,
+        export_cameras=False,
+        export_lights=False,
+        export_yup=True,
+    )
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Blender exporter did not finish: {sorted(result)}")
+    return artifact(output, "model/gltf-binary")
 
 
 def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
@@ -1327,6 +1712,21 @@ def build_manifest(
     camera, camera_warning = imported_camera(root_bounds)
     illumination, illumination_warnings = imported_illumination()
     source_format = source_path.suffix.lower().removeprefix(".")
+    document = gltf_document(source_path) if source_format in {"glb", "gltf"} else {}
+    animations = document.get("animations", [])
+    has_animations = isinstance(animations, list) and bool(animations)
+    extensions = document.get("extensionsUsed", [])
+    extension_names = (
+        {name for name in extensions if isinstance(name, str)}
+        if isinstance(extensions, list)
+        else set()
+    )
+    unverified_extensions = sorted(extension_names - SUPPORTED_GLTF_EXTENSIONS)
+    procedural_extensions = [
+        name
+        for name in unverified_extensions
+        if "procedural" in name.casefold() or "materialx" in name.casefold()
+    ]
     hierarchy_flattened = source_format == "stl" or has_unaddressable_hierarchy(objects)
     warnings = [*import_warnings, *illumination_warnings]
     if hierarchy_flattened and not any(
@@ -1344,6 +1744,40 @@ def build_manifest(
         )
     if camera_warning is not None:
         warnings.append(camera_warning)
+
+    if has_animations:
+        warnings.append(
+            {
+                "code": "animation.static_pose",
+                "message": (
+                    "The source contains animation data; MeshProbe inspects the imported "
+                    "rest state and does not evaluate animation timelines."
+                ),
+                "component_ids": [],
+            }
+        )
+    if unverified_extensions:
+        warnings.append(
+            {
+                "code": "extension.unverified",
+                "message": (
+                    "The source declares glTF extensions outside MeshProbe's verified import "
+                    f"set: {', '.join(unverified_extensions)}."
+                ),
+                "component_ids": [],
+            }
+        )
+    if procedural_extensions:
+        warnings.append(
+            {
+                "code": "material.procedural_unsupported",
+                "message": (
+                    "Procedural material extensions are not evaluated: "
+                    f"{', '.join(procedural_extensions)}."
+                ),
+                "component_ids": [],
+            }
+        )
 
     if source_format in {"glb", "gltf"} and camera_warning is None:
         warnings.append(
@@ -1378,6 +1812,8 @@ def build_manifest(
             "component_names": "source" if names_preserved else "generated",
             "materials": material_capability,
             "textures": texture_capability,
+            "animations": "static_pose" if has_animations else "absent",
+            "procedural_materials": "unsupported" if procedural_extensions else "absent",
         },
         "warnings": warnings,
     }
@@ -1510,7 +1946,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
 
 def clear_session_state() -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
-    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
     MANIFEST = None
     COMPONENT_OBJECTS = {}
@@ -1519,6 +1955,7 @@ def clear_session_state() -> None:
     COMPONENT_STATES = {}
     IMPORTED_CAMERA = None
     CURRENT_CAMERA = None
+    CURRENT_CAMERA_DIAGNOSTICS = None
     IMPORTED_ILLUMINATION = None
     CURRENT_ILLUMINATION = None
     MARK_OBJECTS = {}
@@ -1532,7 +1969,11 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
         return {"scene": require_session(), "session": session_snapshot()}
     if operation == "view.set":
         require_session()
-        return apply_camera(command["camera"])
+        return apply_camera(
+            command["camera"],
+            command.get("focus_component_ids", ()),
+            command.get("aspect_ratio", 1.0),
+        )
     if operation == "view.orbit":
         require_session()
         return orbit_camera(command)
@@ -1554,6 +1995,11 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.image":
         require_session()
         return render_image(command)
+    if operation == "scene.export_normalized":
+        return export_normalized(command)
+    if operation == "component.visibility":
+        require_session()
+        return component_visibility(command)
     if operation == "component.occluders":
         require_session()
         return rank_occluders(command)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from PIL import Image
@@ -17,16 +18,18 @@ from meshprobe.evals.schemas import (
     EpisodeSpec,
     EpisodeSubmission,
     EvidenceKind,
+    EvidenceRequirement,
     GateResult,
     GateStatus,
     Operation,
     StatePredicate,
+    StateRequirement,
     StructuredAnswer,
     TraceEvent,
     TraceStatus,
 )
 from meshprobe.models import ContactSheetManifest, RenderManifest
-from meshprobe.sources import SourceSnapshot
+from meshprobe.sources import SourceSnapshot, sha256_file
 
 
 @dataclass(frozen=True)
@@ -37,9 +40,11 @@ class OracleInputs:
     trace: tuple[TraceEvent, ...]
     source_before: SourceSnapshot
     source_after: SourceSnapshot
+    artifact_root: Path | None = None
     renders: tuple[RenderManifest, ...] = ()
     contact_sheets: tuple[ContactSheetManifest, ...] = ()
     public_errors: tuple[str, ...] = ()
+    wall_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -132,7 +137,25 @@ def _compare_json(
 def _state_gate(inputs: OracleInputs) -> GateResult:
     failures: list[str] = []
     accepted = [event for event in inputs.trace if event.status is TraceStatus.ACCEPTED]
+    rendered_state_hashes = {
+        event.state_after_sha256
+        for event in accepted
+        if event.operation is Operation.RENDER_IMAGE
+        and event.state_after_sha256 is not None
+        and isinstance(event.result, dict)
+        and event.result.get("state_sha256") == event.state_after_sha256
+    }
+    renders_by_state = {render.state_sha256: render for render in _all_renders(inputs)}
+    ungrouped = [
+        requirement
+        for requirement in inputs.truth.state_requirements
+        if requirement.state_group is None
+    ]
+    grouped: dict[str, list[StateRequirement]] = {}
     for requirement in inputs.truth.state_requirements:
+        if requirement.state_group is not None:
+            grouped.setdefault(requirement.state_group, []).append(requirement)
+    for requirement in ungrouped:
         component_id = (
             inputs.truth.component_roles[requirement.component_role]
             if requirement.component_role is not None
@@ -145,9 +168,73 @@ def _state_gate(inputs: OracleInputs) -> GateResult:
             failures.append(
                 f"no accepted event proves {requirement.predicate}={requirement.expected}"
             )
+    for group_name, requirements in grouped.items():
+        if any(
+            _event_satisfies_state_group(event, requirements, inputs.truth.component_roles)
+            and event.state_after_sha256 in rendered_state_hashes
+            and _render_satisfies_state_group(
+                renders_by_state[event.state_after_sha256],
+                requirements,
+                inputs.truth.component_roles,
+            )
+            for event in accepted
+            if event.operation is not Operation.RENDER_IMAGE
+            and event.state_after_sha256 in renders_by_state
+        ):
+            continue
+        failures.append(
+            "no accepted state transition and render prove the same snapshot "
+            f"for group {group_name}"
+        )
     if failures:
         return _fail("state", "required scene transitions were not proven", failures=failures)
     return _pass("state", "every required scene transition is present in accepted results")
+
+
+def _event_satisfies_state_group(
+    event: TraceEvent,
+    requirements: list[StateRequirement],
+    component_roles: dict[str, str],
+) -> bool:
+    if event.state_before_sha256 == event.state_after_sha256:
+        return False
+    return all(
+        _event_satisfies_state(
+            event,
+            requirement.predicate,
+            requirement.expected,
+            (
+                component_roles[requirement.component_role]
+                if requirement.component_role is not None
+                else None
+            ),
+        )
+        for requirement in requirements
+    )
+
+
+def _render_satisfies_state_group(
+    render: RenderManifest,
+    requirements: list[StateRequirement],
+    component_roles: dict[str, str],
+) -> bool:
+    snapshot = TraceEvent.model_construct(
+        operation=Operation.RENDER_IMAGE,
+        result=render.session.model_dump(mode="json"),
+    )
+    return all(
+        _event_satisfies_state(
+            snapshot,
+            requirement.predicate,
+            requirement.expected,
+            (
+                component_roles[requirement.component_role]
+                if requirement.component_role is not None
+                else None
+            ),
+        )
+        for requirement in requirements
+    )
 
 
 def _event_satisfies_state(
@@ -187,9 +274,20 @@ def _event_satisfies_state(
 def _evidence_gate(inputs: OracleInputs) -> GateResult:
     if not inputs.truth.evidence_requirements:
         return _na("evidence", "episode declares no rendered evidence requirements")
-    renders = _all_renders(inputs)
+    renders, contact_sheets, submission_error = _submitted_evidence(inputs)
+    if submission_error is not None:
+        return _fail("evidence", submission_error)
     failures: list[str] = []
+    ungrouped = [
+        requirement
+        for requirement in inputs.truth.evidence_requirements
+        if requirement.render_group is None
+    ]
+    grouped: dict[str, list[EvidenceRequirement]] = {}
     for requirement in inputs.truth.evidence_requirements:
+        if requirement.render_group is not None:
+            grouped.setdefault(requirement.render_group, []).append(requirement)
+    for requirement in ungrouped:
         component_id = (
             inputs.truth.component_roles[requirement.component_role]
             if requirement.component_role is not None
@@ -202,14 +300,96 @@ def _evidence_gate(inputs: OracleInputs) -> GateResult:
             requirement.maximum,
             component_id,
             renders,
-            inputs.contact_sheets,
+            contact_sheets,
         ):
             failures.append(f"unsatisfied evidence requirement: {requirement.kind}")
+    for group_name, requirements in grouped.items():
+        if any(
+            all(
+                _evidence_satisfied(
+                    requirement.kind,
+                    requirement.expected,
+                    requirement.minimum,
+                    requirement.maximum,
+                    (
+                        inputs.truth.component_roles[requirement.component_role]
+                        if requirement.component_role is not None
+                        else None
+                    ),
+                    (render,),
+                    (),
+                )
+                for requirement in requirements
+            )
+            for render in renders
+        ):
+            continue
+        failures.append(f"no single render proves evidence group {group_name}")
     if failures:
         return _fail(
             "evidence", "rendered evidence does not prove every requirement", failures=failures
         )
     return _pass("evidence", "private render passes prove every evidence requirement")
+
+
+def _submitted_evidence(
+    inputs: OracleInputs,
+) -> tuple[tuple[RenderManifest, ...], tuple[ContactSheetManifest, ...], str | None]:
+    if inputs.artifact_root is None:
+        return (), (), "evidence artifact root is unavailable"
+    if not inputs.submission.evidence_manifest_paths:
+        return (), (), "submission declares no evidence manifest paths"
+    artifact_root = inputs.artifact_root.expanduser().resolve(strict=True)
+    submitted: set[Path] = set()
+    try:
+        for visible_path in inputs.submission.evidence_manifest_paths:
+            submitted.add(_submitted_artifact_path(visible_path, artifact_root))
+        render_paths = {
+            Path(render.color.path).resolve(strict=True): render for render in inputs.renders
+        }
+        sheet_paths = {
+            Path(sheet.sheet.path).resolve(strict=True): sheet for sheet in inputs.contact_sheets
+        }
+    except (OSError, ValueError):
+        return (), (), "submission contains an invalid evidence manifest path"
+    unknown = submitted - render_paths.keys() - sheet_paths.keys()
+    if unknown:
+        return (), (), "submission references an unknown evidence manifest path"
+    renders = tuple(
+        render
+        for path, render in render_paths.items()
+        if path in submitted and _artifact_intact(render.color)
+    )
+    sheets = tuple(
+        sheet
+        for path, sheet in sheet_paths.items()
+        if path in submitted and _artifact_intact(sheet.sheet)
+    )
+    if len(renders) + len(sheets) != len(submitted):
+        return (), (), "submitted evidence artifact bytes do not match their render manifests"
+    return (
+        (*renders, *(panel.render for sheet in sheets for panel in sheet.panels)),
+        sheets,
+        None,
+    )
+
+
+def _submitted_artifact_path(visible_path: str, artifact_root: Path) -> Path:
+    candidate = PurePosixPath(visible_path)
+    prefix = PurePosixPath("/workspace/artifacts")
+    if candidate.is_absolute() and candidate.is_relative_to(prefix):
+        relative = candidate.relative_to(prefix)
+        resolved = (artifact_root / Path(*relative.parts)).resolve(strict=True)
+    else:
+        host_candidate = Path(visible_path).expanduser()
+        resolved = (
+            host_candidate.resolve(strict=True)
+            if host_candidate.is_absolute()
+            else (artifact_root / host_candidate).resolve(strict=True)
+        )
+    if not resolved.is_file() or not resolved.is_relative_to(artifact_root):
+        raise ValueError("evidence path escapes artifact root")
+    return resolved
 
 
 def _evidence_satisfied(
@@ -275,12 +455,14 @@ def _coverage_gate(inputs: OracleInputs) -> GateResult:
             Operation.COMPONENT_MARK,
             Operation.SESSION_RESET,
         } and not any(
-            event.state_before_sha256 != event.state_after_sha256
+            event.state_after_sha256 is not None
+            and event.state_before_sha256 != event.state_after_sha256
             for event in events
-            if event.state_before_sha256 is not None and event.state_after_sha256 is not None
         ):
             failures.append(f"{operation} was accepted but did not change state")
-    target_id = inputs.truth.component_roles.get("idler")
+    target_id = inputs.truth.component_roles.get("idler") or inputs.truth.component_roles.get(
+        "target"
+    )
     if target_id is not None:
         if Operation.COMPONENT_FIND in inputs.truth.required_operations and not any(
             _result_contains_component(event.result, target_id)
@@ -394,7 +576,8 @@ def _metrics(inputs: OracleInputs) -> EpisodeMetrics:
         artifact_bytes[sheet.sheet.path] = sheet.sheet.bytes
     starts = [event.started_monotonic for event in inputs.trace]
     ends = [event.started_monotonic + event.elapsed_seconds for event in inputs.trace]
-    wall_seconds = max(ends) - min(starts) if starts else 0.0
+    trace_wall_seconds = max(ends) - min(starts) if starts else 0.0
+    wall_seconds = inputs.wall_seconds if inputs.wall_seconds is not None else trace_wall_seconds
     return EpisodeMetrics(
         tool_calls=len(inputs.trace),
         renders=len(unique_renders),
@@ -414,6 +597,8 @@ def _all_renders(inputs: OracleInputs) -> tuple[RenderManifest, ...]:
 def _component_fraction(render: RenderManifest, component_id: str) -> float:
     if render.evaluator is None or component_id not in render.evaluator.component_colors:
         return 0.0
+    if not _artifact_intact(render.evaluator.component_ids):
+        return 0.0
     expected = render.evaluator.component_colors[component_id]
     with Image.open(render.evaluator.component_ids.path) as image:
         pixels = image.convert("RGB")
@@ -424,6 +609,11 @@ def _component_fraction(render: RenderManifest, component_id: str) -> float:
 
 def _highlighted_fraction(render: RenderManifest, component_id: str) -> float:
     if render.evaluator is None or component_id not in render.evaluator.component_colors:
+        return 0.0
+    if not all(
+        _artifact_intact(artifact)
+        for artifact in (render.evaluator.component_ids, render.evaluator.highlighted)
+    ):
         return 0.0
     expected = render.evaluator.component_colors[component_id]
     with (
@@ -447,6 +637,10 @@ def _highlighted_fraction(render: RenderManifest, component_id: str) -> float:
 def _component_contrast(render: RenderManifest, component_id: str) -> float:
     if render.evaluator is None or component_id not in render.evaluator.component_colors:
         return 0.0
+    if not all(
+        _artifact_intact(artifact) for artifact in (render.evaluator.component_ids, render.color)
+    ):
+        return 0.0
     expected = render.evaluator.component_colors[component_id]
     with (
         Image.open(render.evaluator.component_ids.path) as component_image,
@@ -467,6 +661,19 @@ def _component_contrast(render: RenderManifest, component_id: str) -> float:
     low = values[int((len(values) - 1) * 0.05)]
     high = values[int((len(values) - 1) * 0.95)]
     return high - low
+
+
+def _artifact_intact(artifact: object) -> bool:
+    path_value = getattr(artifact, "path", None)
+    expected_bytes = getattr(artifact, "bytes", None)
+    expected_sha256 = getattr(artifact, "sha256", None)
+    if not isinstance(path_value, str):
+        return False
+    path = Path(path_value)
+    try:
+        return path.stat().st_size == expected_bytes and sha256_file(path) == expected_sha256
+    except OSError:
+        return False
 
 
 def _result_contains_component(result: JsonValue, component_id: str) -> bool:

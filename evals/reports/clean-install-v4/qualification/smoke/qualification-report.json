@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "tier": "smoke",
+    "corpus_version": "qualification-v4",
+    "corpus_manifest_sha256": "7b298f114e6f3e94a968c07d042d6ba2b0707a5188fa6ce90ed84b21e95c9a14",
+    "tier_manifest_sha256": "8d8b05492a28dee4aa6c500dc0baf040c6a5885a37a6651e94a1df8a43bf8577",
+    "runtime": {
+      "meshprobe_version": "0.1.0.dev0",
+      "protocol_version": 1,
+      "blender_version": "5.2.0 LTS",
+      "importer_sha256": "96505280f30cef07853a51f3f0c983001502dd8909de235ea310ee7c016ae89b",
+      "render_engines": [
+        "eevee",
+        "cycles"
+      ]
+    },
+    "thresholds": {
+      "overall": 0.8,
+      "full_stack": 0.7,
+      "per_operation": 0.75
+    },
+    "adapter": "meshprobe.evals.harness.adapters.ReferenceAgentAdapter",
+    "adapter_identity_sha256": "51e3796b77935307572f4bcd3aec0f3bf014f717d053affb1dcb94f7965f9ca8",
+    "workers": 8
+  },
+  "overall": {
+    "episodes": 40,
+    "passed": 40,
+    "pass_rate": 1.0
+  },
+  "full_stack": {
+    "episodes": 10,
+    "passed": 10,
+    "pass_rate": 1.0
+  },
+  "by_operation": {
+    "component.display": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "component.find": {
+      "episodes": 40,
+      "passed": 40,
+      "pass_rate": 1.0
+    },
+    "component.inspect": {
+      "episodes": 33,
+      "passed": 33,
+      "pass_rate": 1.0
+    },
+    "component.mark": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "illumination.set": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "render.contact_sheet": {
+      "episodes": 20,
+      "passed": 20,
+      "pass_rate": 1.0
+    },
+    "render.image": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "scene.describe": {
+      "episodes": 33,
+      "passed": 33,
+      "pass_rate": 1.0
+    },
+    "scene.open": {
+      "episodes": 40,
+      "passed": 40,
+      "pass_rate": 1.0
+    },
+    "session.reset": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "view.orbit": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "view.set": {
+      "episodes": 20,
+      "passed": 20,
+      "pass_rate": 1.0
+    }
+  },
+  "by_task_family": {
+    "component_discovery": {
+      "episodes": 6,
+      "passed": 6,
+      "pass_rate": 1.0
+    },
+    "full_investigation": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "hidden_geometry": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "identity_verification": {
+      "episodes": 5,
+      "passed": 5,
+      "pass_rate": 1.0
+    },
+    "lens_reasoning": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "negative_ambiguous": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "occlusion_reasoning": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "projection_reasoning": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "silhouette_gap_reasoning": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "spatial_relationship": {
+      "episodes": 1,
+      "passed": 1,
+      "pass_rate": 1.0
+    },
+    "surface_detail_reasoning": {
+      "episodes": 3,
+      "passed": 3,
+      "pass_rate": 1.0
+    }
+  },
+  "by_difficulty": {
+    "basic": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "full_stack": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "hard": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "intermediate": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    }
+  },
+  "by_projection": {
+    "not_required": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "orthographic": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "perspective": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    }
+  },
+  "by_focal_length_band": {
+    "not_required": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "telephoto_70_to_134mm": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    }
+  },
+  "by_illumination": {
+    "backlit": {
+      "episodes": 24,
+      "passed": 24,
+      "pass_rate": 1.0
+    },
+    "neutral_studio": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "not_required": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "raking_left": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    },
+    "raking_right": {
+      "episodes": 24,
+      "passed": 24,
+      "pass_rate": 1.0
+    }
+  },
+  "by_model_source": {
+    "curated": {
+      "episodes": 10,
+      "passed": 10,
+      "pass_rate": 1.0
+    },
+    "procedural": {
+      "episodes": 30,
+      "passed": 30,
+      "pass_rate": 1.0
+    }
+  },
+  "failure_classes": {},
+  "threshold_failures": []
+}

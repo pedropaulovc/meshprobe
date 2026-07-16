@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
 
+from meshprobe.camera import camera_diagnostics
 from meshprobe.evals.generators import (
     GeneratorFamily,
     build_model,
@@ -17,6 +20,7 @@ from meshprobe.evals.schemas import (
     EpisodeSubmission,
     GateStatus,
     Operation,
+    StatePredicate,
     TraceEvent,
     TraceStatus,
 )
@@ -25,6 +29,7 @@ from meshprobe.models import (
     ComponentVisualState,
     DisplayMode,
     EvaluatorPasses,
+    IlluminationPreset,
     ImageArtifact,
     LuminanceSummary,
     MarkMode,
@@ -130,6 +135,42 @@ def test_coverage_rejects_a_find_call_that_missed_the_target(tmp_path: Path) -> 
     assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.FAIL
 
 
+def test_coverage_uses_curated_target_role(tmp_path: Path) -> None:
+    inputs = discovery_inputs(tmp_path)
+    target = inputs.truth.component_roles["idler"]
+    curated_truth = inputs.truth.model_copy(
+        update={"component_roles": {"target": target, "reference": "reference"}}
+    )
+    missed = inputs.trace[2].model_copy(update={"result": []})
+    report = score_episode(
+        replace(
+            inputs,
+            truth=curated_truth,
+            trace=(*inputs.trace[:2], missed, inputs.trace[3]),
+        )
+    )
+
+    assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.FAIL
+
+
+def test_coverage_counts_first_observed_state_transition(tmp_path: Path) -> None:
+    inputs = discovery_inputs(tmp_path)
+    truth = inputs.truth.model_copy(
+        update={"required_operations": (*inputs.truth.required_operations, Operation.VIEW_SET)}
+    )
+    first_state = accepted_event(
+        5,
+        "view.set",
+        arguments={},
+        result={"state_sha256": "b" * 64},
+        before=None,
+        after="b" * 64,
+    )
+    report = score_episode(replace(inputs, truth=truth, trace=(*inputs.trace, first_state)))
+
+    assert next(gate for gate in report.gates if gate.gate == "coverage").status is GateStatus.PASS
+
+
 def test_answer_gate_rejects_plausible_but_wrong_values(tmp_path: Path) -> None:
     inputs = discovery_inputs(tmp_path)
     wrong = inputs.submission.model_copy(
@@ -174,6 +215,9 @@ def evidence_render(
     source_sha256: str,
     component_ids: dict[str, str],
     projection: PerspectiveProjection | OrthographicProjection,
+    illumination: IlluminationPreset,
+    visible_roles: set[str],
+    isolated_role: str | None = None,
 ) -> RenderManifest:
     color_path = tmp_path / f"{name}.png"
     mask_path = tmp_path / f"{name}.components.png"
@@ -182,30 +226,54 @@ def evidence_render(
     color = Image.new("RGB", (64, 64), (20, 20, 20))
     mask = Image.new("RGB", (64, 64), (0, 0, 0))
     highlighted = Image.new("RGB", (64, 64), (0, 0, 0))
-    for y in range(16, 48):
-        for x in range(16, 48):
-            color.putpixel((x, y), (40 + (x - 16) * 6, 60, 80))
-            mask.putpixel((x, y), (240, 30, 20))
-            highlighted.putpixel((x, y), (255, 255, 255))
-    for y in range(4, 12):
-        for x in range(4, 12):
-            color.putpixel((x, y), (20 + (x - 4) * 25, 30, 40))
-            mask.putpixel((x, y), (20, 220, 40))
+    if "idler" in visible_roles:
+        for y in range(16, 48):
+            for x in range(16, 48):
+                color.putpixel((x, y), (40 + (x - 16) * 6, 60, 80))
+                mask.putpixel((x, y), (240, 30, 20))
+                highlighted.putpixel((x, y), (255, 255, 255))
+    if "arrow" in visible_roles:
+        for y in range(4, 12):
+            for x in range(4, 12):
+                color.putpixel((x, y), (20 + (x - 4) * 25, 30, 40))
+                mask.putpixel((x, y), (20, 220, 40))
+    for role, x_range, mask_color in (
+        ("gap_left", range(4, 12), (30, 80, 230)),
+        ("gap_right", range(20, 28), (230, 180, 30)),
+    ):
+        if role not in visible_roles:
+            continue
+        for y in range(50, 58):
+            for x in x_range:
+                color.putpixel((x, y), mask_color)
+                mask.putpixel((x, y), mask_color)
     color.save(color_path)
     mask.save(mask_path)
     highlighted.save(highlight_path)
     exr_path.write_bytes(b"private evaluator pass")
-    state_hash = ("1" if projection.mode == "perspective" else "2") * 64
+    state_hash = hashlib.sha256(name.encode()).hexdigest()
+    camera = Camera(
+        pose=Pose(position_mm=(3_000, -4_000, 2_000), orientation_xyzw=(0, 0, 0, 1)),
+        projection=projection,
+    )
     session = SessionSnapshot(
-        camera=Camera(
-            pose=Pose(position_mm=(3_000, -4_000, 2_000), orientation_xyzw=(0, 0, 0, 1)),
-            projection=projection,
-        ),
-        illumination=PresetIllumination(preset="raking_left"),
+        camera=camera,
+        camera_diagnostics=camera_diagnostics(camera, target_mm=(0, 0, 0)),
+        illumination=PresetIllumination(preset=illumination),
         components={
             component_id: ComponentVisualState(
-                display=(DisplayMode.HIDDEN if role == "cover" else DisplayMode.SHOWN),
-                mark=(MarkMode.HIGHLIGHTED if role == "idler" else MarkMode.UNMARKED),
+                display=(
+                    DisplayMode.ISOLATED
+                    if role == isolated_role
+                    else DisplayMode.HIDDEN
+                    if isolated_role is not None or role == "cover"
+                    else DisplayMode.SHOWN
+                ),
+                mark=(
+                    MarkMode.HIGHLIGHTED
+                    if role == "idler" and "idler" in visible_roles
+                    else MarkMode.UNMARKED
+                ),
             )
             for role, component_id in component_ids.items()
         },
@@ -229,6 +297,8 @@ def evidence_render(
             component_colors={
                 component_ids["idler"]: (240, 30, 20),
                 component_ids["arrow"]: (20, 220, 40),
+                component_ids["gap_left"]: (30, 80, 230),
+                component_ids["gap_right"]: (230, 180, 30),
             },
         ),
         luminance=LuminanceSummary(
@@ -241,6 +311,30 @@ def evidence_render(
     )
 
 
+def break_state_predicate(
+    payload: object,
+    predicate: StatePredicate,
+    component_id: str | None,
+) -> object:
+    assert isinstance(payload, dict)
+    broken = deepcopy(payload)
+    if predicate is StatePredicate.PROJECTION_MODE:
+        broken["camera"]["projection"]["mode"] = "invalidated"
+    elif predicate is StatePredicate.FOCAL_LENGTH_MM:
+        broken["camera"]["projection"]["focal_length_mm"] = 17.0
+    elif predicate is StatePredicate.ILLUMINATION_PRESET:
+        broken["illumination"]["preset"] = "invalidated"
+    elif predicate is StatePredicate.COMPONENT_DISPLAY:
+        assert component_id is not None
+        broken["components"][component_id]["display"] = "shown"
+    elif predicate is StatePredicate.COMPONENT_MARK:
+        assert component_id is not None
+        broken["components"][component_id]["mark"] = "unmarked"
+    else:
+        raise AssertionError(predicate)
+    return broken
+
+
 def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) -> None:
     model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path)
     episode = generate_episodes(model)[1]
@@ -251,16 +345,39 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         source_sha256=model.sha256,
         component_ids=model.component_ids,
         projection=PerspectiveProjection(focal_length_mm=85),
+        illumination=IlluminationPreset.NEUTRAL_STUDIO,
+        visible_roles={"idler"},
     )
-    orthographic = evidence_render(
+    raking_left = evidence_render(
         tmp_path,
-        name="orthographic",
+        name="raking-left",
         source_sha256=model.sha256,
         component_ids=model.component_ids,
         projection=OrthographicProjection(scale_mm=5_000),
+        illumination=IlluminationPreset.RAKING_LEFT,
+        visible_roles={"arrow"},
+        isolated_role="arrow",
+    )
+    raking_right = evidence_render(
+        tmp_path,
+        name="raking-right",
+        source_sha256=model.sha256,
+        component_ids=model.component_ids,
+        projection=OrthographicProjection(scale_mm=5_000),
+        illumination=IlluminationPreset.RAKING_RIGHT,
+        visible_roles={"arrow"},
+        isolated_role="arrow",
+    )
+    backlit = evidence_render(
+        tmp_path,
+        name="backlit",
+        source_sha256=model.sha256,
+        component_ids=model.component_ids,
+        projection=OrthographicProjection(scale_mm=5_000),
+        illumination=IlluminationPreset.BACKLIT,
+        visible_roles={"gap_left", "gap_right"},
     )
     target = model.component_ids["idler"]
-    cover = model.component_ids["cover"]
     trace = (
         accepted_event(1, "scene.open", arguments={}, result={}),
         accepted_event(
@@ -285,58 +402,292 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         ),
         accepted_event(
             6,
-            "view.orbit",
+            "illumination.set",
             arguments={},
-            result=orthographic.session.model_dump(mode="json"),
+            result=raking_left.session.model_dump(mode="json"),
             before=perspective.state_sha256,
-            after=orthographic.state_sha256,
+            after=raking_left.state_sha256,
         ),
         accepted_event(
             7,
-            "illumination.set",
-            arguments={},
-            result=perspective.session.model_dump(mode="json"),
-            before=orthographic.state_sha256,
+            "component.display",
+            arguments={"component_ids": [model.component_ids["arrow"]], "mode": "isolated"},
+            result=raking_left.session.model_dump(mode="json"),
+            before=raking_left.state_sha256,
             after="3" * 64,
         ),
         accepted_event(
             8,
-            "component.display",
-            arguments={"component_ids": [cover], "mode": "hidden"},
+            "component.mark",
+            arguments={"component_ids": [target], "mode": "highlighted"},
             result=perspective.session.model_dump(mode="json"),
             before="3" * 64,
             after="4" * 64,
         ),
         accepted_event(
             9,
-            "component.mark",
-            arguments={"component_ids": [target], "mode": "highlighted"},
-            result=perspective.session.model_dump(mode="json"),
+            "illumination.set",
+            arguments={},
+            result=raking_right.session.model_dump(mode="json"),
             before="4" * 64,
+            after=raking_right.state_sha256,
+        ),
+        accepted_event(
+            10,
+            "illumination.set",
+            arguments={},
+            result=backlit.session.model_dump(mode="json"),
+            before=raking_right.state_sha256,
+            after=backlit.state_sha256,
+        ),
+        accepted_event(
+            11,
+            "render.image",
+            arguments={},
+            result=perspective.model_dump(mode="json"),
+            before=perspective.state_sha256,
             after=perspective.state_sha256,
         ),
         accepted_event(
-            10, "render.image", arguments={}, result=perspective.model_dump(mode="json")
+            12,
+            "render.image",
+            arguments={},
+            result=raking_left.model_dump(mode="json"),
+            before=raking_left.state_sha256,
+            after=raking_left.state_sha256,
+        ),
+        accepted_event(
+            13,
+            "render.image",
+            arguments={},
+            result=raking_right.model_dump(mode="json"),
+            before=raking_right.state_sha256,
+            after=raking_right.state_sha256,
+        ),
+        accepted_event(
+            14,
+            "render.image",
+            arguments={},
+            result=backlit.model_dump(mode="json"),
+            before=backlit.state_sha256,
+            after=backlit.state_sha256,
         ),
     )
     snapshot = snapshot_source(model.path)
+    submission = EpisodeSubmission(
+        episode_id=episode.spec.episode_id,
+        answer=episode.ground_truth.answer,
+        evidence_manifest_paths=tuple(
+            render.color.path for render in (perspective, raking_left, raking_right, backlit)
+        ),
+    )
     report = score_episode(
         OracleInputs(
             spec=episode.spec,
             truth=episode.ground_truth,
-            submission=EpisodeSubmission(
-                episode_id=episode.spec.episode_id,
-                answer=episode.ground_truth.answer,
-            ),
+            submission=submission,
             trace=trace,
             source_before=snapshot,
             source_after=snapshot,
-            renders=(perspective, orthographic),
+            artifact_root=tmp_path,
+            renders=(perspective, raking_left, raking_right, backlit),
         )
     )
 
     assert next(gate for gate in report.gates if gate.gate == "state").status is GateStatus.PASS
     assert next(gate for gate in report.gates if gate.gate == "evidence").status is GateStatus.PASS
+    missing_submission = score_episode(
+        replace(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=submission.model_copy(update={"evidence_manifest_paths": ()}),
+                trace=trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                artifact_root=tmp_path,
+                renders=(perspective, raking_left, raking_right, backlit),
+            )
+        )
+    )
+    missing_evidence = next(gate for gate in missing_submission.gates if gate.gate == "evidence")
+    assert missing_evidence.status is GateStatus.FAIL
+    detached_trace = tuple(
+        event.model_copy(update={"state_after_sha256": "f" * 64})
+        if event.operation is not Operation.RENDER_IMAGE
+        and event.state_after_sha256 == perspective.state_sha256
+        else event
+        for event in trace
+    )
+    detached_report = score_episode(
+        OracleInputs(
+            spec=episode.spec,
+            truth=episode.ground_truth,
+            submission=submission,
+            trace=detached_trace,
+            source_before=snapshot,
+            source_after=snapshot,
+            artifact_root=tmp_path,
+            renders=(perspective, raking_left, raking_right, backlit),
+        )
+    )
+    detached_state = next(gate for gate in detached_report.gates if gate.gate == "state")
+    assert detached_state.status is GateStatus.FAIL
+
+    group_state_hashes = {
+        "context_85": perspective.state_sha256,
+        "surface_left": raking_left.state_sha256,
+        "surface_right": raking_right.state_sha256,
+        "gap_backlit": backlit.state_sha256,
+    }
+    for group_name, state_hash in group_state_hashes.items():
+        reduced_trace = tuple(
+            event
+            for event in trace
+            if not (
+                isinstance(event.result, dict) and event.result.get("state_sha256") == state_hash
+            )
+        )
+        reduced_report = score_episode(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=submission,
+                trace=reduced_trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                artifact_root=tmp_path,
+                renders=(perspective, raking_left, raking_right, backlit),
+            )
+        )
+        state_gate = next(gate for gate in reduced_report.gates if gate.gate == "state")
+        assert state_gate.status is GateStatus.FAIL, group_name
+
+    for requirement in episode.ground_truth.state_requirements:
+        if requirement.state_group is None:
+            continue
+        state_hash = group_state_hashes[requirement.state_group]
+        component_id = (
+            model.component_ids[requirement.component_role]
+            if requirement.component_role is not None
+            else None
+        )
+        broken_trace = tuple(
+            event.model_copy(
+                update={
+                    "result": break_state_predicate(
+                        event.result,
+                        requirement.predicate,
+                        component_id,
+                    )
+                }
+            )
+            if isinstance(event.result, dict)
+            and event.result.get("state_sha256") == state_hash
+            and event.operation is not Operation.RENDER_IMAGE
+            else event
+            for event in trace
+        )
+        broken_report = score_episode(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=submission,
+                trace=broken_trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                artifact_root=tmp_path,
+                renders=(perspective, raking_left, raking_right, backlit),
+            )
+        )
+        state_gate = next(gate for gate in broken_report.gates if gate.gate == "state")
+        assert state_gate.status is GateStatus.FAIL, requirement
+
+    perspective_raking_session = perspective.session.model_copy(
+        update={
+            "illumination": PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
+            "state_sha256": "a" * 64,
+        }
+    )
+    perspective_raking = perspective.model_copy(
+        update={
+            "state_sha256": "a" * 64,
+            "session": perspective_raking_session,
+        }
+    )
+    neutral_orthographic_session = raking_left.session.model_copy(
+        update={
+            "illumination": PresetIllumination(preset=IlluminationPreset.NEUTRAL_STUDIO),
+            "state_sha256": "b" * 64,
+        }
+    )
+    neutral_orthographic = raking_left.model_copy(
+        update={
+            "state_sha256": "b" * 64,
+            "session": neutral_orthographic_session,
+        }
+    )
+    split_report = score_episode(
+        replace(
+            OracleInputs(
+                spec=episode.spec,
+                truth=episode.ground_truth,
+                submission=submission,
+                trace=trace,
+                source_before=snapshot,
+                source_after=snapshot,
+                artifact_root=tmp_path,
+                renders=(
+                    perspective_raking,
+                    neutral_orthographic,
+                    raking_left,
+                    raking_right,
+                    backlit,
+                ),
+            )
+        )
+    )
+    split_evidence = next(gate for gate in split_report.gates if gate.gate == "evidence")
+    assert split_evidence.status is GateStatus.FAIL
+
+    for removed_render in (perspective, raking_left, raking_right, backlit):
+        reduced = tuple(
+            render
+            for render in (perspective, raking_left, raking_right, backlit)
+            if render is not removed_render
+        )
+        reduced_report = score_episode(
+            replace(
+                OracleInputs(
+                    spec=episode.spec,
+                    truth=episode.ground_truth,
+                    submission=submission,
+                    trace=trace,
+                    source_before=snapshot,
+                    source_after=snapshot,
+                    artifact_root=tmp_path,
+                    renders=reduced,
+                )
+            )
+        )
+        evidence_gate = next(gate for gate in reduced_report.gates if gate.gate == "evidence")
+        assert evidence_gate.status is GateStatus.FAIL
+
+    Path(perspective.color.path).write_bytes(b"agent replacement")
+    tampered_report = score_episode(
+        OracleInputs(
+            spec=episode.spec,
+            truth=episode.ground_truth,
+            submission=submission,
+            trace=trace,
+            source_before=snapshot,
+            source_after=snapshot,
+            artifact_root=tmp_path,
+            renders=(perspective, raking_left, raking_right, backlit),
+        )
+    )
+    tampered_evidence = next(gate for gate in tampered_report.gates if gate.gate == "evidence")
+    assert tampered_evidence.status is GateStatus.FAIL
 
 
 def test_full_investigation_coverage_fails_when_any_operation_is_removed(

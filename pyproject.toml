@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
   "mcp>=1.27,<2",
-  "pillow>=11.3,<13",
+  "pillow>=12.1,<13",
   "pydantic>=2.11,<3",
   "typer>=0.16,<1",
 ]
@@ -42,7 +42,12 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["meshprobe"]
-omit = ["src/meshprobe/blender/worker.py"]
+omit = [
+  "src/meshprobe/blender/curated_builder.py",
+  "src/meshprobe/blender/worker.py",
+  "src/meshprobe/evals/reference_agent.py",
+  "src/meshprobe/evals/harness/windows_sandbox.py",
+]
 
 [tool.coverage.report]
 fail_under = 90

@@ -13,13 +13,20 @@ from PIL import Image
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
-from meshprobe.controller import BlenderController, BlenderWorkerError
+from meshprobe.controller import (
+    DEFAULT_WORKER_TIMEOUT_SECONDS,
+    BlenderController,
+    BlenderWorkerError,
+)
 from meshprobe.models import (
     AreaLight,
     Camera,
     ContactSheetManifest,
+    ContactSheetOrbit,
+    ContactSheetPanelSpec,
     CustomIllumination,
     DisplayMode,
+    EnvironmentMap,
     IlluminationPreset,
     MarkMode,
     OrthographicProjection,
@@ -106,6 +113,52 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def render_crash_worker(tmp_path: Path) -> tuple[Path, Path]:
+    worker = Path(__file__).parents[2] / "src" / "meshprobe" / "blender" / "worker.py"
+    patched_worker = tmp_path / "crash_once_worker.py"
+    crash_marker = tmp_path / "render-crashed-once"
+    source = worker.read_text(encoding="utf-8")
+    needle = '    if operation == "render.image":\n        require_session()\n'
+    replacement = (
+        '    if operation == "render.image":\n'
+        f"        crash_marker = Path({str(crash_marker)!r})\n"
+        "        if not crash_marker.exists():\n"
+        "            crash_marker.write_text('render crash', encoding='utf-8')\n"
+        "            os._exit(86)\n"
+        "        require_session()\n"
+    )
+    assert source.count(needle) == 1
+    patched_worker.write_text(source.replace(needle, replacement), encoding="utf-8")
+
+    return patched_worker, crash_marker
+
+
+def build_environment_exr(tmp_path: Path) -> Path:
+    output = tmp_path / "studio.exr"
+    script = tmp_path / "build_environment.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+image = bpy.data.images.new('studio', width=8, height=4, float_buffer=True)
+image.pixels = [0.8, 0.4, 0.2, 1.0] * (8 * 4)
+bpy.context.scene.render.image_settings.file_format = 'OPEN_EXR'
+bpy.context.scene.render.image_settings.color_depth = '32'
+image.save_render(filepath={json.dumps(str(output))}, scene=bpy.context.scene)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_flat_mesh(tmp_path: Path, source_format: str, cube_size: float = 1.0) -> Path:
     output = tmp_path / f"fixture.{source_format}"
     script = tmp_path / f"build_{source_format}.py"
@@ -158,6 +211,15 @@ bpy.ops.export_scene.gltf(
         timeout=30,
     )
     return output
+
+
+def build_unverified_capabilities_gltf(tmp_path: Path) -> Path:
+    source = build_external_gltf(tmp_path)
+    document = json.loads(source.read_text(encoding="utf-8"))
+    document["animations"] = [{"name": "inspection-motion", "channels": [], "samplers": []}]
+    document["extensionsUsed"] = ["VENDOR_procedural_material"]
+    source.write_text(json.dumps(document), encoding="utf-8")
+    return source
 
 
 def build_duplicate_name_gltf(tmp_path: Path) -> Path:
@@ -331,13 +393,27 @@ def test_persistent_worker_imports_glb_without_source_changes(tmp_path: Path) ->
     before_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     before_stat = source.stat()
 
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
         manifest = controller.open_scene(source)
+        assert manifest.normalized_geometry is not None
+        normalized_path = Path(manifest.normalized_geometry.path)
+        normalized_stat = normalized_path.stat()
         second_manifest = controller.open_scene(source)
 
     assert manifest == second_manifest
     assert manifest.source_sha256 == before_hash
     assert manifest.source_format == "glb"
+    assert manifest.normalized_geometry is not None
+    assert normalized_path.read_bytes()[:4] == b"glTF"
+    assert manifest.normalized_geometry.bytes == normalized_path.stat().st_size
+    assert (
+        manifest.normalized_geometry.sha256
+        == hashlib.sha256(normalized_path.read_bytes()).hexdigest()
+    )
+    assert normalized_path.stat().st_mtime_ns == normalized_stat.st_mtime_ns
     assert manifest.capabilities.hierarchy == "preserved"
     assert manifest.capabilities.textures == "absent"
     assert len(manifest.components) == 3
@@ -390,6 +466,23 @@ def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) ->
     assert snapshot_source(source) == before
 
 
+def test_import_reports_animation_and_procedural_extension_limits(tmp_path: Path) -> None:
+    source = build_unverified_capabilities_gltf(tmp_path)
+
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+
+    assert manifest.capabilities.animations == "static_pose"
+    assert manifest.capabilities.procedural_materials == "unsupported"
+    warning_codes = {warning.code for warning in manifest.warnings}
+    assert "animation.static_pose" in warning_codes
+    assert "extension.unverified" in warning_codes
+    assert "material.procedural_unsupported" in warning_codes
+
+
 def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
     tmp_path: Path,
 ) -> None:
@@ -418,6 +511,50 @@ def test_controller_restarts_after_worker_crash(tmp_path: Path) -> None:
         recovered = controller.open_scene(source)
 
     assert recovered == expected
+
+
+def test_controller_recovers_from_real_blender_crash_during_render(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    before = snapshot_source(source)
+    worker, crash_marker = render_crash_worker(tmp_path)
+    output = tmp_path / "recovered-render.png"
+    controller = BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    )
+    controller._worker_path = worker
+    with controller:
+        manifest = controller.open_scene(source)
+        first_pid = controller.ready_event["pid"] if controller.ready_event is not None else None
+        target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="highlight",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(output),
+                width=128,
+                height=128,
+                samples=1,
+            )
+        )
+        second_pid = controller.ready_event["pid"] if controller.ready_event is not None else None
+        runtime = controller.request("session.runtime")
+
+    assert crash_marker.read_text(encoding="utf-8") == "render crash"
+    assert first_pid != second_pid
+    assert rendered.color.path == str(output)
+    assert output.is_file()
+    assert rendered.session.components[target].mark is MarkMode.HIGHLIGHTED
+    assert runtime["components"][target]["materials"] == ["MeshProbeMark-highlighted"]
+    assert snapshot_source(source) == before
 
 
 def test_open_cli_emits_valid_manifest(tmp_path: Path) -> None:
@@ -522,7 +659,12 @@ def test_component_paths_escape_separator_characters(tmp_path: Path) -> None:
 
 def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    environment_path = build_environment_exr(tmp_path)
+    environment_hash = hashlib.sha256(environment_path.read_bytes()).hexdigest()
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
         manifest = controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("scene.describe")["session"])
         target = manifest.components[-1].id
@@ -672,6 +814,38 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert isinstance(custom, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
 
+        environment_lit = controller.execute(
+            IlluminationSetCommand(
+                request_id="environment-light",
+                op="illumination.set",
+                illumination=CustomIllumination(
+                    background_rgb=(0, 0, 0),
+                    ambient_strength=0,
+                    environment_map=EnvironmentMap(
+                        path=str(environment_path),
+                        sha256=environment_hash,
+                        strength=1.25,
+                        rotation_degrees=30,
+                    ),
+                ),
+            )
+        )
+        assert isinstance(environment_lit, SessionSnapshot)
+        assert isinstance(environment_lit.illumination, CustomIllumination)
+        cached_environment = environment_lit.illumination.environment_map
+        assert cached_environment is not None
+        assert cached_environment.path != str(environment_path)
+        environment_runtime = controller.request("session.runtime")["environment_map"]
+        assert environment_runtime["path"] == cached_environment.path
+        assert environment_runtime["projection"] == "EQUIRECTANGULAR"
+        assert hashlib.sha256(environment_path.read_bytes()).hexdigest() == environment_hash
+        original_path_spec = environment_lit.illumination.model_dump(mode="json")
+        original_path_spec["environment_map"]["path"] = str(environment_path)
+        same_content_state = SessionSnapshot.model_validate(
+            controller.request("illumination.set", illumination=original_path_spec)
+        )
+        assert same_content_state.state_sha256 == environment_lit.state_sha256
+
         before_invalid_mode = controller.request("scene.describe")["session"]
         with pytest.raises(BlenderWorkerError, match="unknown display mode"):
             controller.request(
@@ -694,6 +868,7 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
+        camera_focus = manifest.components[0].id
         orbit = controller.execute(
             ViewOrbitCommand(
                 request_id="orbit",
@@ -703,10 +878,28 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
                 elevation_degrees=0,
                 distance_mm=2_000,
                 projection=PerspectiveProjection(focal_length_mm=85),
+                focus_component_ids=(camera_focus,),
+                aspect_ratio=16 / 9,
             )
         )
         assert isinstance(orbit, SessionSnapshot)
         assert orbit.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
+        diagnostics = orbit.camera_diagnostics
+        assert diagnostics.aspect_ratio == pytest.approx(16 / 9)
+        assert diagnostics.forward == pytest.approx((-1, 0, 0))
+        assert diagnostics.target_depth_mm == pytest.approx(2_000)
+        assert diagnostics.horizontal_fov_degrees == pytest.approx(
+            PerspectiveProjection(focal_length_mm=85).horizontal_fov_degrees(16 / 9)
+        )
+        assert diagnostics.vertical_fov_degrees == pytest.approx(
+            PerspectiveProjection(focal_length_mm=85).vertical_fov_degrees(16 / 9)
+        )
+        assert len(diagnostics.frustum_corners_mm) == 8
+        projected = diagnostics.projected_bounds[camera_focus]
+        assert projected.projection_status == "in_front"
+        assert projected.minimum_image_xy is not None
+        assert projected.maximum_image_xy is not None
+        assert projected.minimum_depth_mm < projected.maximum_depth_mm
         controller.execute(
             ComponentDisplayCommand(
                 request_id="hide",
@@ -768,7 +961,7 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     before = snapshot_source(source)
     output = tmp_path / "evidence.png"
     evaluator_dir = tmp_path / "private"
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         controller.execute(
@@ -823,6 +1016,10 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     assert snapshot_source(source) == before
 
 
+@pytest.mark.skipif(
+    shutil.which("nvidia-smi") is None,
+    reason="this host has no CUDA device",
+)
 def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     output = tmp_path / "cycles.png"
@@ -877,8 +1074,148 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
-    assert Image.open(sheet.sheet.path).size == (384, 480)
+    assert all(panel.callouts for panel in sheet.panels)
+    assert all(panel.callouts[0].component_id == target for panel in sheet.panels)
+    assert sheet.occlusion.visible_fraction_after >= sheet.occlusion.visible_fraction_before
+    assert Image.open(sheet.sheet.path).size == (384, 528)
     assert restored == initial
+
+
+def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "custom-contact-sheet.png"
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        target = manifest.components[-1].id
+        fixed_pose = manifest.imported_camera.pose
+        panels = (
+            ContactSheetPanelSpec(
+                caption="Perspective context",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=PerspectiveProjection(focal_length_mm=50),
+                ),
+            ),
+            ContactSheetPanelSpec(
+                caption="Left rake",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
+                display="isolated",
+            ),
+            ContactSheetPanelSpec(
+                caption="Right rake",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=45,
+                    elevation_degrees=25,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.RAKING_RIGHT),
+                display="isolated",
+            ),
+            ContactSheetPanelSpec(
+                caption="Fixed pose wide",
+                camera=Camera(
+                    pose=fixed_pose,
+                    projection=PerspectiveProjection(focal_length_mm=35),
+                ),
+                experiment="fixed_pose_focal_study",
+            ),
+            ContactSheetPanelSpec(
+                caption="Fixed pose tele",
+                camera=Camera(
+                    pose=fixed_pose,
+                    projection=PerspectiveProjection(focal_length_mm=85),
+                ),
+                experiment="fixed_pose_focal_study",
+            ),
+            ContactSheetPanelSpec(
+                caption="Dolly wide",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=30,
+                    elevation_degrees=20,
+                    distance_mm=3_000,
+                    projection=PerspectiveProjection(focal_length_mm=35),
+                    reference_focal_length_mm=50,
+                    reference_distance_mm=3_000,
+                ),
+                experiment="dolly_zoom",
+            ),
+            ContactSheetPanelSpec(
+                caption="Dolly tele",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=30,
+                    elevation_degrees=20,
+                    distance_mm=3_000,
+                    projection=PerspectiveProjection(focal_length_mm=85),
+                    reference_focal_length_mm=50,
+                    reference_distance_mm=3_000,
+                ),
+                experiment="dolly_zoom",
+            ),
+            ContactSheetPanelSpec(
+                caption="Backlit silhouette",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=90,
+                    elevation_degrees=0,
+                    distance_mm=4_000,
+                    projection=OrthographicProjection(scale_mm=2_000),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.BACKLIT),
+            ),
+            ContactSheetPanelSpec(
+                caption="High key context",
+                orbit=ContactSheetOrbit(
+                    azimuth_degrees=-45,
+                    elevation_degrees=30,
+                    distance_mm=4_000,
+                    projection=PerspectiveProjection(focal_length_mm=50),
+                ),
+                illumination=PresetIllumination(preset=IlluminationPreset.HIGH_KEY),
+            ),
+        )
+        sheet = controller.execute(
+            RenderContactSheetCommand(
+                request_id="custom-sheet",
+                op="render.contact_sheet",
+                recipe="custom_3x3",
+                panels=panels,
+                output_path=str(output),
+                focus_component_ids=(target,),
+                panel_width=128,
+                panel_height=128,
+                samples=1,
+            )
+        )
+
+    assert isinstance(sheet, ContactSheetManifest)
+    assert sheet.recipe == "custom_3x3"
+    assert sheet.occlusion is None
+    assert sheet.panels[1].render.session.camera.projection.mode == "orthographic"
+    assert sheet.panels[1].render.session.illumination.preset == "raking_left"
+    assert sheet.panels[2].render.session.illumination.preset == "raking_right"
+    assert sheet.panels[3].experiment == "fixed_pose_focal_study"
+    assert sheet.panels[4].experiment == "fixed_pose_focal_study"
+    assert sheet.panels[3].render.session.camera.pose == sheet.panels[4].render.session.camera.pose
+    assert sheet.panels[5].experiment == "dolly_zoom"
+    assert sheet.panels[6].experiment == "dolly_zoom"
+    assert sheet.panels[5].render.session.camera_diagnostics.target_depth_mm == pytest.approx(2_100)
+    assert sheet.panels[6].render.session.camera_diagnostics.target_depth_mm == pytest.approx(5_100)
+    assert "orthographic 2000mm" in sheet.panels[1].caption
+    assert "dolly_zoom" in sheet.panels[5].caption
+    assert Image.open(sheet.sheet.path).size == (384, 528)
 
 
 def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
@@ -886,10 +1223,24 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
+        visibility_before = controller.request(
+            "component.visibility",
+            component_ids=[by_name["target"]],
+            width=128,
+            height=128,
+        )
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+        visibility_after = controller.request(
+            "component.visibility",
+            component_ids=[by_name["target"]],
+            width=128,
+            height=128,
+        )
         cleared = controller.request("component.occluders", component_ids=[by_name["target"]])
 
     assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
     assert ranking["occluders"][0]["blocked_rays"] > 0
+    assert visibility_before["visible_fraction"] < visibility_after["visible_fraction"]
+    assert visibility_after["visible_fraction"] == pytest.approx(1)
     assert cleared["occluders"] == []
