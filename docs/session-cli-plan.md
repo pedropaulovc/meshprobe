@@ -110,7 +110,8 @@ wall limit; prompts do not disclose the ceiling to the evaluated agent.
 The process sandbox also caps any single file at 1 GiB. Episode evidence budgets remain
 separate because Blender's internal startup files are not submitted evidence. The pilot
 allows at most 512 processes and threads so Codex and Blender can coexist without removing
-the runaway-process guard.
+the runaway-process guard. The per-process CPU ceiling scales with host core count; the wall
+deadline remains authoritative for multithreaded Blender renders.
 
 On Linux, each agent runs inside Bubblewrap with its own PID and mount namespaces. The
 sandbox shares the host network for provider access but exposes only the assigned public

@@ -302,7 +302,7 @@ def _sandboxed_agent_command(
         environment={"NO_COLOR": "1"},
         limits=IsolationLimits(
             wall_seconds=wall_seconds,
-            cpu_seconds=max(1, int(wall_seconds)),
+            cpu_seconds=max(600, int(wall_seconds * (os.cpu_count() or 1))),
             output_bytes=max(output_bytes, ERGONOMICS_PROCESS_OUTPUT_LIMIT),
             processes=ERGONOMICS_PROCESS_LIMIT,
         ),

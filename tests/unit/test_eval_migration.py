@@ -158,6 +158,8 @@ def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     assert "/workspace/artifacts" in command
     assert str(ergonomics.ERGONOMICS_RUNTIME) in command
     assert f"--fsize={ergonomics.ERGONOMICS_PROCESS_OUTPUT_LIMIT}:" in " ".join(command)
+    cpu = next(argument for argument in command if argument.startswith("--cpu="))
+    assert int(cpu.removeprefix("--cpu=").split(":", 1)[0]) >= 600
     nproc = next(argument for argument in command if argument.startswith("--nproc="))
     assert int(nproc.removeprefix("--nproc=").split(":", 1)[0]) >= 512
 
