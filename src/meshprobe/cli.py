@@ -438,6 +438,29 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
 
 
+def _emit_receipts(
+    ctx: typer.Context,
+    client: MeshProbeClient,
+    receipts: list[OperationReceipt],
+) -> None:
+    output = _options(ctx).output
+    if output == "json":
+        _emit({"receipts": [receipt.model_dump(mode="json") for receipt in receipts]})
+        return
+    if output == "yaml":
+        _emit_yaml({"receipts": [receipt.model_dump(mode="json") for receipt in receipts]})
+        return
+    if output == "raw":
+        results: list[object] = []
+        for receipt in receipts:
+            envelope = client.read_result(receipt)
+            results.append(envelope.get("result") if isinstance(envelope, dict) else envelope)
+        _emit({"results": results})
+        return
+    for receipt in receipts:
+        _emit_receipt(ctx, client, receipt)
+
+
 def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None) -> None:
     client = _client(ctx, blender=blender)
     try:
@@ -785,8 +808,10 @@ def close_session(
         receipts = client.close_all() if all_sessions else [client.close(_options(ctx).session)]
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
-    for receipt in receipts:
-        _emit_receipt(ctx, client, receipt)
+    if all_sessions:
+        _emit_receipts(ctx, client, receipts)
+        return
+    _emit_receipt(ctx, client, receipts[0])
 
 
 @app.command("kill")
@@ -801,8 +826,10 @@ def kill_session(
         receipts = client.kill_all() if all_sessions else [client.kill(_options(ctx).session)]
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
-    for receipt in receipts:
-        _emit_receipt(ctx, client, receipt)
+    if all_sessions:
+        _emit_receipts(ctx, client, receipts)
+        return
+    _emit_receipt(ctx, client, receipts[0])
 
 
 @app.command("delete-data")

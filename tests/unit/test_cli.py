@@ -283,7 +283,10 @@ class FakeClient:
 
     def close_all(self) -> list[OperationReceipt]:
         self.closed.append("all")
-        return [OperationReceipt(session="review", op="session.close")]
+        return [
+            OperationReceipt(session="review", op="session.close"),
+            OperationReceipt(session="secondary", op="session.close"),
+        ]
 
     def kill(self, session: str) -> OperationReceipt:
         self.killed.append(session)
@@ -291,7 +294,10 @@ class FakeClient:
 
     def kill_all(self) -> list[OperationReceipt]:
         self.killed.append("all")
-        return [OperationReceipt(session="review", op="session.kill")]
+        return [
+            OperationReceipt(session="review", op="session.kill"),
+            OperationReceipt(session="secondary", op="session.kill"),
+        ]
 
     def list_sessions(self) -> list[dict[str, object]]:
         return [{"name": "review", "status": "active", "source_path": "assembly.glb"}]
@@ -372,6 +378,28 @@ def test_close_and_kill_have_distinct_selected_and_all_semantics(
 
     assert client.closed == ["review", "all"]
     assert client.killed == ["review", "all"]
+
+
+def test_all_session_lifecycle_output_is_one_machine_readable_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    closed = runner.invoke(app, ["--json", "close", "--all"])
+    killed = runner.invoke(app, ["--yaml", "kill", "--all"])
+    raw = runner.invoke(app, ["--raw", "close", "--all"])
+
+    assert closed.exit_code == 0
+    assert [item["session"] for item in json.loads(closed.stdout)["receipts"]] == [
+        "review",
+        "secondary",
+    ]
+    assert [item["session"] for item in yaml.safe_load(killed.stdout)["receipts"]] == [
+        "review",
+        "secondary",
+    ]
+    assert json.loads(raw.stdout) == {"results": [{"op": "session.close"}, {"op": "session.close"}]}
 
 
 def test_json_and_raw_output_are_explicit(monkeypatch: pytest.MonkeyPatch) -> None:

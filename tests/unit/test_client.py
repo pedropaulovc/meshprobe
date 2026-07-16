@@ -99,6 +99,47 @@ def test_request_does_not_retry_after_read_timeout(
     assert connections == 1
 
 
+def test_connection_refusal_replaces_metadata_even_when_pid_was_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ResponseConnection:
+        def __enter__(self) -> ResponseConnection:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout > 0
+
+        def sendall(self, payload: bytes) -> None:
+            assert b'"token":"fresh"' in payload
+
+        def recv(self, size: int) -> bytes:
+            return b'{"ok":true,"result":{"recovered":true}}\n'
+
+    client = MeshProbeClient(tmp_path)
+    stale = _daemon_metadata(os.getpid())
+    fresh = {**stale, "pid": os.getpid() + 1, "token": "fresh", "port": 54321}
+    atomic_json(client.root / "daemon.json", stale, mode=0o600)
+    attempts = 0
+
+    def connect(*args: object, **kwargs: object) -> ResponseConnection:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionRefusedError("stale daemon socket")
+        return ResponseConnection()
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(client, "_start_daemon", lambda: fresh)
+    monkeypatch.setattr(client, "_alive", lambda metadata: True)
+
+    assert client.request("list") == {"recovered": True}
+    assert attempts == 2
+    assert not (client.root / "daemon.json").exists()
+
+
 def test_close_all_waits_for_graceful_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

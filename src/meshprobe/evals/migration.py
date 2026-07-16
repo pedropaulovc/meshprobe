@@ -39,11 +39,13 @@ def migrate_corpus_v2(
     source_manifest = _read_json(source / "public" / "manifest.json")
     if source_manifest.get("schema_version") != 1:
         raise ValueError("eval migration requires a schema version 1 source corpus")
-    destination = output_root.expanduser().resolve() / corpus_version
+    resolved_output = output_root.expanduser().resolve()
+    resolved_output.mkdir(parents=True, exist_ok=True)
+    destination = resolved_output / corpus_version
     if destination.exists():
         build = validate_corpus(destination)
         return build, audit_migration(source, destination)
-    staging = output_root.expanduser().resolve() / f".{corpus_version}.migrating"
+    staging = resolved_output / f".{corpus_version}.migrating"
     if staging.exists():
         shutil.rmtree(staging)
     shutil.copytree(source, staging, copy_function=_link_or_copy)
@@ -69,7 +71,6 @@ def migrate_corpus_v2(
         for episode_id in manifest["episodes"]
     }
     _write_json(staging / "public" / "manifest.json", manifest)
-    output_root.mkdir(parents=True, exist_ok=True)
     os.replace(staging, destination)
     audit = audit_migration(source, destination)
     build = validate_corpus(destination)

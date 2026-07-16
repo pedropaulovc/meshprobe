@@ -144,9 +144,9 @@ class MeshProbeClient:
                 timeout=CONNECT_TIMEOUT_SECONDS,
             )
         except OSError:
-            if not start or self._alive(metadata):
+            if not start:
                 raise
-            self._remove_stale_metadata(metadata)
+            self._remove_matching_metadata(metadata)
             metadata = self._start_daemon()
             request["token"] = metadata["token"]
             connection = socket.create_connection(

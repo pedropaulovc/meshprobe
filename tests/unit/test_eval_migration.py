@@ -39,9 +39,10 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="migrate the corpus to schema version 2"):
         validate_corpus(source.root)
 
+    output_root = tmp_path / "brand-new" / "migrations"
     migrated, audit = migrate_corpus_v2(
         source.root,
-        tmp_path,
+        output_root,
         corpus_version="procedural-v6",
     )
 
@@ -55,7 +56,7 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
 
     existing, repeated_audit = migrate_corpus_v2(
         source.root,
-        tmp_path,
+        output_root,
         corpus_version="procedural-v6",
     )
     assert existing.root == migrated.root

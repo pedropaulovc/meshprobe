@@ -105,6 +105,39 @@ def test_session_manager_writes_compact_queryable_state(
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
 
 
+def test_reopening_a_session_replaces_all_prior_session_artifacts(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", first, request_id="first-open")
+    files = SessionFiles(manager.root, "review")
+    (files.results / "stale.json").write_text("{}", encoding="utf-8")
+    (files.snapshots / "stale.json").write_text("{}", encoding="utf-8")
+    (files.artifacts / "stale.png").write_bytes(b"stale")
+
+    manager.open("review", second, request_id="second-open")
+
+    assert services[0].closed
+    assert not (files.results / "stale.json").exists()
+    assert not (files.snapshots / "stale.json").exists()
+    assert not (files.artifacts / "stale.png").exists()
+    events = [json.loads(line) for line in files.events.read_text(encoding="utf-8").splitlines()]
+    assert [event["request_id"] for event in events] == ["second-open"]
+    metadata = json.loads(files.metadata.read_text(encoding="utf-8"))
+    assert metadata["source_path"] == str(second.resolve())
+
+
 def test_closed_and_killed_sessions_recover_from_acknowledged_checkpoint(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:

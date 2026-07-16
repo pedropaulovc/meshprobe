@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import threading
 import uuid
 from collections.abc import Callable
@@ -307,10 +308,12 @@ class SessionManager:
     ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
-            files.create_directories()
             existing = self._services.pop(name, None)
             if existing is not None:
                 existing.close()
+            if files.root.exists():
+                shutil.rmtree(files.root)
+            files.create_directories()
             selected_blender = blender if blender is not None else self.blender
             service = self._new_service(selected_blender)
             command = SceneOpenCommand(
