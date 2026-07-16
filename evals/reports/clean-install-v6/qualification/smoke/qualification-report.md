@@ -2,8 +2,8 @@
 
 Tier: `smoke`
 Corpus: `qualification-v6`
-Tier manifest: `26824e0fbd51dfa38a642d4b3cc3679cea118ffce0c5a890d7ea8e1776a0b3d0`
-Adapter: `meshprobe.evals.harness.adapters.ReferenceAgentAdapter` (`fbb440352bf6a8dab04c2590babf4fe2a797943eb4426e8fd7717d8c7bb07959`)
+Tier manifest: `47fa82369a93e8d2c59775bb02570a28ea137f09aca01b5311893572a4cd502f`
+Adapter: `meshprobe.evals.harness.adapters.ReferenceAgentAdapter` (`9b1d17ab95a187b4775224ff5c94bcd9ae90adcf5f5c88f1e6e1b7b6cc41c34c`)
 Workers: 4
 Runtime: MeshProbe 0.1.0.dev0, Blender 5.2.0 LTS
 

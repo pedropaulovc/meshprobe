@@ -4,10 +4,10 @@
     "tier": "smoke",
     "corpus_version": "qualification-v6",
     "corpus_manifest_sha256": "53e54c6ad5f753a12d98e21b382e67bf181f5d4be7151fbd9d5041ddf751bcda",
-    "tier_manifest_sha256": "26824e0fbd51dfa38a642d4b3cc3679cea118ffce0c5a890d7ea8e1776a0b3d0",
+    "tier_manifest_sha256": "47fa82369a93e8d2c59775bb02570a28ea137f09aca01b5311893572a4cd502f",
     "runtime": {
       "meshprobe_version": "0.1.0.dev0",
-      "meshprobe_sha256": "ab82a372c597f6efff5565c583ecda4a9491c9fb94e2f99c0c527df580ce8ddc",
+      "meshprobe_sha256": "c9763e0bba28495a6096a44b621224517de5c5827ae991dca291b4f94778fd05",
       "protocol_version": 2,
       "blender_version": "5.2.0 LTS",
       "importer_sha256": "9cd7eea3b13db9b5fa1dc94c2256c4cb49cd409f42525c1b330f0c7f695ae933",
@@ -22,7 +22,7 @@
       "per_operation": 0.75
     },
     "adapter": "meshprobe.evals.harness.adapters.ReferenceAgentAdapter",
-    "adapter_identity_sha256": "fbb440352bf6a8dab04c2590babf4fe2a797943eb4426e8fd7717d8c7bb07959",
+    "adapter_identity_sha256": "9b1d17ab95a187b4775224ff5c94bcd9ae90adcf5f5c88f1e6e1b7b6cc41c34c",
     "workers": 4
   },
   "overall": {
