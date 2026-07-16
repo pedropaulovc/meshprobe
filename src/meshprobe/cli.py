@@ -507,9 +507,16 @@ def find_components(
         ComponentFindCommand(
             request_id=_request_id("find"),
             op="component.find",
-            selector=ComponentSelector(kind=_find_selector_kind(kind, pattern), pattern=pattern),
+            selector=_find_selector(kind, pattern),
         ),
     )
+
+
+def _find_selector(kind: FindKind, pattern: str) -> ComponentSelector:
+    selector_kind = _find_selector_kind(kind, pattern)
+    if selector_kind is SelectorKind.GLOB and "/" not in pattern:
+        pattern = f"**/{pattern}"
+    return ComponentSelector(kind=selector_kind, pattern=pattern)
 
 
 def _find_selector_kind(kind: FindKind, pattern: str) -> SelectorKind:

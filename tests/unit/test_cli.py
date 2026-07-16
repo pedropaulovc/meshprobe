@@ -478,13 +478,26 @@ def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch
     results = [
         runner.invoke(app, ["find", "target__ControlPoint_Art"]),
         runner.invoke(app, ["find", "assembly/group/target"]),
+        runner.invoke(app, ["find", "*Airship*", "--kind", "glob"]),
+        runner.invoke(app, ["find", "**/idler*", "--kind", "glob"]),
     ]
 
     assert all(result.exit_code == 0 for result in results)
     selectors = [
         command.selector for command in client.commands if isinstance(command, ComponentFindCommand)
     ]
-    assert [selector.kind.value for selector in selectors] == ["exact_name", "exact_path"]
+    assert [selector.kind.value for selector in selectors] == [
+        "exact_name",
+        "exact_path",
+        "glob",
+        "glob",
+    ]
+    assert [selector.pattern for selector in selectors] == [
+        "target__ControlPoint_Art",
+        "assembly/group/target",
+        "**/*Airship*",
+        "**/idler*",
+    ]
 
 
 def test_list_and_delete_data_have_text_and_json_output(
