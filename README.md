@@ -192,8 +192,9 @@ by the qualification runtime instead of being translated silently.
 
 The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes across Claude
 Opus and Codex Luna (`gpt-5.6-luna`). It records exposed command trajectories and token
-accounting; it does
-not claim access to hidden chain of thought and does not replace release qualification:
+accounting; it does not claim access to hidden chain of thought and does not replace release
+qualification. The harness silently enforces a 256,000-token ceiling on each attempt in
+addition to its wall-clock limit:
 
 ```bash
 uv run meshprobe eval ergonomics \

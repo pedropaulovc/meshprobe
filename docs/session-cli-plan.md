@@ -104,7 +104,9 @@ codex exec --model gpt-5.6-luna --json --ephemeral --ignore-user-config --ignore
 
 Preflight checks versions, authentication, and model availability with no model fallback.
 Run a four-pair canary before the remaining twenty. Infrastructure or provider failures may
-be retried once; semantic failures are not retried.
+be retried once; semantic failures are not retried. The harness silently enforces a
+256,000-token ceiling per attempt from the live provider usage stream, alongside the episode
+wall limit; prompts do not disclose the ceiling to the evaluated agent.
 
 Metrics cover correctness and evidence gates, time and tokens to open, help and invalid
 calls, retries, reference use, `rg`/`jq`/`yq` use, bytes read, full raw reads, redundant calls,

@@ -90,6 +90,8 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
     assert len(selected) == 4
     assert [spec.difficulty for spec in specs].count(Difficulty.BASIC) == 2
     assert [spec.difficulty for spec in specs].count(Difficulty.INTERMEDIATE) == 2
+    prompt = ergonomics._prompt(specs[0], corpus.root / "public" / "models" / specs[0].model_file)
+    assert "token limit" not in prompt.casefold()
 
 
 def test_ergonomics_markdown_is_explicitly_diagnostic() -> None:
@@ -173,6 +175,44 @@ def test_ergonomics_retries_only_no_progress_provider_failures(tmp_path: Path) -
 
     assert ergonomics._retryable_provider_failure(no_progress)
     assert not ergonomics._retryable_provider_failure(semantic_overrun)
+
+
+def test_ergonomics_live_token_monitor_deduplicates_claude_messages(tmp_path: Path) -> None:
+    stream = tmp_path / "stream.jsonl"
+    first = {
+        "type": "assistant",
+        "message": {
+            "id": "msg-1",
+            "usage": {
+                "input_tokens": 2,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 200,
+                "output_tokens": 10,
+            },
+        },
+    }
+    second = {
+        "type": "assistant",
+        "message": {
+            "id": "msg-2",
+            "usage": {
+                "input_tokens": 3,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 300,
+                "output_tokens": 15,
+            },
+        },
+    }
+    stream.write_text(
+        "\n".join((json.dumps(first), json.dumps(first), json.dumps(second))) + "\n",
+        encoding="utf-8",
+    )
+    monitor = ergonomics._LiveTokenMonitor(ergonomics.ErgonomicsAgent.CLAUDE, stream)
+
+    assert monitor.total() == 650
+    assert monitor.usage.input == 5
+    assert monitor.usage.output == 25
+    assert monitor.total() == 650
 
 
 def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatch) -> None:

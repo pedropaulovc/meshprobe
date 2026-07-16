@@ -10,7 +10,7 @@ import signal
 import subprocess
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -73,6 +73,7 @@ class ErgonomicsAttempt(BaseModel):
     difficulty: Difficulty
     agent: ErgonomicsAgent
     attempt: int
+    token_limit: int
     command: tuple[str, ...]
     return_code: int
     provider_error: str | None = None
@@ -113,6 +114,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
     ),
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
+DEFAULT_TOKEN_LIMIT = 256_000
 
 
 def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tuple[str, ...]:
@@ -178,7 +180,10 @@ def run_ergonomics_pilot(
     *,
     per_difficulty: int = 12,
     canary_pairs: int = 4,
+    token_limit: int = DEFAULT_TOKEN_LIMIT,
 ) -> ErgonomicsRun:
+    if token_limit < 1_000:
+        raise ValueError("ergonomics token limit must be at least 1000")
     corpus_root = corpus_root.expanduser().resolve(strict=True)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -203,7 +208,13 @@ def run_ergonomics_pilot(
             key = (episode_id, agent)
             if key in {(attempt.episode_id, attempt.agent) for attempt in attempts}:
                 continue
-            attempt = _run_with_retry(corpus_root, output_root, episode_id, agent)
+            attempt = _run_with_retry(
+                corpus_root,
+                output_root,
+                episode_id,
+                agent,
+                token_limit=token_limit,
+            )
             attempts.append(attempt)
             _checkpoint(output_root, attempts, preflight)
         if index + 1 == canary_pairs:
@@ -227,11 +238,27 @@ def _run_with_retry(
     output_root: Path,
     episode_id: str,
     agent: ErgonomicsAgent,
+    *,
+    token_limit: int,
 ) -> ErgonomicsAttempt:
-    first = _run_attempt(corpus_root, output_root, episode_id, agent, attempt=1)
+    first = _run_attempt(
+        corpus_root,
+        output_root,
+        episode_id,
+        agent,
+        attempt=1,
+        token_limit=token_limit,
+    )
     if not _retryable_provider_failure(first):
         return first
-    second = _run_attempt(corpus_root, output_root, episode_id, agent, attempt=2)
+    second = _run_attempt(
+        corpus_root,
+        output_root,
+        episode_id,
+        agent,
+        attempt=2,
+        token_limit=token_limit,
+    )
     metrics = second.metrics.model_copy(update={"retries": 1})
     return second.model_copy(update={"metrics": metrics})
 
@@ -243,6 +270,7 @@ def _run_attempt(
     agent: ErgonomicsAgent,
     *,
     attempt: int,
+    token_limit: int,
 ) -> ErgonomicsAttempt:
     spec = EpisodeSpec.model_validate_json(
         (corpus_root / "public" / "episodes" / f"{episode_id}.json").read_text(encoding="utf-8")
@@ -255,7 +283,10 @@ def _run_attempt(
     root = output_root / "attempts" / episode_id / agent / f"attempt-{attempt}"
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    prompt = _prompt(spec, corpus_root / "public" / "models" / spec.model_file)
+    prompt = _prompt(
+        spec,
+        corpus_root / "public" / "models" / spec.model_file,
+    )
     command = (*AGENT_COMMANDS[agent], prompt)
     raw_path = root / "stream.jsonl"
     stderr_path = root / "stderr.log"
@@ -280,11 +311,13 @@ def _run_attempt(
             creationflags=creation_flags,
         )
         try:
-            return_code = process.wait(timeout=spec.budgets.wall_seconds)
-        except subprocess.TimeoutExpired:
-            return_code = 124
-            provider_error = f"timeout after {spec.budgets.wall_seconds:g} seconds"
-            _terminate_agent(process)
+            return_code, provider_error = _wait_for_agent(
+                process,
+                agent,
+                raw_path,
+                wall_seconds=spec.budgets.wall_seconds,
+                token_limit=token_limit,
+            )
         except BaseException:
             _terminate_agent(process)
             raise
@@ -318,6 +351,7 @@ def _run_attempt(
         difficulty=spec.difficulty,
         agent=agent,
         attempt=attempt,
+        token_limit=token_limit,
         command=command[:-1],
         return_code=return_code,
         provider_error=provider_error,
@@ -377,6 +411,65 @@ def _terminate_agent(process: subprocess.Popen[str]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
     with suppress(subprocess.TimeoutExpired):
         process.wait(timeout=10)
+
+
+@dataclass
+class _LiveTokenMonitor:
+    agent: ErgonomicsAgent
+    path: Path
+    offset: int = 0
+    remainder: bytes = b""
+    events: list[dict[str, Any]] = field(default_factory=list)
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+    def total(self) -> int:
+        with self.path.open("rb") as stream:
+            stream.seek(self.offset)
+            chunk = stream.read()
+            self.offset += len(chunk)
+        lines = (self.remainder + chunk).split(b"\n")
+        self.remainder = lines.pop()
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                self.events.append(payload)
+        self.usage = _token_usage(self.agent, self.events)
+        if self.agent is ErgonomicsAgent.CLAUDE:
+            return (
+                self.usage.input
+                + self.usage.cache_creation
+                + self.usage.cache_read
+                + self.usage.output
+            )
+        return self.usage.input + self.usage.output
+
+
+def _wait_for_agent(
+    process: subprocess.Popen[str],
+    agent: ErgonomicsAgent,
+    raw_path: Path,
+    *,
+    wall_seconds: float,
+    token_limit: int,
+) -> tuple[int, str | None]:
+    deadline = time.monotonic() + wall_seconds
+    monitor = _LiveTokenMonitor(agent, raw_path)
+    while True:
+        total = monitor.total()
+        if total >= token_limit:
+            _terminate_agent(process)
+            return 125, f"token limit {token_limit} reached ({total} reported tokens)"
+        return_code = process.poll()
+        if return_code is not None:
+            return return_code, None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_agent(process)
+            return 124, f"timeout after {wall_seconds:g} seconds"
+        time.sleep(min(0.25, remaining))
 
 
 def _prompt(spec: EpisodeSpec, model_path: Path) -> str:
@@ -614,6 +707,8 @@ def _extract_commands(events: list[dict[str, Any]]) -> list[str]:
 
 
 def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenUsage:
+    if agent is ErgonomicsAgent.CLAUDE:
+        return _claude_token_usage(events)
     values = {
         "input": 0,
         "cached_input": 0,
@@ -643,9 +738,36 @@ def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenU
                 visit(child)
 
     visit(events)
-    if agent is ErgonomicsAgent.CODEX and values["cached_input"] > values["input"]:
+    if values["cached_input"] > values["input"]:
         values["input"] = values["cached_input"]
     return TokenUsage(**values)
+
+
+def _claude_token_usage(events: list[dict[str, Any]]) -> TokenUsage:
+    messages: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        message_id = message.get("id")
+        usage = message.get("usage")
+        if isinstance(message_id, str) and isinstance(usage, dict):
+            messages[message_id] = usage
+    return TokenUsage(
+        input=sum(_usage_int(usage, "input_tokens") for usage in messages.values()),
+        output=sum(_usage_int(usage, "output_tokens") for usage in messages.values()),
+        cache_creation=sum(
+            _usage_int(usage, "cache_creation_input_tokens") for usage in messages.values()
+        ),
+        cache_read=sum(_usage_int(usage, "cache_read_input_tokens") for usage in messages.values()),
+    )
+
+
+def _usage_int(usage: dict[str, Any], key: str) -> int:
+    value = usage.get(key, 0)
+    return value if isinstance(value, int) else 0
 
 
 def _count_nonzero_exits(raw: str) -> int:
