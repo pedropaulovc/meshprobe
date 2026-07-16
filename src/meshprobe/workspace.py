@@ -173,6 +173,12 @@ def durable_state_schema_summary() -> dict[str, object]:
                 "fields": "schema_version source_sha256 source_format units root_bounds "
                 "components imported_camera imported_illumination capabilities warnings "
                 "normalized_geometry",
+                "capabilities": {
+                    "hierarchy.preserved": "parent and child component links preserve source "
+                    "component ancestry",
+                    "hierarchy.flattened": "component paths remain authoritative and retain "
+                    "source ancestry, but intermediate non-mesh nodes are encoded only in paths",
+                },
             },
             "components.yml": {
                 "purpose": "compact stable component index",

@@ -741,12 +741,10 @@ def _wait_for_agent(
 
 
 def _prompt(spec: EpisodeSpec, model_path: Path) -> str:
-    schema = {
+    wrapper = {
         "answer": {
-            "status": "answered | indeterminate",
-            "values": {},
-            "conflicting_component_ids": [],
-            "missing_capabilities": [],
+            "status": "use the public answer schema",
+            "values": "use its exact declared field names",
         },
         "evidence_manifest_paths": [],
         "self_report": {
@@ -763,8 +761,10 @@ def _prompt(spec: EpisodeSpec, model_path: Path) -> str:
         "appear sufficient, and any capability you want but do not have. Reassess that in the "
         "final self_report. "
         f"Model: {model_path}. Task: {spec.prompt} "
-        "End with exactly one line beginning MESHPROBE_RESULT= followed by JSON matching: "
-        f"{json.dumps(schema, separators=(',', ':'))}"
+        "The answer object must conform exactly to this public JSON Schema: "
+        f"{json.dumps(spec.answer_schema, separators=(',', ':'))}. "
+        "End with exactly one line beginning MESHPROBE_RESULT= followed by JSON matching this "
+        f"wrapper: {json.dumps(wrapper, separators=(',', ':'))}"
     )
 
 
@@ -783,6 +783,7 @@ def _metrics(
     joined = "\n".join(commands)
     meshprobe_calls = [call for command in commands for call in _meshprobe_calls(command)]
     operations = [call for call in meshprobe_calls if "--help" not in call]
+    session_operations = _session_operations(workspace)
     normalized = [re.sub(r"\s+", " ", call.strip()) for call in operations]
     return ErgonomicsMetrics(
         answer_gate=answer_gate,
@@ -803,8 +804,8 @@ def _metrics(
         raw_reads=len(re.findall(r"meshprobe[^\n]*--raw", joined)),
         full_file_reads=len(re.findall(r"\b(?:cat|less|head|tail)\s+[^|;&]+", joined)),
         redundant_calls=max(0, len(normalized) - len(set(normalized))),
-        meshprobe_operations=len(operations),
-        renders=sum("render-image" in call or "render-sheet" in call for call in operations),
+        meshprobe_operations=len(session_operations),
+        renders=sum(op in {"render.image", "render.contact_sheet"} for op in session_operations),
         receipt_path_uses=len(re.findall(r"\.meshprobe/[^\s'\"]+", joined)),
     )
 
@@ -997,15 +998,27 @@ def _extract_commands(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> l
     return commands
 
 
-_MESHPROBE_CALL = re.compile(
-    r"(?:^|[;&|]\s*|['\"])(?:[./\w-]+/)?meshprobe(?=\s)(?P<arguments>[^;&|\n]*)"
-)
+_MESHPROBE_CALL = re.compile(r"(?<![\w.-])(?:[./\w-]+/)?meshprobe(?=\s)(?P<arguments>[^;&|\n]*)")
 
 
 def _meshprobe_calls(command: str) -> tuple[str, ...]:
     return tuple(
         match.group("arguments").strip(" '\"") for match in _MESHPROBE_CALL.finditer(command)
     )
+
+
+def _session_operations(workspace: Path) -> tuple[str, ...]:
+    operations: list[str] = []
+    for path in sorted((workspace / ".meshprobe" / "sessions").glob("*/events.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            operation = event.get("op") if isinstance(event, dict) else None
+            if isinstance(operation, str):
+                operations.append(operation)
+    return tuple(operations)
 
 
 def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenUsage:

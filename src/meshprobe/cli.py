@@ -100,6 +100,14 @@ class SchemaKind(StrEnum):
     ALL = "all"
 
 
+class FindKind(StrEnum):
+    AUTO = "auto"
+    EXACT_NAME = "exact_name"
+    EXACT_PATH = "exact_path"
+    GLOB = "glob"
+    REGEX = "regex"
+
+
 def _emit(value: object) -> None:
     if hasattr(value, "model_dump_json"):
         typer.echo(value.model_dump_json(indent=2))
@@ -118,7 +126,7 @@ def schema(
     kind: Annotated[
         SchemaKind,
         typer.Option("--kind", help="Show operation commands, durable state files, or both."),
-    ] = SchemaKind.COMMANDS,
+    ] = SchemaKind.STATE,
     full: Annotated[
         bool,
         typer.Option("--full", help="Expand durable state fields into formal JSON Schemas."),
@@ -484,7 +492,13 @@ def snapshot(ctx: typer.Context) -> None:
 def find_components(
     ctx: typer.Context,
     pattern: Annotated[str, typer.Argument()],
-    kind: Annotated[SelectorKind, typer.Option("--kind")] = SelectorKind.GLOB,
+    kind: Annotated[
+        FindKind,
+        typer.Option(
+            "--kind",
+            help="Auto treats plain text as an exact name, paths as exact, and wildcards as glob.",
+        ),
+    ] = FindKind.AUTO,
 ) -> None:
     """Find components in the selected session."""
 
@@ -493,9 +507,19 @@ def find_components(
         ComponentFindCommand(
             request_id=_request_id("find"),
             op="component.find",
-            selector=ComponentSelector(kind=kind, pattern=pattern),
+            selector=ComponentSelector(kind=_find_selector_kind(kind, pattern), pattern=pattern),
         ),
     )
+
+
+def _find_selector_kind(kind: FindKind, pattern: str) -> SelectorKind:
+    if kind is not FindKind.AUTO:
+        return SelectorKind(kind.value)
+    if any(character in pattern for character in "*?["):
+        return SelectorKind.GLOB
+    if "/" in pattern:
+        return SelectorKind.EXACT_PATH
+    return SelectorKind.EXACT_NAME
 
 
 @app.command("inspect")

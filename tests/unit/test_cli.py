@@ -14,6 +14,7 @@ from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
+    ComponentFindCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
@@ -24,7 +25,7 @@ runner = CliRunner()
 
 
 def test_schema_command_emits_discriminated_union() -> None:
-    result = runner.invoke(app, ["schema"])
+    result = runner.invoke(app, ["schema", "--kind", "commands"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
@@ -465,6 +466,25 @@ def test_flat_operation_commands_build_typed_protocol_calls(
         "render.contact_sheet",
         "session.reset",
     ]
+    find = client.commands[0]
+    assert isinstance(find, ComponentFindCommand)
+    assert find.selector.kind.value == "glob"
+
+
+def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    results = [
+        runner.invoke(app, ["find", "target__ControlPoint_Art"]),
+        runner.invoke(app, ["find", "assembly/group/target"]),
+    ]
+
+    assert all(result.exit_code == 0 for result in results)
+    selectors = [
+        command.selector for command in client.commands if isinstance(command, ComponentFindCommand)
+    ]
+    assert [selector.kind.value for selector in selectors] == ["exact_name", "exact_path"]
 
 
 def test_list_and_delete_data_have_text_and_json_output(

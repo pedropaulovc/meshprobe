@@ -114,6 +114,7 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
     assert "token limit" not in prompt.casefold()
     assert "problem_understanding" in prompt
     assert "tool_sufficiency" in prompt
+    assert "target_component_id" in prompt
 
 
 def test_ergonomics_selection_rejects_hidden_role_and_ambiguous_tasks(tmp_path: Path) -> None:
@@ -406,13 +407,35 @@ def test_ergonomics_counts_executables_not_meshprobe_state_paths() -> None:
     command = (
         "/bin/bash -lc 'command -v meshprobe; meshprobe --help; "
         "cat .meshprobe/state.yml; ./.meshprobe-runtime/bin/meshprobe -s demo open model.glb "
-        "&& meshprobe -s demo render-sheet c1'"
+        "&& timeout 120 meshprobe -s demo render-sheet c1'"
     )
 
     assert ergonomics._meshprobe_calls(command) == (
         "--help",
         "-s demo open model.glb",
         "-s demo render-sheet c1",
+    )
+
+
+def test_ergonomics_counts_actual_session_events(tmp_path: Path) -> None:
+    events = tmp_path / ".meshprobe" / "sessions" / "demo" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        "\n".join(
+            (
+                '{"op":"scene.open","status":"accepted"}',
+                "not-json",
+                '{"op":"component.find","status":"accepted"}',
+                '{"op":"session.close","status":"accepted"}',
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert ergonomics._session_operations(tmp_path) == (
+        "scene.open",
+        "component.find",
+        "session.close",
     )
 
 
