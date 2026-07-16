@@ -157,6 +157,22 @@ def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     assert "--share-net" in command
     assert "/workspace/artifacts" in command
     assert str(ergonomics.ERGONOMICS_RUNTIME) in command
+    assert f"--fsize={ergonomics.ERGONOMICS_PROCESS_OUTPUT_LIMIT}:" in " ".join(command)
+
+
+def test_ergonomics_mounts_complete_blender_distribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "blender-5.2"
+    runtime.mkdir()
+    executable = runtime / "blender"
+    executable.write_bytes(b"blender")
+    shim = tmp_path / "bin" / "blender"
+    shim.parent.mkdir()
+    shim.symlink_to(executable)
+    monkeypatch.setattr(ergonomics.shutil, "which", lambda name: str(shim))
+
+    assert ergonomics._blender_runtime() == runtime
 
 
 def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:

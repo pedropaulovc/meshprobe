@@ -378,6 +378,14 @@ def _sandbox_command(
         "--tmpfs",
         "/tmp",
         "--dir",
+        "/etc",
+        "--ro-bind-try",
+        "/etc/passwd",
+        "/etc/passwd",
+        "--ro-bind-try",
+        "/etc/group",
+        "/etc/group",
+        "--dir",
         "/tmp/home",
         "--ro-bind",
         str(input_root),
@@ -400,7 +408,7 @@ def _sandbox_command(
     ]
     if network is NetworkAccess.SHARED:
         args.insert(2, "--share-net")
-        args.extend(("--dir", "/etc", "--dir", "/etc/ssl"))
+        args.extend(("--dir", "/etc/ssl"))
         for system_path in (
             "/etc/hosts",
             "/etc/nsswitch.conf",

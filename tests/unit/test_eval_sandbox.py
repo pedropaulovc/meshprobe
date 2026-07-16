@@ -77,6 +77,30 @@ def test_sandbox_exposes_only_read_only_input_and_writable_artifacts(tmp_path: P
     assert (public / "model.glb").read_bytes() == b"model"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX runtime identity files are Linux-specific")
+def test_sandbox_exposes_read_only_runtime_identity(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    program = (
+        "from pathlib import Path\n"
+        "passwd=Path('/etc/passwd')\n"
+        "assert passwd.is_file() and passwd.read_bytes()\n"
+        "try:\n"
+        "    passwd.write_text('changed')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('runtime identity was writable')\n"
+    )
+
+    result = run_isolated(
+        (sandbox_python(), "-c", program),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_sandbox_has_no_network_namespace(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
     program = "import socket; socket.create_connection(('1.1.1.1', 53), timeout=0.2)"

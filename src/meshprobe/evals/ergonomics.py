@@ -126,8 +126,10 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
 DEFAULT_TOKEN_LIMIT = 256_000
+ERGONOMICS_PROCESS_OUTPUT_LIMIT = 1024**3
 ERGONOMICS_RUNTIME = PurePosixPath("/workspace/artifacts/.meshprobe-runtime")
 ERGONOMICS_INPUT = PurePosixPath("/workspace/artifacts/input")
+ERGONOMICS_BLENDER = PurePosixPath("/workspace/artifacts/.blender-runtime")
 
 
 def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tuple[str, ...]:
@@ -264,9 +266,17 @@ def _agent_read_only_mounts(
     )
     return (
         (cli_runtime, ERGONOMICS_RUNTIME),
+        (_blender_runtime(), ERGONOMICS_BLENDER),
         (input_root, ERGONOMICS_INPUT),
         (credential, guest_credential),
     )
+
+
+def _blender_runtime() -> Path:
+    executable = shutil.which("blender")
+    if executable is None:
+        raise RuntimeError("Blender is required for isolated ergonomics attempts")
+    return Path(executable).resolve(strict=True).parent
 
 
 def _sandboxed_agent_command(
@@ -292,11 +302,11 @@ def _sandboxed_agent_command(
         limits=IsolationLimits(
             wall_seconds=wall_seconds,
             cpu_seconds=max(1, int(wall_seconds)),
-            output_bytes=output_bytes,
+            output_bytes=max(output_bytes, ERGONOMICS_PROCESS_OUTPUT_LIMIT),
         ),
         network=NetworkAccess.SHARED,
         read_only_mounts=_agent_read_only_mounts(agent, cli_runtime, public),
-        path_entries=(ERGONOMICS_RUNTIME / "bin",),
+        path_entries=(ERGONOMICS_RUNTIME / "bin", ERGONOMICS_BLENDER),
     )
 
 

@@ -200,7 +200,8 @@ accounting; it does not claim access to hidden chain of thought and does not rep
 qualification. The harness silently enforces a 256,000-token ceiling on each attempt in
 addition to its wall-clock limit. On Linux, agents run inside Bubblewrap with only the
 assigned public model, a clean MeshProbe install, credentials, and their writable attempt
-directory mounted. The repository and private evaluator data stay outside the sandbox:
+directory mounted. Blender is mounted read-only as a runtime dependency. The repository and
+private evaluator data stay outside the sandbox:
 
 ```bash
 uv run meshprobe eval ergonomics \
