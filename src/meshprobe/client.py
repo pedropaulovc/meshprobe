@@ -87,6 +87,9 @@ class MeshProbeClient:
         metadata = self._metadata()
         assert metadata is not None
         persisted = self._persisted_sessions()
+        if not self._authenticated_daemon(metadata):
+            self._remove_matching_metadata(metadata)
+            return self._killed_receipts(persisted)
         payload: dict[str, Any] | None = None
         with suppress(OSError, RuntimeError, TimeoutError, ValueError):
             payload = self.request(
@@ -97,6 +100,20 @@ class MeshProbeClient:
         self._wait_for_shutdown(metadata, force=True)
         if payload is not None:
             return [OperationReceipt.model_validate(item) for item in payload.get("sessions", [])]
+        return self._killed_receipts(persisted)
+
+    def _authenticated_daemon(self, metadata: dict[str, Any]) -> bool:
+        try:
+            payload = self.request(
+                "ping",
+                start=False,
+                read_timeout=CONNECT_TIMEOUT_SECONDS,
+            )
+            return int(payload["pid"]) == int(metadata["pid"])
+        except (KeyError, OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+            return False
+
+    def _killed_receipts(self, persisted: list[dict[str, Any]]) -> list[OperationReceipt]:
         self._mark_sessions_killed(persisted)
         return [
             OperationReceipt(
@@ -386,6 +403,9 @@ class MeshProbeClient:
                 f"meshprobe daemon {pid} did not stop within "
                 f"{DAEMON_SHUTDOWN_TIMEOUT_SECONDS:g} seconds"
             )
+        if not self._authenticated_daemon(metadata):
+            self._remove_matching_metadata(metadata)
+            return
         self._kill_process_tree(pid)
         self._remove_matching_metadata(metadata)
 

@@ -26,7 +26,12 @@ from meshprobe.models import (
     SceneManifest,
     SessionSnapshot,
 )
-from meshprobe.protocol import Command, SceneOpenCommand, SessionResetCommand
+from meshprobe.protocol import (
+    Command,
+    IlluminationSetCommand,
+    SceneOpenCommand,
+    SessionResetCommand,
+)
 from meshprobe.service import CommandResponse, MeshProbeService
 
 STATE_OPERATIONS = frozenset(
@@ -571,6 +576,8 @@ class SessionManager:
         safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", request_id)[:80] or "result"
         root = files.snapshots if response.op == "session.snapshot" else files.results
         path = root / f"{safe_id}.json"
+        if path.exists():
+            path = root / f"{safe_id}-{uuid.uuid4().hex[:12]}.json"
         atomic_json(path, response.model_dump(mode="json"))
         return path
 
@@ -608,7 +615,10 @@ class SessionManager:
         if isinstance(command, SessionResetCommand):
             checkpoint.accepted_commands.clear()
         elif command.op in STATE_OPERATIONS:
-            checkpoint.accepted_commands.append(command.model_dump(mode="json"))
+            accepted = command
+            if isinstance(command, IlluminationSetCommand):
+                accepted = command.model_copy(update={"illumination": snapshot.illumination})
+            checkpoint.accepted_commands.append(accepted.model_dump(mode="json"))
         checkpoint.state_sha256 = snapshot.state_sha256
         atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
 

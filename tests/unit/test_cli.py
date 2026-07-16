@@ -348,6 +348,33 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert render_command.output_path == str((tmp_path / "relative/render.png").resolve())
 
 
+def test_default_render_path_accepts_meshprobe_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / ".meshprobe"
+    root.mkdir()
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    rendered = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(root),
+            "--session",
+            "review",
+            "render-image",
+            "--samples",
+            "1",
+        ],
+    )
+
+    assert rendered.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, RenderImageCommand)
+    assert Path(command.output_path).parent == root / "sessions" / "review" / "artifacts"
+
+
 def test_component_commands_resolve_short_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

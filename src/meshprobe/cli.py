@@ -50,6 +50,7 @@ from meshprobe.workspace import (
     OperationReceipt,
     durable_state_json_schema,
     durable_state_schema_summary,
+    workspace_root,
 )
 
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
@@ -714,8 +715,7 @@ def render_image(
 
     options = _options(ctx)
     destination = output or (
-        options.workspace.resolve()
-        / ".meshprobe"
+        workspace_root(options.workspace)
         / "sessions"
         / options.session
         / "artifacts"

@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from meshprobe.models import DisplayMode, SceneManifest
+from meshprobe.models import CustomIllumination, DisplayMode, EnvironmentMap, SceneManifest
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
+    IlluminationSetCommand,
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
@@ -103,6 +104,73 @@ def test_session_manager_writes_compact_queryable_state(
     assert state["components"]["overrides"]["c2"] == {"display": "hidden"}
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_reused_request_ids_preserve_every_result(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    command = SessionSnapshotCommand(request_id="same", op="session.snapshot")
+
+    first = manager.execute("review", command)
+    second = manager.execute("review", command)
+
+    assert first.result_path != second.result_path
+    assert first.result_path is not None
+    assert second.result_path is not None
+    assert (tmp_path / first.result_path).is_file()
+    assert (tmp_path / second.result_path).is_file()
+
+
+def test_checkpoint_persists_cached_environment_map_path(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    assert services[0].session is not None
+    original = CustomIllumination(
+        background_rgb=(0.0, 0.0, 0.0),
+        ambient_strength=0.0,
+        environment_map=EnvironmentMap(path="/tmp/upload.hdr", sha256="a" * 64),
+    )
+    cached = original.model_copy(
+        update={
+            "environment_map": original.environment_map.model_copy(
+                update={"path": "/durable/cache/environment.hdr"}
+            )
+        }
+    )
+    snapshot = services[0].session.snapshot().model_copy(update={"illumination": cached})
+    command = IlluminationSetCommand(
+        request_id="light",
+        op="illumination.set",
+        illumination=original,
+    )
+
+    SessionManager._update_checkpoint(SessionFiles(manager.root, "review"), command, snapshot)
+
+    checkpoint = json.loads(
+        (manager.root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
+    )
+    assert (
+        checkpoint["accepted_commands"][0]["illumination"]["environment_map"]["path"]
+        == "/durable/cache/environment.hdr"
+    )
 
 
 def test_reopening_a_session_replaces_all_prior_session_artifacts(

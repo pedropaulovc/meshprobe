@@ -175,6 +175,7 @@ def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
         "request",
         lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("wedged")),
     )
+    monkeypatch.setattr(client, "_authenticated_daemon", lambda metadata: True)
     monkeypatch.setattr(
         client,
         "_wait_for_shutdown",
@@ -190,6 +191,34 @@ def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
     assert [receipt.session for receipt in receipts] == [session.name]
     assert persisted["status"] == "killed"
     assert persisted["worker_pid"] is None
+
+
+def test_kill_all_does_not_signal_a_reused_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    daemon = _daemon_metadata(1234)
+    session = _session_metadata()
+    atomic_json(client.root / "daemon.json", daemon)
+    atomic_json(
+        client.root / "sessions" / session.name / "metadata.json",
+        session.model_dump(mode="json"),
+    )
+    monkeypatch.setattr(client, "_authenticated_daemon", lambda metadata: False)
+    monkeypatch.setattr(
+        client,
+        "_kill_process_tree",
+        lambda pid: pytest.fail(f"must not signal unverified PID {pid}"),
+    )
+
+    receipts = client.kill_all()
+
+    persisted = json.loads(
+        (client.root / "sessions" / session.name / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert [receipt.session for receipt in receipts] == [session.name]
+    assert persisted["status"] == "killed"
+    assert not (client.root / "daemon.json").exists()
 
 
 def test_windows_pid_liveness_does_not_send_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
