@@ -6,7 +6,7 @@
   "generator_sha256": "8ccb46876c287d5a0f585b63f67c6ab65a9c321d5e750ca792587e3bf9cdb4f5",
   "runtime": {
     "meshprobe_version": "0.1.0.dev0",
-    "meshprobe_sha256": "17834a62e8acdc9307c0536cc8189d0f4c5ffc4234c2e612a22d80f204c987bb",
+    "meshprobe_sha256": "1aba8c204feff3deb5a52041f30cb0fec40e61fa961c7f67dd0d7a0ec265c92d",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
     "importer_sha256": "9cd7eea3b13db9b5fa1dc94c2256c4cb49cd409f42525c1b330f0c7f695ae933",

@@ -501,7 +501,13 @@ def _sandbox_agent_command(
     translated_arguments = list(command[1:])
     for index, argument in enumerate(translated_arguments, start=1):
         candidate = Path(argument).expanduser()
-        if argument.startswith("/workspace/") or not candidate.is_file():
+        if argument.startswith("/workspace/"):
+            continue
+        try:
+            is_file = candidate.is_file()
+        except OSError:
+            is_file = False
+        if not is_file:
             continue
         resolved_argument = candidate.resolve(strict=True)
         if resolved_argument.is_relative_to("/usr"):

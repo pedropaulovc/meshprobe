@@ -273,6 +273,16 @@ def test_sandbox_preserves_node_package_runtime_for_bin_symlink(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
+def test_sandbox_treats_long_prompt_as_an_argument_not_a_path() -> None:
+    prompt = "inspect the assigned model " * 200
+
+    mounts, translated = _sandbox_agent_command(("echo", prompt))
+
+    assert mounts == ()
+    assert translated == ("/usr/bin/echo", prompt)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bubblewrap runtime binding is POSIX-specific")
 def test_sandbox_mounts_external_virtualenv_base_runtime(tmp_path: Path) -> None:
     public, artifacts = roots(tmp_path)
     base_runtime = tmp_path / "hosted-python-3.13.12"
