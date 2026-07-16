@@ -206,6 +206,70 @@ def test_reopening_a_session_replaces_all_prior_session_artifacts(
     assert metadata["source_path"] == str(second.resolve())
 
 
+def test_rejected_reopen_preserves_existing_session(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    (files.artifacts / "preserved.png").write_bytes(b"evidence")
+
+    with pytest.raises(FileNotFoundError):
+        manager.open("review", tmp_path / "missing.glb")
+
+    assert not services[0].closed
+    assert (files.artifacts / "preserved.png").read_bytes() == b"evidence"
+    assert json.loads(files.metadata.read_text(encoding="utf-8"))["source_path"] == str(
+        source.resolve()
+    )
+
+
+def test_import_failure_preserves_existing_session(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    class FailingSessionService(FakeSessionService):
+        def execute(self, command: Command) -> CommandResponse:
+            if isinstance(command, SceneOpenCommand):
+                raise RuntimeError("import rejected")
+            return super().execute(command)
+
+    def factory() -> FakeSessionService:
+        service: FakeSessionService
+        if services:
+            service = FailingSessionService(scene_manifest)
+        else:
+            service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", first)
+    files = SessionFiles(manager.root, "review")
+    (files.artifacts / "preserved.png").write_bytes(b"evidence")
+
+    with pytest.raises(RuntimeError, match="import rejected"):
+        manager.open("review", second)
+
+    assert not services[0].closed
+    assert services[1].killed
+    assert (files.artifacts / "preserved.png").read_bytes() == b"evidence"
+
+
 def test_closed_and_killed_sessions_recover_from_acknowledged_checkpoint(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
@@ -284,6 +348,27 @@ def test_manager_lists_resolves_and_stops_all_sessions(
     killed = recovered.kill_all()
     assert [item.session for item in killed] == ["alpha", "beta"]
     assert services[-1].killed
+
+
+def test_component_resolution_prefers_short_refs_over_paths(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+    path_collision = payload["components"][0]
+    ref_target = payload["components"][1]
+    path_collision["path"] = "c2"
+    ref_target["ref"] = "c2"
+    files.components.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    assert manager.resolve_component("review", "c2") == ref_target["id"]
 
 
 def test_reset_clears_replay_and_artifact_detection_is_render_only(

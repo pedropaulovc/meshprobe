@@ -16,6 +16,7 @@ from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
+    RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
@@ -368,11 +369,29 @@ def test_default_render_path_accepts_meshprobe_workspace_root(
             "1",
         ],
     )
+    sheet = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(root),
+            "--session",
+            "review",
+            "render-sheet",
+            "c2",
+            "--samples",
+            "1",
+        ],
+    )
 
     assert rendered.exit_code == 0
-    command = client.commands[-1]
-    assert isinstance(command, RenderImageCommand)
-    assert Path(command.output_path).parent == root / "sessions" / "review" / "artifacts"
+    assert sheet.exit_code == 0
+    image_command = client.commands[-2]
+    sheet_command = client.commands[-1]
+    assert isinstance(image_command, RenderImageCommand)
+    assert isinstance(sheet_command, RenderContactSheetCommand)
+    artifacts = root / "sessions" / "review" / "artifacts"
+    assert Path(image_command.output_path).parent == artifacts
+    assert Path(sheet_command.output_path).parent == artifacts
 
 
 def test_component_commands_resolve_short_references(

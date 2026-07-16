@@ -749,8 +749,7 @@ def render_sheet(
 
     options = _options(ctx)
     destination = output or (
-        options.workspace.resolve()
-        / ".meshprobe"
+        workspace_root(options.workspace)
         / "sessions"
         / options.session
         / "artifacts"

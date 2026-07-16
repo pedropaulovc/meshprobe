@@ -62,7 +62,10 @@ class MeshProbeClient:
         metadata = self._metadata(optional=True)
         if metadata is None or not self._alive(metadata):
             return self._persisted_sessions()
-        payload = self.request("list", start=False, read_timeout=CONNECT_TIMEOUT_SECONDS)
+        try:
+            payload = self.request("list", start=False, read_timeout=CONNECT_TIMEOUT_SECONDS)
+        except (OSError, RuntimeError, TimeoutError, ValueError):
+            return self._persisted_sessions()
         sessions = payload.get("sessions", [])
         return sessions if isinstance(sessions, list) else []
 
@@ -97,7 +100,7 @@ class MeshProbeClient:
                 start=False,
                 read_timeout=KILL_RPC_TIMEOUT_SECONDS,
             )
-        self._wait_for_shutdown(metadata, force=True)
+        self._wait_for_shutdown(metadata, force=True, authenticated=True)
         if payload is not None:
             return [OperationReceipt.model_validate(item) for item in payload.get("sessions", [])]
         return self._killed_receipts(persisted)
@@ -387,7 +390,13 @@ class MeshProbeClient:
             raise ValueError("daemon returned an invalid response")
         return payload
 
-    def _wait_for_shutdown(self, metadata: dict[str, Any], *, force: bool) -> None:
+    def _wait_for_shutdown(
+        self,
+        metadata: dict[str, Any],
+        *,
+        force: bool,
+        authenticated: bool = False,
+    ) -> None:
         pid = int(metadata["pid"])
         wait_seconds = KILL_RPC_TIMEOUT_SECONDS if force else DAEMON_SHUTDOWN_TIMEOUT_SECONDS
         deadline = time.monotonic() + wait_seconds
@@ -403,7 +412,7 @@ class MeshProbeClient:
                 f"meshprobe daemon {pid} did not stop within "
                 f"{DAEMON_SHUTDOWN_TIMEOUT_SECONDS:g} seconds"
             )
-        if not self._authenticated_daemon(metadata):
+        if not authenticated and not self._authenticated_daemon(metadata):
             self._remove_matching_metadata(metadata)
             return
         self._kill_process_tree(pid)

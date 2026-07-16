@@ -313,19 +313,13 @@ class SessionManager:
     ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
-            existing = self._services.pop(name, None)
-            if existing is not None:
-                existing.close()
-            if files.root.exists():
-                shutil.rmtree(files.root)
-            files.create_directories()
             selected_blender = blender if blender is not None else self.blender
-            service = self._new_service(selected_blender)
             command = SceneOpenCommand(
                 request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
             )
+            service = self._new_service(selected_blender)
             try:
                 response = service.execute(command)
                 manifest = SceneManifest.model_validate(response.result)
@@ -333,6 +327,12 @@ class SessionManager:
             except Exception:
                 service.kill()
                 raise
+            existing = self._services.pop(name, None)
+            if existing is not None:
+                existing.close()
+            if files.root.exists():
+                shutil.rmtree(files.root)
+            files.create_directories()
             self._services[name] = service
             now = utc_now()
             metadata = SessionMetadata(
@@ -445,9 +445,10 @@ class SessionManager:
         files = self._require_files(name)
         payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
         components = payload.get("components", []) if isinstance(payload, dict) else []
-        for component in components:
-            if value in {component["ref"], component["id"], component["path"]}:
-                return str(component["id"])
+        for field in ("ref", "id", "path"):
+            for component in components:
+                if value == component[field]:
+                    return str(component["id"])
         raise ValueError(f"unknown component reference, id, or exact path: {value}")
 
     def raw_result(self, receipt: OperationReceipt) -> object:

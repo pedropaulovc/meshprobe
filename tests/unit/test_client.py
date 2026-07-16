@@ -44,6 +44,25 @@ def test_list_sessions_reads_durable_metadata_without_daemon(tmp_path: Path) -> 
     assert client.list_sessions() == [metadata.model_dump(mode="json")]
 
 
+def test_list_sessions_falls_back_when_live_pid_has_no_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    metadata = _session_metadata()
+    atomic_json(
+        client.root / "sessions" / metadata.name / "metadata.json",
+        metadata.model_dump(mode="json"),
+    )
+    atomic_json(client.root / "daemon.json", _daemon_metadata(os.getpid()), mode=0o600)
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionRefusedError()),
+    )
+
+    assert client.list_sessions() == [metadata.model_dump(mode="json")]
+
+
 def test_stale_start_lock_is_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = MeshProbeClient(tmp_path)
     client.root.mkdir(parents=True)
@@ -179,7 +198,7 @@ def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
     monkeypatch.setattr(
         client,
         "_wait_for_shutdown",
-        lambda expected, *, force: forced.append(force),
+        lambda expected, *, force, authenticated=False: forced.append(force),
     )
 
     receipts = client.kill_all()
@@ -191,6 +210,22 @@ def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
     assert [receipt.session for receipt in receipts] == [session.name]
     assert persisted["status"] == "killed"
     assert persisted["worker_pid"] is None
+
+
+def test_force_shutdown_signals_daemon_authenticated_before_wedged_rpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    daemon = _daemon_metadata(1234)
+    killed: list[int] = []
+    monkeypatch.setattr("meshprobe.client.KILL_RPC_TIMEOUT_SECONDS", 0.0)
+    monkeypatch.setattr(client, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(client, "_authenticated_daemon", lambda metadata: False)
+    monkeypatch.setattr(client, "_kill_process_tree", killed.append)
+
+    client._wait_for_shutdown(daemon, force=True, authenticated=True)
+
+    assert killed == [1234]
 
 
 def test_kill_all_does_not_signal_a_reused_pid(

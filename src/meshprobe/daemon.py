@@ -17,6 +17,20 @@ from meshprobe.protocol import COMMAND_ADAPTER
 from meshprobe.workspace import SessionManager, atomic_json
 
 
+def _remove_matching_metadata(root: Path, expected: dict[str, Any]) -> None:
+    path = root / "daemon.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    if not isinstance(current, dict):
+        return
+    if current.get("pid") != expected.get("pid") or current.get("token") != expected.get("token"):
+        return
+    with suppress(FileNotFoundError):
+        path.unlink()
+
+
 class DaemonServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -95,8 +109,7 @@ def serve(root: Path, *, blender: str | None = None) -> None:
     finally:
         server.server_close()
         server.manager.shutdown()
-        with suppress(FileNotFoundError):
-            (root / "daemon.json").unlink()
+        _remove_matching_metadata(root, metadata)
 
 
 def main() -> None:
