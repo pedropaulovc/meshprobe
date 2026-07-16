@@ -5,4 +5,4 @@ from meshprobe.models import SceneManifest
 from meshprobe.session import InspectionSession
 
 __all__ = ["BlenderController", "InspectionSession", "SceneManifest"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
