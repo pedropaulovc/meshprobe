@@ -226,6 +226,8 @@ The approved session and migration design is in
 [docs/session-cli-plan.md](docs/session-cli-plan.md). The broader qualification design remains
 in [docs/plan.md](docs/plan.md).
 
+Release notes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 Apache-2.0.
