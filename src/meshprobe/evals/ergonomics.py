@@ -11,6 +11,7 @@ import subprocess
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
@@ -208,7 +209,7 @@ def _run_with_retry(
     agent: ErgonomicsAgent,
 ) -> ErgonomicsAttempt:
     first = _run_attempt(corpus_root, output_root, episode_id, agent, attempt=1)
-    if first.provider_error is None:
+    if not _retryable_provider_failure(first):
         return first
     second = _run_attempt(corpus_root, output_root, episode_id, agent, attempt=2)
     metrics = second.metrics.model_copy(update={"retries": 1})
@@ -238,6 +239,7 @@ def _run_attempt(
     command = (*AGENT_COMMANDS[agent], prompt)
     raw_path = root / "stream.jsonl"
     stderr_path = root / "stderr.log"
+    started_at = datetime.now(UTC)
     started = time.monotonic()
     provider_error: str | None = None
     creation_flags = 0
@@ -285,6 +287,7 @@ def _run_attempt(
         evidence_gate=evidence_gate,
         final=final,
         elapsed=elapsed,
+        time_to_open_seconds=_time_to_open_seconds(workspace, started_at),
         tokens=tokens,
         commands=commands,
         raw=raw,
@@ -308,6 +311,35 @@ def _stop_workspace(workspace: Path) -> None:
     client = MeshProbeClient(workspace)
     with suppress(OSError, RuntimeError, TimeoutError, ValueError):
         client.kill_all()
+
+
+def _retryable_provider_failure(attempt: ErgonomicsAttempt) -> bool:
+    if attempt.provider_error is None or attempt.metrics.meshprobe_operations > 0:
+        return False
+    raw_path = Path(attempt.raw_stream_path)
+    stderr_path = raw_path.with_name("stderr.log")
+    details = attempt.provider_error
+    for path in (raw_path, stderr_path):
+        if path.is_file():
+            details += "\n" + path.read_text(encoding="utf-8", errors="replace")
+    normalized = details.casefold()
+    markers = (
+        "timeout after",
+        "rate limit",
+        "rate_limit",
+        "overloaded",
+        "connection reset",
+        "connection refused",
+        "temporarily unavailable",
+        "internal server error",
+        "service unavailable",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    )
+    return any(marker in normalized for marker in markers)
 
 
 def _terminate_agent(process: subprocess.Popen[str]) -> None:
@@ -353,6 +385,7 @@ def _metrics(
     evidence_gate: bool,
     final: dict[str, Any] | None,
     elapsed: float,
+    time_to_open_seconds: float | None,
     tokens: TokenUsage,
     commands: tuple[str, ...],
     raw: str,
@@ -360,20 +393,13 @@ def _metrics(
 ) -> ErgonomicsMetrics:
     joined = "\n".join(commands)
     meshprobe = [command for command in commands if re.search(r"\bmeshprobe\b", command)]
-    first_open = next(
-        (index for index, command in enumerate(commands) if " open " in command), None
-    )
     normalized = [re.sub(r"\s+", " ", command.strip()) for command in meshprobe]
     return ErgonomicsMetrics(
         answer_gate=answer_gate,
         evidence_gate=evidence_gate,
         structured_output=final is not None,
         elapsed_seconds=elapsed,
-        time_to_open_seconds=(
-            elapsed * (first_open + 1) / len(commands)
-            if first_open is not None and commands
-            else None
-        ),
+        time_to_open_seconds=time_to_open_seconds,
         tokens=tokens,
         commands=commands,
         help_calls=len(re.findall(r"(?:--help|\bhelp\b)", joined)),
@@ -393,6 +419,24 @@ def _metrics(
         ),
         receipt_path_uses=len(re.findall(r"\.meshprobe/[^\s'\"]+", joined)),
     )
+
+
+def _time_to_open_seconds(workspace: Path, started_at: datetime) -> float | None:
+    accepted: list[datetime] = []
+    for events in sorted((workspace / ".meshprobe" / "sessions").glob("*/events.jsonl")):
+        for line in events.read_text(encoding="utf-8").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("op") != "scene.open" or event.get("status") != "accepted":
+                continue
+            at = event.get("at")
+            if isinstance(at, str):
+                accepted.append(datetime.fromisoformat(at))
+    if not accepted:
+        return None
+    return max(0.0, (min(accepted) - started_at).total_seconds())
 
 
 def _checkpoint(

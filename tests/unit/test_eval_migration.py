@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,3 +134,42 @@ def test_ergonomics_attempt_teardown_force_stops_workspace(
     ergonomics._stop_workspace(tmp_path)
 
     assert killed == [tmp_path]
+
+
+def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:
+    started = datetime(2026, 7, 16, 18, 0, tzinfo=UTC)
+    events = tmp_path / ".meshprobe" / "sessions" / "review" / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text(
+        json.dumps(
+            {
+                "at": (started + timedelta(seconds=4.25)).isoformat(),
+                "op": "scene.open",
+                "status": "accepted",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert ergonomics._time_to_open_seconds(tmp_path, started) == 4.25
+
+
+def test_ergonomics_retries_only_no_progress_provider_failures(tmp_path: Path) -> None:
+    stream = tmp_path / "stream.jsonl"
+    stream.write_text('{"type":"rate_limit_event"}\n', encoding="utf-8")
+    (tmp_path / "stderr.log").write_text("", encoding="utf-8")
+
+    no_progress = SimpleNamespace(
+        provider_error="timeout after 180 seconds",
+        metrics=SimpleNamespace(meshprobe_operations=0),
+        raw_stream_path=str(stream),
+    )
+    semantic_overrun = SimpleNamespace(
+        provider_error="timeout after 180 seconds",
+        metrics=SimpleNamespace(meshprobe_operations=4),
+        raw_stream_path=str(stream),
+    )
+
+    assert ergonomics._retryable_provider_failure(no_progress)
+    assert not ergonomics._retryable_provider_failure(semantic_overrun)
