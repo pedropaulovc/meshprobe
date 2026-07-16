@@ -17,7 +17,14 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.models import SceneManifest, SessionSnapshot
+from meshprobe.models import (
+    Camera,
+    DisplayMode,
+    Illumination,
+    MarkMode,
+    SceneManifest,
+    SessionSnapshot,
+)
 from meshprobe.protocol import Command, SceneOpenCommand, SessionResetCommand
 from meshprobe.service import CommandResponse, MeshProbeService
 
@@ -57,6 +64,68 @@ class SessionCheckpoint(BaseModel):
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ComponentIndexEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    id: str
+    path: str
+    parent: str | None
+    name: str
+
+
+class ComponentIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    components: list[ComponentIndexEntry]
+
+
+class ComponentStateDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display: DisplayMode = DisplayMode.SHOWN
+    mark: MarkMode = MarkMode.UNMARKED
+
+
+class ComponentStateOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display: DisplayMode | None = None
+    mark: MarkMode | None = None
+
+
+class ComponentStateIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default: ComponentStateDefaults
+    overrides: dict[str, ComponentStateOverride]
+
+
+class DurableSessionState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    state_sha256: str
+    camera: Camera
+    illumination: Illumination
+    components: ComponentStateIndex
+    results: str
+    artifacts: str
+
+
+class SessionEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    at: str
+    op: str
+    status: Literal["accepted", "rejected"]
+    request_id: str | None = None
+    command: dict[str, Any] | None = None
+    result_path: str | None = None
+    error: str | None = None
+
+
 class OperationReceipt(BaseModel):
     """Small stdout contract pointing to queryable durable output."""
 
@@ -69,6 +138,67 @@ class OperationReceipt(BaseModel):
     result_path: str | None = None
     state_path: str | None = None
     artifact_paths: tuple[str, ...] = ()
+
+
+def durable_state_json_schema() -> dict[str, object]:
+    """Describe every stable file an agent queries in a durable session."""
+    return {
+        "title": "MeshProbe durable session state",
+        "schema_version": 1,
+        "files": {
+            "metadata.json": SessionMetadata.model_json_schema(),
+            "scene.json": SceneManifest.model_json_schema(),
+            "components.yml": ComponentIndex.model_json_schema(),
+            "state.yml": DurableSessionState.model_json_schema(),
+            "checkpoint.json": SessionCheckpoint.model_json_schema(),
+            "events.jsonl": SessionEvent.model_json_schema(),
+            "results/*.json": CommandResponse.model_json_schema(),
+        },
+    }
+
+
+def durable_state_schema_summary() -> dict[str, object]:
+    """Return a compact field map suitable for an agent's first schema read."""
+    return {
+        "schema_version": 1,
+        "query_with": {"json": "jq", "yaml": "yq", "jsonl": "jq"},
+        "files": {
+            "metadata.json": {
+                "purpose": "session source and renderer lifecycle",
+                "fields": "schema_version name source_path source_sha256 blender status "
+                "created_at updated_at worker_pid",
+            },
+            "scene.json": {
+                "purpose": "complete imported scene manifest",
+                "fields": "schema_version source_sha256 source_format units root_bounds "
+                "components imported_camera imported_illumination capabilities warnings "
+                "normalized_geometry",
+            },
+            "components.yml": {
+                "purpose": "compact stable component index",
+                "fields": "schema_version components[].{ref,id,path,parent,name}",
+            },
+            "state.yml": {
+                "purpose": "current camera, lighting, and sparse visual overrides",
+                "fields": "schema_version state_sha256 camera illumination "
+                "components.{default,overrides} results artifacts",
+            },
+            "checkpoint.json": {
+                "purpose": "last acknowledged replay state",
+                "fields": "schema_version source_path source_sha256 blender state_sha256 "
+                "accepted_commands[]",
+            },
+            "events.jsonl": {
+                "purpose": "one accepted or rejected operation per line",
+                "fields": "at request_id op status command result_path error",
+            },
+            "results/*.json": {
+                "purpose": "full operation result envelopes",
+                "fields": "request_id op result",
+            },
+        },
+        "full_schema": "meshprobe schema --kind state --full",
+    }
 
 
 def utc_now() -> str:
@@ -373,49 +503,59 @@ class SessionManager:
     def _write_components(files: SessionFiles, manifest: SceneManifest) -> None:
         ordered = sorted(manifest.components, key=lambda component: component.path)
         refs = {component.id: f"c{index}" for index, component in enumerate(ordered, start=1)}
-        payload = {
-            "schema_version": 1,
-            "components": [
-                {
-                    "ref": refs[component.id],
-                    "id": component.id,
-                    "path": component.path,
-                    "parent": refs.get(component.parent_id) if component.parent_id else None,
-                    "name": component.display_name,
-                }
+        payload = ComponentIndex(
+            components=[
+                ComponentIndexEntry(
+                    ref=refs[component.id],
+                    id=component.id,
+                    path=component.path,
+                    parent=refs.get(component.parent_id) if component.parent_id else None,
+                    name=component.display_name,
+                )
                 for component in ordered
-            ],
-        }
-        atomic_text(files.components, yaml.safe_dump(payload, sort_keys=False))
+            ]
+        )
+        atomic_text(
+            files.components,
+            yaml.safe_dump(payload.model_dump(mode="json"), sort_keys=False),
+        )
 
     @staticmethod
     def _write_state(files: SessionFiles, snapshot: SessionSnapshot) -> None:
-        default_display = "shown"
-        default_mark = "unmarked"
+        default_display = DisplayMode.SHOWN
+        default_mark = MarkMode.UNMARKED
         overrides: dict[str, dict[str, str]] = {}
         components_payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
         refs = {item["id"]: item["ref"] for item in components_payload["components"]}
         for component_id, visual in sorted(snapshot.components.items()):
             entry: dict[str, str] = {}
-            if visual.display.value != default_display:
+            if visual.display is not default_display:
                 entry["display"] = visual.display.value
-            if visual.mark.value != default_mark:
+            if visual.mark is not default_mark:
                 entry["mark"] = visual.mark.value
             if entry:
                 overrides[refs[component_id]] = entry
-        payload = {
-            "schema_version": 1,
-            "state_sha256": snapshot.state_sha256,
-            "camera": snapshot.camera.model_dump(mode="json"),
-            "illumination": snapshot.illumination.model_dump(mode="json"),
-            "components": {
-                "default": {"display": default_display, "mark": default_mark},
-                "overrides": overrides,
-            },
-            "results": files.relative(files.results),
-            "artifacts": files.relative(files.artifacts),
-        }
-        atomic_text(files.state, yaml.safe_dump(payload, sort_keys=False))
+        payload = DurableSessionState(
+            state_sha256=snapshot.state_sha256,
+            camera=snapshot.camera,
+            illumination=snapshot.illumination,
+            components=ComponentStateIndex(
+                default=ComponentStateDefaults(display=default_display, mark=default_mark),
+                overrides={
+                    ref: ComponentStateOverride.model_validate(value)
+                    for ref, value in overrides.items()
+                },
+            ),
+            results=files.relative(files.results),
+            artifacts=files.relative(files.artifacts),
+        )
+        atomic_text(
+            files.state,
+            yaml.safe_dump(
+                payload.model_dump(mode="json", exclude_none=True),
+                sort_keys=False,
+            ),
+        )
 
     @staticmethod
     def _write_result(files: SessionFiles, request_id: str, response: CommandResponse) -> Path:

@@ -149,3 +149,15 @@ def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
     assert [receipt.session for receipt in receipts] == [session.name]
     assert persisted["status"] == "killed"
     assert persisted["worker_pid"] is None
+
+
+def test_windows_pid_liveness_does_not_send_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_kill(pid: int, signal_number: int) -> None:
+        pytest.fail(f"os.kill({pid}, {signal_number}) must not probe a Windows process")
+
+    monkeypatch.setattr("meshprobe.client.os.name", "nt")
+    monkeypatch.setattr("meshprobe.client.os.kill", unexpected_kill)
+    monkeypatch.setattr(MeshProbeClient, "_windows_pid_alive", lambda pid: pid == 42)
+
+    assert MeshProbeClient._pid_alive(42)
+    assert not MeshProbeClient._pid_alive(41)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 from pydantic import ValidationError
 
 from meshprobe.client import MeshProbeClient
@@ -45,7 +46,11 @@ from meshprobe.protocol import (
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.service import MeshProbeService
-from meshprobe.workspace import OperationReceipt
+from meshprobe.workspace import (
+    OperationReceipt,
+    durable_state_json_schema,
+    durable_state_schema_summary,
+)
 
 app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
@@ -65,14 +70,21 @@ def global_options(
     ctx: typer.Context,
     session: Annotated[str, typer.Option("--session", "-s")] = "default",
     workspace: Annotated[Path, typer.Option("--workspace", file_okay=False)] = DEFAULT_WORKSPACE,
-    json_output: Annotated[bool, typer.Option("--json")] = False,
-    raw: Annotated[bool, typer.Option("--raw")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit a machine-readable JSON receipt.")
+    ] = False,
+    yaml_output: Annotated[
+        bool, typer.Option("--yaml", help="Emit a machine-readable YAML receipt.")
+    ] = False,
+    raw: Annotated[
+        bool, typer.Option("--raw", help="Emit the full operation result as JSON.")
+    ] = False,
 ) -> None:
     """Select a durable named session and receipt output format."""
 
-    if json_output and raw:
-        raise typer.BadParameter("--json and --raw are mutually exclusive")
-    output = "raw" if raw else "json" if json_output else "receipt"
+    if sum((json_output, yaml_output, raw)) > 1:
+        raise typer.BadParameter("--json, --yaml, and --raw are mutually exclusive")
+    output = "raw" if raw else "json" if json_output else "yaml" if yaml_output else "receipt"
     ctx.obj = CliOptions(session, workspace, output)
 
 
@@ -82,6 +94,12 @@ class AgentAdapterKind(StrEnum):
     REFERENCE = "reference"
 
 
+class SchemaKind(StrEnum):
+    COMMANDS = "commands"
+    STATE = "state"
+    ALL = "all"
+
+
 def _emit(value: object) -> None:
     if hasattr(value, "model_dump_json"):
         typer.echo(value.model_dump_json(indent=2))
@@ -89,11 +107,35 @@ def _emit(value: object) -> None:
     typer.echo(json.dumps(value, indent=2, sort_keys=True))
 
 
-@app.command("schema")
-def schema() -> None:
-    """Print the JSON Schema for every public protocol command."""
+def _emit_yaml(value: object) -> None:
+    payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+    typer.echo(yaml.safe_dump(payload, sort_keys=False).rstrip())
 
-    _emit(command_json_schema())
+
+@app.command("schema")
+def schema(
+    ctx: typer.Context,
+    kind: Annotated[
+        SchemaKind,
+        typer.Option("--kind", help="Show operation commands, durable state files, or both."),
+    ] = SchemaKind.COMMANDS,
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Expand durable state fields into formal JSON Schemas."),
+    ] = False,
+) -> None:
+    """Print machine-readable schemas for commands or durable state files."""
+
+    payload: object = command_json_schema()
+    if kind is SchemaKind.STATE:
+        payload = durable_state_json_schema() if full else durable_state_schema_summary()
+    if kind is SchemaKind.ALL:
+        state = durable_state_json_schema() if full else durable_state_schema_summary()
+        payload = {"commands": command_json_schema(), "state": state}
+    if _options(ctx).output == "yaml":
+        _emit_yaml(payload)
+        return
+    _emit(payload)
 
 
 @eval_app.command("generate")
@@ -367,6 +409,9 @@ def _emit_receipt(
     output = _options(ctx).output
     if output == "json":
         typer.echo(receipt.model_dump_json(indent=2))
+        return
+    if output == "yaml":
+        _emit_yaml(receipt)
         return
     if output == "raw":
         envelope = client.read_result(receipt)
@@ -667,8 +712,10 @@ def list_sessions(ctx: typer.Context) -> None:
         sessions = client.list_sessions()
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
-    if _options(ctx).output in {"json", "raw"}:
-        _emit({"sessions": sessions})
+    output = _options(ctx).output
+    if output in {"json", "raw", "yaml"}:
+        payload = {"sessions": sessions}
+        _emit_yaml(payload) if output == "yaml" else _emit(payload)
         return
     for session in sessions:
         typer.echo(f"{session['name']}\t{session['status']}\t{session['source_path']}")
@@ -715,8 +762,10 @@ def delete_data(ctx: typer.Context) -> None:
         deleted = client.delete_data()
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
-    if _options(ctx).output in {"json", "raw"}:
-        _emit({"deleted": str(deleted)})
+    output = _options(ctx).output
+    if output in {"json", "raw", "yaml"}:
+        payload = {"deleted": str(deleted)}
+        _emit_yaml(payload) if output == "yaml" else _emit(payload)
         return
     typer.echo(f"deleted {deleted}")
 

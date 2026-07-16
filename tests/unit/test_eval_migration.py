@@ -17,7 +17,14 @@ from meshprobe.evals.migration import (
     migrate_corpus_v2,
     restore_schema_v1_source,
 )
-from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec, ModelSource
+from meshprobe.evals.schemas import (
+    Difficulty,
+    EpisodeClass,
+    EpisodeGroundTruth,
+    EpisodeSpec,
+    ModelSource,
+    TaskFamily,
+)
 
 
 def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> None:
@@ -79,6 +86,7 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
         corpus_version="selection-v2",
         families=(GeneratorFamily.HIDDEN_CLIP, GeneratorFamily.STAMPED_ARROW),
         seeds=(0,),
+        model_source=ModelSource.CURATED,
     )
     selected = select_paired_episodes(corpus.root, per_difficulty=2)
     specs = [
@@ -91,8 +99,36 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
     assert len(selected) == 4
     assert [spec.difficulty for spec in specs].count(Difficulty.BASIC) == 2
     assert [spec.difficulty for spec in specs].count(Difficulty.INTERMEDIATE) == 2
+    assert all(
+        spec.episode_class is EpisodeClass.POSITIVE and spec.model_source is ModelSource.CURATED
+        for spec in specs
+        if spec.difficulty is Difficulty.BASIC
+    )
+    assert all(
+        spec.episode_class is not EpisodeClass.NEGATIVE
+        and spec.family is not TaskFamily.NEGATIVE_AMBIGUOUS
+        for spec in specs
+        if spec.difficulty is Difficulty.INTERMEDIATE
+    )
     prompt = ergonomics._prompt(specs[0], corpus.root / "public" / "models" / specs[0].model_file)
     assert "token limit" not in prompt.casefold()
+    assert "problem_understanding" in prompt
+    assert "tool_sufficiency" in prompt
+
+
+def test_ergonomics_selection_rejects_hidden_role_and_ambiguous_tasks(tmp_path: Path) -> None:
+    corpus = build_corpus(
+        tmp_path,
+        corpus_version="eligibility-v2",
+        families=(GeneratorFamily.AMBIGUOUS_TWIN,),
+        seeds=(0,),
+    )
+    specs = [
+        EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (corpus.root / "public" / "episodes").glob("*.json")
+    ]
+
+    assert not any(ergonomics._ergonomics_eligible(spec) for spec in specs)
 
 
 def test_ergonomics_attempt_persists_exact_prompt(tmp_path: Path) -> None:
@@ -292,7 +328,8 @@ def test_ergonomics_live_token_monitor_deduplicates_claude_messages(tmp_path: Pa
     monitor = ergonomics._LiveTokenMonitor(ergonomics.ErgonomicsAgent.CLAUDE, stream)
 
     assert monitor.total() == 650
-    assert monitor.usage.input == 5
+    assert monitor.usage.input == 625
+    assert monitor.usage.uncached_input == 5
     assert monitor.usage.output == 25
     assert monitor.total() == 650
 
@@ -324,7 +361,8 @@ def test_ergonomics_claude_final_usage_overrides_incremental_messages() -> None:
 
     usage = ergonomics._token_usage(ergonomics.ErgonomicsAgent.CLAUDE, events)
 
-    assert usage.input == 3
+    assert usage.input == 373
+    assert usage.uncached_input == 3
     assert usage.cache_creation == 120
     assert usage.cache_read == 250
     assert usage.output == 40

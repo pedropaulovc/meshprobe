@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
@@ -26,6 +27,20 @@ def test_schema_command_emits_discriminated_union() -> None:
     result = runner.invoke(app, ["schema"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
+
+
+def test_schema_command_documents_durable_state_files() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "state"])
+
+    assert result.exit_code == 0
+    schemas = json.loads(result.stdout)["files"]
+    assert "components.yml" in schemas
+    assert "state.yml" in schemas
+    assert "camera" in schemas["state.yml"]["fields"]
+
+    full = runner.invoke(app, ["schema", "--kind", "state", "--full"])
+    assert full.exit_code == 0
+    assert json.loads(full.stdout)["files"]["state.yml"]["properties"]["camera"]
 
 
 def test_eval_commands_generate_and_validate_a_corpus(tmp_path: Path) -> None:
@@ -356,6 +371,16 @@ def test_json_and_raw_output_are_explicit(monkeypatch: pytest.MonkeyPatch) -> No
     assert json.loads(raw_result.stdout) == {"op": "session.snapshot"}
 
 
+def test_yaml_output_is_machine_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--yaml", "snapshot"])
+
+    assert result.exit_code == 0
+    assert yaml.safe_load(result.stdout)["result_path"].endswith("result.json")
+
+
 def test_flat_operation_commands_build_typed_protocol_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -446,7 +471,7 @@ def test_list_and_delete_data_have_text_and_json_output(
 
 
 def test_global_output_modes_are_mutually_exclusive() -> None:
-    result = runner.invoke(app, ["--json", "--raw", "snapshot"])
+    result = runner.invoke(app, ["--json", "--yaml", "snapshot"])
 
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output

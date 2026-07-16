@@ -26,7 +26,14 @@ from meshprobe.evals.harness.sandbox import (
     NetworkAccess,
     isolated_process_command,
 )
-from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec
+from meshprobe.evals.schemas import (
+    Difficulty,
+    EpisodeClass,
+    EpisodeGroundTruth,
+    EpisodeSpec,
+    ModelSource,
+    TaskFamily,
+)
 from meshprobe.workspace import atomic_json, atomic_text
 
 
@@ -38,7 +45,10 @@ class ErgonomicsAgent(StrEnum):
 class TokenUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Provider-comparable total input. Claude's cache creation and cache reads are
+    # included here; their provider-specific breakdown remains in the fields below.
     input: int = 0
+    uncached_input: int = 0
     cached_input: int = 0
     output: int = 0
     reasoning_output: int = 0
@@ -144,7 +154,7 @@ def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tu
         spec = EpisodeSpec.model_validate_json(
             (corpus_root / "public" / "episodes" / f"{episode_id}.json").read_text(encoding="utf-8")
         )
-        if spec.difficulty in by_difficulty:
+        if _ergonomics_eligible(spec):
             by_difficulty[spec.difficulty].append(spec)
     selected: list[str] = []
     for difficulty in (Difficulty.BASIC, Difficulty.INTERMEDIATE):
@@ -160,6 +170,20 @@ def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tu
             raise ValueError(f"corpus has fewer than {per_difficulty} {difficulty} episodes")
         selected.extend(spec.episode_id for spec in chosen)
     return tuple(selected)
+
+
+def _ergonomics_eligible(spec: EpisodeSpec) -> bool:
+    """Select ordinary tasks whose answer is recoverable from the public episode."""
+    if spec.difficulty is Difficulty.BASIC:
+        return (
+            spec.episode_class is EpisodeClass.POSITIVE and spec.model_source is ModelSource.CURATED
+        )
+    if spec.difficulty is Difficulty.INTERMEDIATE:
+        return (
+            spec.episode_class is not EpisodeClass.NEGATIVE
+            and spec.family is not TaskFamily.NEGATIVE_AMBIGUOUS
+        )
+    return False
 
 
 def preflight_agents(
@@ -685,14 +709,7 @@ class _LiveTokenMonitor:
             if isinstance(payload, dict):
                 self.events.append(payload)
         self.usage = _token_usage(self.agent, self.events)
-        if self.agent is ErgonomicsAgent.CLAUDE:
-            return (
-                self.usage.input
-                + self.usage.cache_creation
-                + self.usage.cache_read
-                + self.usage.output
-            )
-        return self.usage.input + self.usage.output
+        return self.usage.input + self.usage.output + self.usage.reasoning_output
 
 
 def _wait_for_agent(
@@ -729,11 +746,19 @@ def _prompt(spec: EpisodeSpec, model_path: Path) -> str:
             "missing_capabilities": [],
         },
         "evidence_manifest_paths": [],
+        "self_report": {
+            "problem_understanding": "brief explanation",
+            "tool_sufficiency": "sufficient | missing",
+            "wanted_capabilities": [],
+        },
     }
     return (
         "Use the meshprobe CLI to inspect the read-only 3D model. Work only in the current "
         "directory. Start by opening the model in a named session, use compact receipts and "
-        ".meshprobe state files, and gather evidence when the task requires it. "
+        ".meshprobe state files, and gather evidence when the task requires it. Before using "
+        "a tool, briefly state your understanding of the task, whether the available tools "
+        "appear sufficient, and any capability you want but do not have. Reassess that in the "
+        "final self_report. "
         f"Model: {model_path}. Task: {spec.prompt} "
         "End with exactly one line beginning MESHPROBE_RESULT= followed by JSON matching: "
         f"{json.dumps(schema, separators=(',', ':'))}"
@@ -776,9 +801,7 @@ def _metrics(
         full_file_reads=len(re.findall(r"\b(?:cat|less|head|tail)\s+[^|;&]+", joined)),
         redundant_calls=max(0, len(normalized) - len(set(normalized))),
         meshprobe_operations=len(operations),
-        renders=sum(
-            "render-image" in call or "render-sheet" in call for call in operations
-        ),
+        renders=sum("render-image" in call or "render-sheet" in call for call in operations),
         receipt_path_uses=len(re.findall(r"\.meshprobe/[^\s'\"]+", joined)),
     )
 
@@ -830,6 +853,12 @@ def _summary(attempts: list[ErgonomicsAttempt]) -> dict[str, Any]:
             "answer_passes": sum(item.metrics.answer_gate for item in selected),
             "evidence_passes": sum(item.metrics.evidence_gate for item in selected),
             "input_tokens": sum(item.metrics.tokens.input for item in selected),
+            "uncached_input_tokens": sum(item.metrics.tokens.uncached_input for item in selected),
+            "cached_input_tokens": sum(item.metrics.tokens.cached_input for item in selected),
+            "cache_creation_input_tokens": sum(
+                item.metrics.tokens.cache_creation for item in selected
+            ),
+            "cache_read_input_tokens": sum(item.metrics.tokens.cache_read for item in selected),
             "output_tokens": sum(item.metrics.tokens.output for item in selected),
             "reasoning_output_tokens": sum(
                 item.metrics.tokens.reasoning_output for item in selected
@@ -981,6 +1010,7 @@ def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenU
         return _claude_token_usage(events)
     values = {
         "input": 0,
+        "uncached_input": 0,
         "cached_input": 0,
         "output": 0,
         "reasoning_output": 0,
@@ -1010,6 +1040,7 @@ def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenU
     visit(events)
     if values["cached_input"] > values["input"]:
         values["input"] = values["cached_input"]
+    values["uncached_input"] = max(0, values["input"] - values["cached_input"])
     return TokenUsage(**values)
 
 
@@ -1018,11 +1049,15 @@ def _claude_token_usage(events: list[dict[str, Any]]) -> TokenUsage:
         usage = event.get("usage")
         if event.get("type") != "result" or not isinstance(usage, dict):
             continue
+        uncached = _usage_int(usage, "input_tokens")
+        cache_creation = _usage_int(usage, "cache_creation_input_tokens")
+        cache_read = _usage_int(usage, "cache_read_input_tokens")
         return TokenUsage(
-            input=_usage_int(usage, "input_tokens"),
+            input=uncached + cache_creation + cache_read,
+            uncached_input=uncached,
             output=_usage_int(usage, "output_tokens"),
-            cache_creation=_usage_int(usage, "cache_creation_input_tokens"),
-            cache_read=_usage_int(usage, "cache_read_input_tokens"),
+            cache_creation=cache_creation,
+            cache_read=cache_read,
         )
     messages: dict[str, dict[str, Any]] = {}
     for event in events:
@@ -1035,13 +1070,17 @@ def _claude_token_usage(events: list[dict[str, Any]]) -> TokenUsage:
         usage = message.get("usage")
         if isinstance(message_id, str) and isinstance(usage, dict):
             messages[message_id] = usage
+    uncached = sum(_usage_int(usage, "input_tokens") for usage in messages.values())
+    cache_creation = sum(
+        _usage_int(usage, "cache_creation_input_tokens") for usage in messages.values()
+    )
+    cache_read = sum(_usage_int(usage, "cache_read_input_tokens") for usage in messages.values())
     return TokenUsage(
-        input=sum(_usage_int(usage, "input_tokens") for usage in messages.values()),
+        input=uncached + cache_creation + cache_read,
+        uncached_input=uncached,
         output=sum(_usage_int(usage, "output_tokens") for usage in messages.values()),
-        cache_creation=sum(
-            _usage_int(usage, "cache_creation_input_tokens") for usage in messages.values()
-        ),
-        cache_read=sum(_usage_int(usage, "cache_read_input_tokens") for usage in messages.values()),
+        cache_creation=cache_creation,
+        cache_read=cache_read,
     )
 
 

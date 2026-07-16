@@ -36,8 +36,10 @@ uv run meshprobe --session gearbox illumination-set raking_left
 uv run meshprobe --session gearbox render-sheet c7
 ```
 
-Normal output is a short receipt containing the result and state paths. Add `--json` for a
-machine-readable receipt or `--raw` when the full operation result is actually needed.
+Normal output is a short receipt containing the result and state paths. Add `--json` or
+`--yaml` for a machine-readable receipt, or `--raw` when the full operation result is actually
+needed. `meshprobe schema --kind state` gives a compact field map for every durable file;
+add `--full` for formal JSON Schemas, or put global `--yaml` before `schema` for YAML output.
 
 ## Install
 

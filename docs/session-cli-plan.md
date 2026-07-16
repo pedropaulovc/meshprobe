@@ -90,9 +90,20 @@ Version 1 evaluation inputs are rejected clearly rather than translated at runti
 
 The diagnostic pilot is separate from qualification and runs through `meshprobe eval
 ergonomics`. It uses 24 paired public episodes: 12 basic and 12 intermediate, deterministically
-stratified. Claude and Codex receive the same minimal prompt, a fresh workspace/session for
-each attempt, alternating run order, and sequential Blender access. Every attempt is
-checkpointed.
+stratified. The pilot represents ordinary, non-adversarial navigation: every target or answer
+criterion must be recoverable from the public prompt and model through names, hierarchy,
+geometry, or an explicit criterion. Basic tasks come from positive curated identity episodes;
+intermediate tasks require a unique public target and explicit criteria, and exclude negative
+or ambiguous families. The corpus's `adversarial` label is not used as an ergonomics verdict:
+for intermediate procedural episodes it denotes qualification evidence pressure even when the
+question itself is ordinary and fully specified. Hidden-role, ambiguous, and anti-shortcut
+questions remain in qualification instead of being interpreted as CLI-ergonomics failures.
+Claude and Codex receive the same minimal prompt, a fresh
+workspace/session for each attempt, alternating run order, and sequential Blender access.
+Before tool use, each agent briefly reports its task understanding, whether the available
+tools appear sufficient, and any missing capability it wants. The final structured result
+reassesses the same questions so reported friction can be compared with the command trace;
+this self-report is diagnostic and is not a correctness gate. Every attempt is checkpointed.
 
 The required agent commands are:
 
