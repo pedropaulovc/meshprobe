@@ -158,6 +158,8 @@ def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     assert "/workspace/artifacts" in command
     assert str(ergonomics.ERGONOMICS_RUNTIME) in command
     assert f"--fsize={ergonomics.ERGONOMICS_PROCESS_OUTPUT_LIMIT}:" in " ".join(command)
+    nproc = next(argument for argument in command if argument.startswith("--nproc="))
+    assert int(nproc.removeprefix("--nproc=").split(":", 1)[0]) >= 512
 
 
 def test_ergonomics_mounts_complete_blender_distribution(
@@ -279,6 +281,7 @@ def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatc
         "gpt-5.6-luna",
         "--json",
     )
+    assert "danger-full-access" in commands[-1]
 
 
 def test_ergonomics_preflight_surfaces_unsupported_model(

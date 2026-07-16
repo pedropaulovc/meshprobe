@@ -121,12 +121,13 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "--ignore-rules",
         "--skip-git-repo-check",
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
     ),
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
 DEFAULT_TOKEN_LIMIT = 256_000
 ERGONOMICS_PROCESS_OUTPUT_LIMIT = 1024**3
+ERGONOMICS_PROCESS_LIMIT = 512
 ERGONOMICS_RUNTIME = PurePosixPath("/workspace/artifacts/.meshprobe-runtime")
 ERGONOMICS_INPUT = PurePosixPath("/workspace/artifacts/input")
 ERGONOMICS_BLENDER = PurePosixPath("/workspace/artifacts/.blender-runtime")
@@ -303,6 +304,7 @@ def _sandboxed_agent_command(
             wall_seconds=wall_seconds,
             cpu_seconds=max(1, int(wall_seconds)),
             output_bytes=max(output_bytes, ERGONOMICS_PROCESS_OUTPUT_LIMIT),
+            processes=ERGONOMICS_PROCESS_LIMIT,
         ),
         network=NetworkAccess.SHARED,
         read_only_mounts=_agent_read_only_mounts(agent, cli_runtime, public),

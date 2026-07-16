@@ -108,18 +108,21 @@ be retried once; semantic failures are not retried. The harness silently enforce
 256,000-token ceiling per attempt from the live provider usage stream, alongside the episode
 wall limit; prompts do not disclose the ceiling to the evaluated agent.
 The process sandbox also caps any single file at 1 GiB. Episode evidence budgets remain
-separate because Blender's internal startup files are not submitted evidence.
+separate because Blender's internal startup files are not submitted evidence. The pilot
+allows at most 512 processes and threads so Codex and Blender can coexist without removing
+the runaway-process guard.
 
 On Linux, each agent runs inside Bubblewrap with its own PID and mount namespaces. The
 sandbox shares the host network for provider access but exposes only the assigned public
 model, the agent credential file, a clean wheel-installed MeshProbe runtime, and the writable
 attempt directory. The selected Blender distribution is mounted read-only as a runtime
 dependency. The repository, corpus root, private truth, and prior attempts are not mounted.
-Codex also receives `workspace-write` for its inner managed sandbox so it can create
-`.meshprobe` under the attempt directory. Raw provider streams and stderr remain readable on
-the host at `attempts/<episode>/<agent>/attempt-<n>/{stream.jsonl,stderr.log}` while a run is in
-progress. The exact evaluated prompt is persisted beside them as `prompt.txt` and referenced
-from the attempt record in the checkpoint report.
+Codex's inner sandbox is disabled because `workspace-write` blocks the loopback session
+daemon; the outer Bubblewrap boundary remains authoritative. Raw provider streams and stderr
+remain readable on the host at
+`attempts/<episode>/<agent>/attempt-<n>/{stream.jsonl,stderr.log}` while a run is in progress.
+The exact evaluated prompt is persisted beside them as `prompt.txt` and referenced from the
+attempt record in the checkpoint report.
 
 Windows ergonomics runs remain disabled until the pilot supports the same boundary through
 the existing AppContainer launcher, including provider network access, credential-file
