@@ -559,9 +559,12 @@ def test_controller_recovers_from_real_blender_crash_during_render(tmp_path: Pat
 
 def test_open_cli_emits_valid_manifest(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    result = runner.invoke(app, ["open", str(source)])
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(app, ["--workspace", str(workspace), "--raw", "open", str(source)])
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
 
     assert result.exit_code == 0
+    assert stopped.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["source_format"] == "glb"
     assert len(payload["components"]) == 3
@@ -571,34 +574,41 @@ def test_open_cli_reports_source_bundle_errors(tmp_path: Path) -> None:
     source = tmp_path / "invalid.gltf"
     source.write_text("{not-json", encoding="utf-8")
 
-    result = runner.invoke(app, ["open", str(source)])
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(app, ["--workspace", str(workspace), "open", str(source)])
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
 
     assert result.exit_code == 2
     assert "invalid glTF JSON" in result.output
+    assert stopped.exit_code == 0
 
 
-def test_run_cli_keeps_one_session_and_preserves_source(tmp_path: Path) -> None:
+def test_cli_recovers_killed_session_and_preserves_source(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     before = snapshot_source(source)
-    commands = tmp_path / "inspection.jsonl"
-    commands.write_text(
-        "\n".join(
-            (
-                json.dumps({"request_id": "open", "op": "scene.open", "source_path": str(source)}),
-                json.dumps({"request_id": "describe", "op": "scene.describe"}),
-            )
-        )
-        + "\n",
-        encoding="utf-8",
+    workspace = tmp_path / "workspace"
+
+    opened = runner.invoke(app, ["--workspace", str(workspace), "open", str(source)])
+    hidden = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "display", "c1", "--mode", "hidden"],
     )
+    killed = runner.invoke(app, ["--workspace", str(workspace), "kill"])
+    recovered = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "--raw", "snapshot"],
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
 
-    result = runner.invoke(app, ["run", str(commands)])
-
-    assert result.exit_code == 0
-    responses = json.loads(result.stdout)["results"]
-    assert [response["op"] for response in responses] == ["scene.open", "scene.describe"]
-    assert responses[0]["result"]["source_sha256"] == before.sha256
-    assert responses[1]["result"]["session"]["state_sha256"]
+    assert opened.exit_code == 0
+    assert hidden.exit_code == 0
+    assert killed.exit_code == 0
+    assert recovered.exit_code == 0
+    assert stopped.exit_code == 0
+    snapshot = json.loads(recovered.stdout)["session"]
+    assert (
+        sum(component["display"] == "hidden" for component in snapshot["components"].values()) == 1
+    )
     assert snapshot_source(source) == before
 
 
@@ -666,7 +676,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
-        initial = SessionSnapshot.model_validate(controller.request("scene.describe")["session"])
+        initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         target = manifest.components[-1].id
         other = manifest.components[0].id
         initial_runtime = controller.request("session.runtime")["components"]
@@ -846,14 +856,14 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert same_content_state.state_sha256 == environment_lit.state_sha256
 
-        before_invalid_mode = controller.request("scene.describe")["session"]
+        before_invalid_mode = controller.request("session.snapshot")["session"]
         with pytest.raises(BlenderWorkerError, match="unknown display mode"):
             controller.request(
                 "component.display",
                 component_ids=[target],
                 mode="hide",
             )
-        assert controller.request("scene.describe")["session"] == before_invalid_mode
+        assert controller.request("session.snapshot")["session"] == before_invalid_mode
 
         reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
         assert reset == initial
@@ -951,7 +961,7 @@ def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
         with pytest.raises(BlenderWorkerError):
             controller.open_scene(corrupt)
         with pytest.raises(BlenderWorkerError, match="no scene is open"):
-            controller.request("scene.describe")
+            controller.request("session.snapshot")
         assert controller._source_path is None
         assert controller._source_sha256 is None
 
@@ -1053,7 +1063,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
-        initial = controller.request("scene.describe")["session"]
+        initial = controller.request("session.snapshot")["session"]
         sheet = controller.execute(
             RenderContactSheetCommand(
                 request_id="sheet",
@@ -1065,7 +1075,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
                 samples=1,
             )
         )
-        restored = controller.request("scene.describe")["session"]
+        restored = controller.request("session.snapshot")["session"]
 
     assert isinstance(sheet, ContactSheetManifest)
     assert len(sheet.panels) == 9

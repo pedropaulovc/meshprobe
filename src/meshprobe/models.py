@@ -354,7 +354,14 @@ class CapabilityWarning(ContractModel):
 
 
 class SceneCapabilities(ContractModel):
-    hierarchy: Literal["preserved", "flattened"]
+    hierarchy: Annotated[
+        Literal["preserved", "flattened"],
+        Field(
+            description="Preserved exposes component parent/child links. Flattened keeps "
+            "authoritative source-ancestry paths but omits intermediate non-mesh nodes as "
+            "addressable components."
+        ),
+    ]
     component_names: Literal["source", "generated"]
     materials: Literal["preserved", "partial", "absent"]
     textures: Literal["preserved", "partial", "absent"]

@@ -39,7 +39,7 @@ def test_schema_contains_all_public_operations() -> None:
     encoded = json.dumps(command_json_schema())
     for operation in (
         "scene.open",
-        "scene.describe",
+        "session.snapshot",
         "component.find",
         "component.inspect",
         "view.set",

@@ -31,8 +31,8 @@ class SceneOpenCommand(CommandModel):
     source_path: str
 
 
-class SceneDescribeCommand(CommandModel):
-    op: Literal["scene.describe"]
+class SessionSnapshotCommand(CommandModel):
+    op: Literal["session.snapshot"]
 
 
 class ComponentFindCommand(CommandModel):
@@ -127,7 +127,7 @@ class SessionResetCommand(CommandModel):
 
 type Command = Annotated[
     SceneOpenCommand
-    | SceneDescribeCommand
+    | SessionSnapshotCommand
     | ComponentFindCommand
     | ComponentInspectCommand
     | ViewSetCommand

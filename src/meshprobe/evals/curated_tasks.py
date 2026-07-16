@@ -17,6 +17,7 @@ from meshprobe.evals.factory import CorpusBuild, validate_corpus
 from meshprobe.evals.generators import GeneratedEpisode
 from meshprobe.evals.leakage import validate_public_directory, validate_public_episode
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     CorpusManifest,
     CorpusTier,
@@ -171,7 +172,7 @@ def generate_curated_episodes(model: CuratedModelTruth) -> tuple[GeneratedEpisod
         (
             TaskFamily.FULL_INVESTIGATION,
             Difficulty.FULL_STACK,
-            tuple(Operation),
+            EVALUATED_OPERATIONS,
         ),
     )
     return tuple(
@@ -284,7 +285,7 @@ def _prompt(model: CuratedModelTruth, index: int) -> str:
 def _discovery_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
     )
@@ -293,7 +294,7 @@ def _discovery_operations() -> tuple[Operation, ...]:
 def _evidence_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
         Operation.VIEW_SET,
@@ -374,6 +375,12 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
             render_group="context_85",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="target",
+            minimum=0.2,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="target",
             minimum=0.005,
@@ -404,6 +411,12 @@ def _evidence_requirements() -> tuple[EvidenceRequirement, ...]:
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="target",
             minimum=0.01,
+            render_group="orthographic_rake",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="target",
+            minimum=0.2,
             render_group="orthographic_rake",
         ),
         EvidenceRequirement(

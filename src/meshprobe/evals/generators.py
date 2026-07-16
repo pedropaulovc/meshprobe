@@ -22,6 +22,7 @@ from meshprobe.evals.geometry import (
     cylinder,
 )
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     Difficulty,
     EpisodeBudgets,
@@ -497,7 +498,7 @@ def generate_episodes(
         (TaskFamily.COMPONENT_DISCOVERY, _discovery_operations()),
         (FAMILY_TASKS[model.generated.family], _reasoning_operations()),
         (TaskFamily.PROJECTION_REASONING, _evidence_operations()),
-        (TaskFamily.FULL_INVESTIGATION, tuple(Operation)),
+        (TaskFamily.FULL_INVESTIGATION, EVALUATED_OPERATIONS),
     )
     return tuple(
         _episode(model, index, family, operations, model_source)
@@ -712,7 +713,7 @@ def _episode_class(model: PublishedModel, index: int) -> EpisodeClass:
 def _discovery_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
     )
@@ -721,7 +722,7 @@ def _discovery_operations() -> tuple[Operation, ...]:
 def _reasoning_operations() -> tuple[Operation, ...]:
     return (
         Operation.SCENE_OPEN,
-        Operation.SCENE_DESCRIBE,
+        Operation.SESSION_SNAPSHOT,
         Operation.COMPONENT_FIND,
         Operation.COMPONENT_INSPECT,
         Operation.VIEW_ORBIT,
@@ -834,6 +835,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             render_group="context_85",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="idler",
+            minimum=0.2,
+            render_group="context_85",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.TARGET_HIGHLIGHTED,
             component_role="idler",
             minimum=0.01,
@@ -867,6 +874,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             render_group="surface_left",
         ),
         EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="arrow",
+            minimum=0.1,
+            render_group="surface_left",
+        ),
+        EvidenceRequirement(
             kind=EvidenceKind.PROJECTION,
             expected="orthographic",
             render_group="surface_left",
@@ -880,6 +893,12 @@ def _evidence_requirements(model: PublishedModel, index: int) -> tuple[EvidenceR
             kind=EvidenceKind.TARGET_VISIBLE,
             component_role="arrow",
             minimum=0.005,
+            render_group="surface_right",
+        ),
+        EvidenceRequirement(
+            kind=EvidenceKind.TARGET_SCREEN_SPAN,
+            component_role="arrow",
+            minimum=0.1,
             render_group="surface_right",
         ),
         EvidenceRequirement(

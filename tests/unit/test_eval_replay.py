@@ -7,7 +7,7 @@ import pytest
 from meshprobe.evals.harness.broker import EvaluationBroker
 from meshprobe.evals.harness.replay import _semantic_result, replay_trace
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceEvent, TraceStatus
-from meshprobe.protocol import Command, SceneDescribeCommand, SceneOpenCommand
+from meshprobe.protocol import Command, SceneOpenCommand, SessionSnapshotCommand
 from meshprobe.service import CommandResponse
 
 
@@ -23,7 +23,7 @@ class ReplayService:
     ) -> CommandResponse:
         del evaluator_output_dir
         result = {"source_sha256": "a" * 64}
-        if command.op == "scene.describe":
+        if command.op == "session.snapshot":
             result = {"session": {"state_sha256": self.state * 64}}
         return CommandResponse(request_id=command.request_id, op=command.op, result=result)
 
@@ -51,7 +51,7 @@ def recorded_trace(tmp_path: Path) -> tuple[tuple[TraceEvent, ...], EvaluationBr
             source_path=broker.visible_model_path,
         )
     )
-    broker.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+    broker.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot"))
     return broker.events, broker
 
 

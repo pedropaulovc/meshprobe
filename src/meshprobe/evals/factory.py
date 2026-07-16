@@ -139,6 +139,11 @@ def build_corpus(
 def validate_corpus(root: Path) -> CorpusBuild:
     public = root / "public"
     private = root / "private"
+    raw_manifest = json.loads((public / "manifest.json").read_text(encoding="utf-8"))
+    if raw_manifest.get("schema_version") != 2:
+        raise ValueError(
+            "unsupported evaluation schema version; migrate the corpus to schema version 2"
+        )
     manifest = CorpusManifest.model_validate_json(
         (public / "manifest.json").read_text(encoding="utf-8")
     )

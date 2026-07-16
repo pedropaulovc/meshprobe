@@ -56,7 +56,7 @@ The Python service, CLI, and MCP adapter expose the same operations:
 | Operation | Result |
 | --- | --- |
 | `scene.open` | Load a model and return its capabilities and root bounds. |
-| `scene.describe` | Return hierarchy, component properties, bounds, and current display state. |
+| `session.snapshot` | Return hierarchy, component properties, bounds, and current display state. |
 | `component.find` | Resolve exact names, paths, globs, or regular expressions to stable component IDs. |
 | `component.inspect` | Return one component's path, transform, bounds, material summary, and relationships. |
 | `view.set` | Set an absolute six-degree-of-freedom camera pose and projection. |
@@ -449,6 +449,7 @@ An episode passes only if every applicable gate succeeds:
 Private image oracles inspect component masks, depth, and luminance. For example:
 
 - a highlighted target must contribute the expected highlight pixels;
+- a small target must meet both exact-mask area and longest-axis screen-span thresholds;
 - a hidden blocker must contribute no visible pixels after the hide operation;
 - a focal-length render must use the expected projection matrix within numeric
   tolerance;

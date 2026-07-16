@@ -1,0 +1,19 @@
+{
+  "blender": "Blender 5.2.0 LTS",
+  "corpus_manifest_sha256": "53e54c6ad5f753a12d98e21b382e67bf181f5d4be7151fbd9d5041ddf751bcda",
+  "episodes": 40,
+  "passed_thresholds": true,
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "Python 3.12.3",
+  "qualification_report": "qualification/smoke/qualification-report.json",
+  "qualification_report_sha256": "8653ae452dd1a386278b78f8619659231e16fb58ad2e48da12ddb254f68a696a",
+  "schema_version": 2,
+  "status": "passed",
+  "tier": "smoke",
+  "tier_manifest_sha256": "47fa82369a93e8d2c59775bb02570a28ea137f09aca01b5311893572a4cd502f",
+  "uv": "uv 0.10.6",
+  "wheel": {
+    "filename": "meshprobe-0.1.0.dev0-py3-none-any.whl",
+    "sha256": "67230466741dc449757f6f651a13c72317f70b7d6a1f4c4e55cb70d218c16881"
+  }
+}

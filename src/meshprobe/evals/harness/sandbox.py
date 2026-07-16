@@ -10,12 +10,18 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import IO, Protocol
 
 
 class SandboxUnavailable(RuntimeError):
     """The host cannot provide the required network and filesystem isolation."""
+
+
+class NetworkAccess(StrEnum):
+    BLOCKED = "blocked"
+    SHARED = "shared"
 
 
 class InteractiveProcess(Protocol):
@@ -215,6 +221,9 @@ def spawn_isolated(
     environment: Mapping[str, str] | None = None,
     limits: IsolationLimits | None = None,
     bubblewrap: str | Path | None = None,
+    network: NetworkAccess = NetworkAccess.BLOCKED,
+    read_only_mounts: tuple[tuple[Path, PurePosixPath], ...] = (),
+    path_entries: tuple[PurePosixPath, ...] = (),
 ) -> IsolatedProcess:
     """Start an interactive isolated process with piped standard streams."""
 
@@ -228,6 +237,10 @@ def spawn_isolated(
     active_environment = environment if environment is not None else {}
     active_limits = limits or IsolationLimits()
     if os.name == "nt":
+        if network is NetworkAccess.SHARED or read_only_mounts or path_entries:
+            raise SandboxUnavailable(
+                "custom network and mount isolation is not implemented on Windows"
+            )
         if bubblewrap is not None:
             raise ValueError("bubblewrap cannot be configured on Windows")
         from meshprobe.evals.harness.windows_sandbox import spawn_windows
@@ -248,11 +261,16 @@ def spawn_isolated(
     if os.name != "posix":  # pragma: no cover
         raise SandboxUnavailable(f"unsupported sandbox host: {os.name}")
     executable = _bubblewrap_path(bubblewrap)
-    sandbox_command = _sandbox_command(executable, command, public, artifacts, active_environment)
-    limited_command = _limit_command(
-        sandbox_command,
-        active_limits,
-        existing_user_tasks=_user_task_count(),
+    limited_command = isolated_process_command(
+        command,
+        input_root=public,
+        artifact_root=artifacts,
+        environment=active_environment,
+        limits=active_limits,
+        bubblewrap=executable,
+        network=network,
+        read_only_mounts=read_only_mounts,
+        path_entries=path_entries,
     )
     started = time.monotonic()
     process = subprocess.Popen(
@@ -274,6 +292,45 @@ def spawn_isolated(
     )
 
 
+def isolated_process_command(
+    command: tuple[str, ...],
+    *,
+    input_root: Path,
+    artifact_root: Path,
+    environment: Mapping[str, str] | None = None,
+    limits: IsolationLimits | None = None,
+    bubblewrap: str | Path | None = None,
+    network: NetworkAccess = NetworkAccess.BLOCKED,
+    read_only_mounts: tuple[tuple[Path, PurePosixPath], ...] = (),
+    path_entries: tuple[PurePosixPath, ...] = (),
+) -> tuple[str, ...]:
+    """Build a Bubblewrap/prlimit command for a caller-managed process."""
+
+    if os.name != "posix":
+        raise SandboxUnavailable("Bubblewrap process commands require a POSIX host")
+    public = input_root.expanduser().resolve(strict=True)
+    artifacts = artifact_root.expanduser().resolve()
+    if artifacts == public or artifacts.is_relative_to(public) or public.is_relative_to(artifacts):
+        raise ValueError("input and artifact roots must be disjoint")
+    artifacts.mkdir(parents=True, exist_ok=True)
+    executable = _bubblewrap_path(bubblewrap)
+    sandbox_command = _sandbox_command(
+        executable,
+        command,
+        public,
+        artifacts,
+        environment or {},
+        network=network,
+        read_only_mounts=read_only_mounts,
+        path_entries=path_entries,
+    )
+    return _limit_command(
+        sandbox_command,
+        limits or IsolationLimits(),
+        existing_user_tasks=_user_task_count(),
+    )
+
+
 def _bubblewrap_path(configured: str | Path | None) -> Path:
     candidate = shutil.which(str(configured or "bwrap"))
     if candidate is None:
@@ -289,6 +346,10 @@ def _sandbox_command(
     input_root: Path,
     artifact_root: Path,
     environment: Mapping[str, str],
+    *,
+    network: NetworkAccess = NetworkAccess.BLOCKED,
+    read_only_mounts: tuple[tuple[Path, PurePosixPath], ...] = (),
+    path_entries: tuple[PurePosixPath, ...] = (),
 ) -> tuple[str, ...]:
     mounts, translated_command = _sandbox_agent_command(command)
     args = [
@@ -317,6 +378,14 @@ def _sandbox_command(
         "--tmpfs",
         "/tmp",
         "--dir",
+        "/etc",
+        "--ro-bind-try",
+        "/etc/passwd",
+        "/etc/passwd",
+        "--ro-bind-try",
+        "/etc/group",
+        "/etc/group",
+        "--dir",
         "/tmp/home",
         "--ro-bind",
         str(input_root),
@@ -336,18 +405,45 @@ def _sandbox_command(
         "--setenv",
         "LANG",
         "C.UTF-8",
+        "--setenv",
+        "SHELLOPTS",
+        "pipefail",
     ]
+    if network is NetworkAccess.SHARED:
+        args.insert(2, "--share-net")
+        args.extend(("--dir", "/etc/ssl"))
+        for system_path in (
+            "/etc/hosts",
+            "/etc/nsswitch.conf",
+            "/etc/resolv.conf",
+            "/etc/ssl/certs",
+        ):
+            args.extend(("--ro-bind-try", system_path, system_path))
     for host, mount in mounts:
         args.extend(("--ro-bind", str(host), str(mount)))
     if any(mount == PurePosixPath("/opt/meshprobe-agent") for _host, mount in mounts):
         executable_parent = str(PurePosixPath(translated_command[0]).parent)
         args.extend(("--setenv", "PATH", f"{executable_parent}:/usr/bin:/bin"))
+    for host, guest in read_only_mounts:
+        resolved = host.expanduser().resolve(strict=True)
+        for parent in _guest_parents(guest):
+            args.extend(("--dir", str(parent)))
+        args.extend(("--ro-bind", str(resolved), str(guest)))
+    if path_entries:
+        agent_parent = str(PurePosixPath(translated_command[0]).parent)
+        path = ":".join((*map(str, path_entries), agent_parent, "/usr/bin", "/bin"))
+        args.extend(("--setenv", "PATH", path))
     for name, value in sorted(environment.items()):
         if not name or "=" in name or "\x00" in name or "\x00" in value:
             raise ValueError(f"invalid sandbox environment entry: {name!r}")
         args.extend(("--setenv", name, value))
     args.extend(("--", *translated_command))
     return tuple(args)
+
+
+def _guest_parents(path: PurePosixPath) -> tuple[PurePosixPath, ...]:
+    parents = [parent for parent in path.parents if parent != PurePosixPath("/")]
+    return tuple(reversed(parents))
 
 
 def _sandbox_agent_command(
@@ -361,14 +457,17 @@ def _sandbox_agent_command(
     mounts: list[tuple[Path, PurePosixPath]] = []
     runtime_root: Path | None = None
     virtualenv_root = located_executable.parent.parent
+    node_runtime_root = _node_runtime_root(located_executable)
     executable = (
         located_executable
-        if located_executable.parent.name == "bin" and (virtualenv_root / "pyvenv.cfg").is_file()
+        if located_executable.parent.name == "bin"
+        and ((virtualenv_root / "pyvenv.cfg").is_file() or node_runtime_root is not None)
         else resolved_executable
     )
     if (
         executable == located_executable
         and located_executable.is_symlink()
+        and node_runtime_root is None
         and not resolved_executable.is_relative_to("/usr")
     ):
         base_runtime = (
@@ -392,7 +491,9 @@ def _sandbox_agent_command(
         executable.relative_to("/usr")
     except ValueError:
         runtime_root = executable.parent
-        if runtime_root.name == "bin" and (runtime_root.parent / "pyvenv.cfg").is_file():
+        if node_runtime_root is not None:
+            runtime_root = node_runtime_root
+        elif runtime_root.name == "bin" and (runtime_root.parent / "pyvenv.cfg").is_file():
             runtime_root = runtime_root.parent
         runtime_mount = PurePosixPath("/opt/meshprobe-agent")
         mounts.append((runtime_root, runtime_mount))
@@ -403,7 +504,13 @@ def _sandbox_agent_command(
     translated_arguments = list(command[1:])
     for index, argument in enumerate(translated_arguments, start=1):
         candidate = Path(argument).expanduser()
-        if argument.startswith("/workspace/") or not candidate.is_file():
+        if argument.startswith("/workspace/"):
+            continue
+        try:
+            is_file = candidate.is_file()
+        except OSError:
+            is_file = False
+        if not is_file:
             continue
         resolved_argument = candidate.resolve(strict=True)
         if resolved_argument.is_relative_to("/usr"):
@@ -444,6 +551,19 @@ def _sandbox_agent_command(
                     *translated_arguments,
                 )
     return tuple(mounts), (str(translated_executable), *translated_arguments)
+
+
+def _node_runtime_root(executable: Path) -> Path | None:
+    """Return a self-contained Node installation root for a bin entrypoint."""
+
+    if executable.parent.name != "bin":
+        return None
+    runtime = executable.parent.parent
+    if not (runtime / "bin" / "node").is_file():
+        return None
+    if not (runtime / "lib" / "node_modules").is_dir():
+        return None
+    return runtime
 
 
 def _limit_command(

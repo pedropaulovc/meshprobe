@@ -21,8 +21,8 @@ from meshprobe.protocol import (
     Command,
     ComponentFindCommand,
     ComponentInspectCommand,
-    SceneDescribeCommand,
     SceneOpenCommand,
+    SessionSnapshotCommand,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -43,7 +43,7 @@ class RunnerService:
         operation = command.op
         request_id = command.request_id
         result: JsonValue = {"source_sha256": "a" * 64}
-        if operation == "scene.describe":
+        if operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
         if operation == "component.find":
             result = [{"id": self.target_id}]
@@ -76,7 +76,7 @@ class PassingAdapter:
                 source_path=broker.visible_model_path,
             )
         )
-        broker.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
+        broker.execute(SessionSnapshotCommand(request_id="describe", op="session.snapshot"))
         broker.execute(
             ComponentFindCommand(
                 request_id="find",
@@ -153,6 +153,12 @@ def test_runner_materializes_isolated_episode_scores_and_publishes_report(tmp_pa
     assert run.trace_path.read_text(encoding="utf-8").count("\n") == 4
     assert service.closed
     assert not (run.run_root / "agent-input" / "ground_truth").exists()
+    agent_run = run.run_root / "evaluator" / "agent-run"
+    assert (agent_run / "prompt.txt").read_text(encoding="utf-8") == (
+        run.run_root / "agent-input" / "prompt.txt"
+    ).read_text(encoding="utf-8")
+    assert (agent_run / "stream.jsonl").is_file()
+    assert (agent_run / "stderr.log").is_file()
 
     failed = run_episode(
         corpus_root=corpus.root,

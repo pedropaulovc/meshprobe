@@ -25,7 +25,7 @@ from typing import Any
 import bpy  # type: ignore[import-not-found]
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
@@ -1965,7 +1965,7 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     operation = command.get("op")
     if operation == "scene.open":
         return scene_open(command)
-    if operation == "scene.describe":
+    if operation == "session.snapshot":
         return {"scene": require_session(), "session": session_snapshot()}
     if operation == "view.set":
         require_session()

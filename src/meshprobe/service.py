@@ -95,6 +95,14 @@ class MeshProbeService:
         self._controller.close()
         self._started = False
 
+    @property
+    def worker_pid(self) -> int | None:
+        return self._controller.worker_pid
+
+    def kill(self) -> None:
+        self._controller.kill()
+        self._started = False
+
     def __enter__(self) -> Self:
         return self
 

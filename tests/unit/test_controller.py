@@ -38,16 +38,16 @@ from meshprobe.protocol import (
     ComponentMarkCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
-    SceneDescribeCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    SessionSnapshotCommand,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.session import InspectionSession
 from meshprobe.sources import snapshot_source
 
 
-def make_fake_blender(tmp_path: Path, protocol_version: int = 1) -> Path:
+def make_fake_blender(tmp_path: Path, protocol_version: int = 2) -> Path:
     script = tmp_path / "fake_blender_worker.py"
     script.write_text(
         """#!/usr/bin/env python3
@@ -137,7 +137,7 @@ def test_missing_blender_executable_fails() -> None:
 def test_request_requires_started_worker() -> None:
     controller = BlenderController()
     with pytest.raises(BlenderWorkerError, match="not started"):
-        controller.request("scene.describe")
+        controller.request("session.snapshot")
 
 
 def test_start_twice_fails(tmp_path: Path) -> None:
@@ -151,7 +151,7 @@ def test_start_twice_fails(tmp_path: Path) -> None:
 
 
 def test_start_failure_closes_half_started_process(tmp_path: Path) -> None:
-    controller = BlenderController(executable=make_fake_blender(tmp_path, protocol_version=2))
+    controller = BlenderController(executable=make_fake_blender(tmp_path, protocol_version=1))
     with pytest.raises(BlenderWorkerError, match="unsupported worker protocol"):
         controller.start()
     assert controller._process is None
@@ -280,11 +280,11 @@ def test_wait_for_ignores_noise_and_unmatched_json() -> None:
     controller = BlenderController(timeout_seconds=1)
     controller._lines.put("Blender banner")
     controller._lines.put('{"event":"progress"}')
-    controller._lines.put('{"event":"ready","protocol_version":1}')
+    controller._lines.put('{"event":"ready","protocol_version":2}')
 
     result = controller._wait_for(lambda payload: payload.get("event") == "ready")
 
-    assert result["protocol_version"] == 1
+    assert result["protocol_version"] == 2
     assert controller.logs == ("Blender banner", '{"event":"progress"}')
 
 
@@ -348,8 +348,10 @@ def test_execute_returns_nonstate_result(monkeypatch) -> None:  # type: ignore[n
         "request",
         lambda operation, **arguments: {"operation": operation},
     )
-    result = controller.execute(SceneDescribeCommand(request_id="describe", op="scene.describe"))
-    assert result == {"operation": "scene.describe"}
+    result = controller.execute(
+        SessionSnapshotCommand(request_id="describe", op="session.snapshot")
+    )
+    assert result == {"operation": "session.snapshot"}
 
 
 def test_execute_resolves_component_queries_without_worker(

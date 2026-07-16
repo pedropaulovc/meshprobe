@@ -18,6 +18,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
+from meshprobe.evals.harness.attempts import AttemptFiles, prepare_attempt_files
 from meshprobe.evals.harness.broker import EvaluationBroker
 from meshprobe.evals.harness.sandbox import IsolationLimits, spawn_isolated, visible_input_path
 from meshprobe.evals.schemas import EpisodeSpec, EpisodeSubmission
@@ -88,7 +89,8 @@ class CliJsonlAdapter:
             raise RuntimeError("isolated process did not expose standard streams")
         deadline = isolated.started_monotonic + isolated.wall_seconds
         agent_stdin = _DeadlineWriter(process.stdin, deadline)
-        streams = _PipeStreams(process.stdout, process.stderr)
+        attempt_files = _attempt_files(artifact_root, spec.prompt)
+        streams = _PipeStreams(process.stdout, process.stderr, attempt_files)
         stdout_buffer = b""
         stderr_buffer = b""
         submission: EpisodeSubmission | None = None
@@ -97,7 +99,7 @@ class CliJsonlAdapter:
         startup_closed = False
         initialization = {
             "type": "episode",
-            "protocol_version": 1,
+            "protocol_version": 2,
             "episode_id": spec.episode_id,
             "prompt": spec.prompt,
             "answer_schema": spec.answer_schema,
@@ -279,7 +281,8 @@ class McpStdioAdapter:
         if process.stdin is None or process.stdout is None or process.stderr is None:
             isolated.terminate()
             raise RuntimeError("isolated process did not expose standard streams")
-        streams = _PipeStreams(process.stdout, process.stderr)
+        attempt_files = _attempt_files(artifact_root, spec.prompt)
+        streams = _PipeStreams(process.stdout, process.stderr, attempt_files)
         stdout_buffer = b""
         stderr_buffer = b""
         submission: EpisodeSubmission | None = None
@@ -556,14 +559,19 @@ class _DeadlineWriter:
         pass
 
 
+def _attempt_files(artifact_root: Path, prompt: str) -> AttemptFiles:
+    return prepare_attempt_files(artifact_root.parent / "evaluator" / "agent-run", prompt)
+
+
 class _PipeStreams:
     """Read subprocess pipes on threads so Windows and POSIX share one loop."""
 
-    def __init__(self, stdout: IO[str], stderr: IO[str]) -> None:
+    def __init__(self, stdout: IO[str], stderr: IO[str], files: AttemptFiles) -> None:
         queued_chunks = max(1, _MAX_STREAM_BYTES // 4096)
         self._events: queue.Queue[_StreamEvent] = queue.Queue(maxsize=queued_chunks)
         self._open = {"stdout", "stderr"}
         self._lock = threading.Lock()
+        self._paths = {"stdout": files.stream, "stderr": files.stderr}
         self._threads = (
             threading.Thread(target=self._pump, args=("stdout", stdout), daemon=True),
             threading.Thread(target=self._pump, args=("stderr", stderr), daemon=True),
@@ -600,8 +608,12 @@ class _PipeStreams:
 
     def _pump(self, kind: Literal["stdout", "stderr"], stream: IO[str]) -> None:
         try:
-            with contextlib.suppress(OSError):
+            with (
+                self._paths[kind].open("ab", buffering=0) as log,
+                contextlib.suppress(OSError),
+            ):
                 while chunk := os.read(stream.fileno(), 4096):
+                    log.write(chunk)
                     self._events.put((kind, chunk))
         finally:
             self._events.put((kind, None))

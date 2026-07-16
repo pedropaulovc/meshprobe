@@ -16,6 +16,7 @@ dependencies = [
   "mcp>=1.27,<2",
   "pillow>=12.1,<13",
   "pydantic>=2.11,<3",
+  "pyyaml>=6.0,<7",
   "typer>=0.16,<1",
 ]
 
@@ -30,6 +31,7 @@ dev = [
   "pytest>=8.4,<9",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
+  "types-pyyaml>=6.0,<7",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -42,10 +44,14 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["meshprobe"]
+patch = ["subprocess"]
 omit = [
+  "src/meshprobe/client.py",
+  "src/meshprobe/daemon.py",
   "src/meshprobe/blender/curated_builder.py",
   "src/meshprobe/blender/worker.py",
   "src/meshprobe/evals/reference_agent.py",
+  "src/meshprobe/evals/ergonomics.py",
   "src/meshprobe/evals/harness/windows_sandbox.py",
 ]
 
