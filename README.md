@@ -197,7 +197,7 @@ artifacts are retained by the ergonomics pilot.
 The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes across Claude
 Opus and Codex Luna (`gpt-5.6-luna`). It records exposed command trajectories and token
 accounting; it does not claim access to hidden chain of thought and does not replace release
-qualification. The harness silently enforces a 512,000-token ceiling on each attempt in
+qualification. The harness silently enforces a 768,000-token ceiling on each attempt in
 addition to its wall-clock limit. On Linux, agents run inside Bubblewrap with only the
 assigned public model, a clean MeshProbe install, credentials, and their writable attempt
 directory mounted. Blender is mounted read-only as a runtime dependency. The repository and

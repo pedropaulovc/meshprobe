@@ -126,7 +126,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
     ),
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
-DEFAULT_TOKEN_LIMIT = 512_000
+DEFAULT_TOKEN_LIMIT = 768_000
 ERGONOMICS_PROCESS_OUTPUT_LIMIT = 1024**3
 ERGONOMICS_PROCESS_LIMIT = 512
 ERGONOMICS_RUNTIME = PurePosixPath("/workspace/artifacts/.meshprobe-runtime")
