@@ -173,3 +173,48 @@ def test_ergonomics_retries_only_no_progress_provider_failures(tmp_path: Path) -
 
     assert ergonomics._retryable_provider_failure(no_progress)
     assert not ergonomics._retryable_provider_failure(semantic_overrun)
+
+
+def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    def run(command: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        output = (
+            "MESHPROBE_PREFLIGHT_OK"
+            if command[-1] == ergonomics.MODEL_PREFLIGHT_PROMPT
+            else "authenticated"
+        )
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(ergonomics.subprocess, "run", run)
+
+    result = ergonomics.preflight_agents()
+
+    assert result["claude_model"] == "available"
+    assert result["codex_model"] == "available"
+    assert commands[-2][0:4] == ("claude", "-p", "--model", "opus")
+    assert commands[-1][0:5] == ("codex", "exec", "--model", "luna", "--json")
+
+
+def test_ergonomics_preflight_surfaces_unsupported_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(command: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+        if command[:4] == ("codex", "exec", "--model", "luna"):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="The 'luna' model is not supported with a ChatGPT account.",
+            )
+        output = (
+            "MESHPROBE_PREFLIGHT_OK"
+            if command[-1] == ergonomics.MODEL_PREFLIGHT_PROMPT
+            else "authenticated"
+        )
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(ergonomics.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match=r"luna.*not supported"):
+        ergonomics.preflight_agents()

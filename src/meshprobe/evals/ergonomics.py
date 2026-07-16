@@ -112,6 +112,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "--ignore-rules",
     ),
 }
+MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
 
 
 def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tuple[str, ...]:
@@ -156,6 +157,18 @@ def preflight_agents() -> dict[str, str]:
         if completed.returncode != 0:
             raise RuntimeError(f"{name} failed ({completed.returncode}): {output}")
         results[name] = output
+    model_checks = {
+        "claude_model": (*AGENT_COMMANDS[ErgonomicsAgent.CLAUDE], MODEL_PREFLIGHT_PROMPT),
+        "codex_model": (*AGENT_COMMANDS[ErgonomicsAgent.CODEX], MODEL_PREFLIGHT_PROMPT),
+    }
+    for name, command in model_checks.items():
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        output = (completed.stdout + completed.stderr).strip()
+        if completed.returncode != 0:
+            raise RuntimeError(f"{name} unavailable ({completed.returncode}): {output[-4000:]}")
+        if "MESHPROBE_PREFLIGHT_OK" not in output:
+            raise RuntimeError(f"{name} did not confirm model availability: {output[-4000:]}")
+        results[name] = "available"
     return results
 
 
@@ -169,7 +182,14 @@ def run_ergonomics_pilot(
     corpus_root = corpus_root.expanduser().resolve(strict=True)
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    preflight = preflight_agents()
+    try:
+        preflight = preflight_agents()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        atomic_json(
+            output_root / "preflight.json",
+            {"status": "failed", "error": str(error)},
+        )
+        raise
     atomic_json(output_root / "preflight.json", preflight)
     episodes = select_paired_episodes(corpus_root, per_difficulty=per_difficulty)
     attempts = _load_attempts(output_root)
