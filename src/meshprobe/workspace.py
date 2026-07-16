@@ -6,7 +6,9 @@ import json
 import os
 import re
 import threading
+import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -37,6 +39,7 @@ class SessionMetadata(BaseModel):
     name: str
     source_path: str
     source_sha256: str
+    blender: str | None
     status: Literal["active", "closed", "killed"] = "active"
     created_at: str
     updated_at: str
@@ -49,6 +52,7 @@ class SessionCheckpoint(BaseModel):
     schema_version: Literal[1] = 1
     source_path: str
     source_sha256: str
+    blender: str | None
     state_sha256: str
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -71,15 +75,30 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def atomic_text(path: Path, content: str) -> None:
+def atomic_text(path: Path, content: str, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o666 if mode is None else mode,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if mode is not None:
+            os.chmod(path, mode)
+    except Exception:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
 
 
-def atomic_json(path: Path, value: object) -> None:
-    atomic_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
+def atomic_json(path: Path, value: object, *, mode: int | None = None) -> None:
+    atomic_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n", mode=mode)
 
 
 def workspace_root(path: Path | None = None) -> Path:
@@ -142,14 +161,22 @@ class SessionManager:
         self._services: dict[str, SessionService] = {}
         self._lock = threading.RLock()
 
-    def open(self, name: str, source: Path, *, request_id: str = "open") -> OperationReceipt:
+    def open(
+        self,
+        name: str,
+        source: Path,
+        *,
+        request_id: str = "open",
+        blender: str | None = None,
+    ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
             files.create_directories()
             existing = self._services.pop(name, None)
             if existing is not None:
                 existing.close()
-            service = self._new_service()
+            selected_blender = blender if blender is not None else self.blender
+            service = self._new_service(selected_blender)
             command = SceneOpenCommand(
                 request_id=request_id,
                 op="scene.open",
@@ -168,6 +195,7 @@ class SessionManager:
                 name=name,
                 source_path=command.source_path,
                 source_sha256=manifest.source_sha256,
+                blender=selected_blender,
                 created_at=now,
                 updated_at=now,
                 worker_pid=service.worker_pid,
@@ -175,6 +203,7 @@ class SessionManager:
             checkpoint = SessionCheckpoint(
                 source_path=command.source_path,
                 source_sha256=manifest.source_sha256,
+                blender=selected_blender,
                 state_sha256=snapshot.state_sha256,
             )
             atomic_json(files.metadata, metadata.model_dump(mode="json"))
@@ -186,9 +215,20 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             return self._receipt(files, command.op, snapshot, result_path)
 
-    def execute(self, name: str, command: Command) -> OperationReceipt:
+    def execute(
+        self,
+        name: str,
+        command: Command,
+        *,
+        blender: str | None = None,
+    ) -> OperationReceipt:
         if isinstance(command, SceneOpenCommand):
-            return self.open(name, Path(command.source_path), request_id=command.request_id)
+            return self.open(
+                name,
+                Path(command.source_path),
+                request_id=command.request_id,
+                blender=blender,
+            )
         with self._lock:
             files = self._require_files(name)
             try:
@@ -284,7 +324,7 @@ class SessionManager:
         checkpoint = SessionCheckpoint.model_validate_json(
             files.checkpoint.read_text(encoding="utf-8")
         )
-        service = self._new_service()
+        service = self._new_service(checkpoint.blender)
         try:
             opened = service.execute(
                 SceneOpenCommand(
@@ -306,10 +346,10 @@ class SessionManager:
         self._services[name] = service
         return service
 
-    def _new_service(self) -> SessionService:
+    def _new_service(self, blender: str | None) -> SessionService:
         if self._service_factory is not None:
             return self._service_factory()
-        return MeshProbeService(blender=self.blender, timeout_seconds=self.timeout_seconds)
+        return MeshProbeService(blender=blender, timeout_seconds=self.timeout_seconds)
 
     @staticmethod
     def _snapshot(service: SessionService) -> SessionSnapshot:

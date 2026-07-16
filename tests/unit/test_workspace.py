@@ -16,7 +16,7 @@ from meshprobe.protocol import (
 )
 from meshprobe.service import CommandResponse
 from meshprobe.session import InspectionSession
-from meshprobe.workspace import SessionFiles, SessionManager
+from meshprobe.workspace import SessionFiles, SessionManager, atomic_json
 
 
 class FakeSessionService:
@@ -228,3 +228,47 @@ def test_reset_clears_replay_and_artifact_detection_is_render_only(
 def test_invalid_session_name_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="session name"):
         SessionFiles(tmp_path / ".meshprobe", "bad/name")
+
+
+def test_renderer_choice_is_persisted_and_reused_for_recovery(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: list[str | None] = []
+
+    def service(*, blender: str | None, timeout_seconds: float) -> FakeSessionService:
+        selected.append(blender)
+        return FakeSessionService(scene_manifest)
+
+    monkeypatch.setattr("meshprobe.workspace.MeshProbeService", service)
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root)
+    manager.open("review", source, blender="/opt/pinned/blender")
+    manager.close("review")
+
+    recovered = SessionManager(root, blender="/different/default")
+    recovered.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recover", op="session.snapshot"),
+    )
+    metadata = json.loads(
+        (root / "sessions" / "review" / "metadata.json").read_text(encoding="utf-8")
+    )
+    checkpoint = json.loads(
+        (root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
+    )
+
+    assert selected == ["/opt/pinned/blender", "/opt/pinned/blender"]
+    assert metadata["blender"] == "/opt/pinned/blender"
+    assert checkpoint["blender"] == "/opt/pinned/blender"
+
+
+def test_atomic_json_enforces_private_mode(tmp_path: Path) -> None:
+    path = tmp_path / "daemon.json"
+
+    atomic_json(path, {"token": "secret"}, mode=0o600)
+
+    assert path.stat().st_mode & 0o777 == 0o600

@@ -13,6 +13,7 @@ from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
+    RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
 )
@@ -189,6 +190,7 @@ def test_eval_migration_and_ergonomics_commands_emit_reports(
         root=tmp_path / "ergonomics",
         attempts=(object(), object()),
         report_path=tmp_path / "ergonomics" / "report.json",
+        report_markdown_path=tmp_path / "ergonomics" / "report.md",
     )
     monkeypatch.setattr("meshprobe.cli.run_ergonomics_pilot", lambda *args, **kwargs: ergonomics)
 
@@ -283,6 +285,30 @@ def test_flat_cli_uses_named_session_and_compact_receipts(
     assert snapshotted.exit_code == 0
     assert isinstance(client.commands[0], SceneOpenCommand)
     assert isinstance(client.commands[1], SessionSnapshotCommand)
+
+
+def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+    client = FakeClient()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    opened = runner.invoke(app, ["open", "assembly.glb"])
+    rendered = runner.invoke(
+        app,
+        ["render-image", "--output", "relative/render.png", "--samples", "1"],
+    )
+
+    assert opened.exit_code == 0
+    assert rendered.exit_code == 0
+    open_command, render_command = client.commands
+    assert isinstance(open_command, SceneOpenCommand)
+    assert isinstance(render_command, RenderImageCommand)
+    assert open_command.source_path == str(source.resolve())
+    assert render_command.output_path == str((tmp_path / "relative/render.png").resolve())
 
 
 def test_component_commands_resolve_short_references(

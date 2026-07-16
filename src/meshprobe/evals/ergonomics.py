@@ -16,7 +16,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict
 
 from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec
-from meshprobe.workspace import atomic_json
+from meshprobe.workspace import atomic_json, atomic_text
 
 
 class ErgonomicsAgent(StrEnum):
@@ -82,6 +82,7 @@ class ErgonomicsRun:
     root: Path
     attempts: tuple[ErgonomicsAttempt, ...]
     report_path: Path
+    report_markdown_path: Path
 
 
 AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
@@ -189,7 +190,12 @@ def run_ergonomics_pilot(
                     "produced structured output"
                 )
     report_path = _checkpoint(output_root, attempts, preflight)
-    return ErgonomicsRun(root=output_root, attempts=tuple(attempts), report_path=report_path)
+    return ErgonomicsRun(
+        root=output_root,
+        attempts=tuple(attempts),
+        report_path=report_path,
+        report_markdown_path=report_path.with_suffix(".md"),
+    )
 
 
 def _run_with_retry(
@@ -367,6 +373,7 @@ def _checkpoint(
     }
     path = output_root / "ergonomics-report.json"
     atomic_json(path, report)
+    atomic_text(path.with_suffix(".md"), ergonomics_report_markdown(report))
     return path
 
 
@@ -384,8 +391,57 @@ def _summary(attempts: list[ErgonomicsAttempt]) -> dict[str, Any]:
                 item.metrics.tokens.reasoning_output for item in selected
             ),
             "elapsed_seconds": sum(item.metrics.elapsed_seconds for item in selected),
+            "meshprobe_operations": sum(item.metrics.meshprobe_operations for item in selected),
+            "help_calls": sum(item.metrics.help_calls for item in selected),
+            "invalid_calls": sum(item.metrics.invalid_calls for item in selected),
+            "retries": sum(item.metrics.retries for item in selected),
+            "short_ref_uses": sum(item.metrics.short_ref_uses for item in selected),
+            "rg_calls": sum(item.metrics.rg_calls for item in selected),
+            "jq_calls": sum(item.metrics.jq_calls for item in selected),
+            "yq_calls": sum(item.metrics.yq_calls for item in selected),
+            "bytes_read": sum(item.metrics.bytes_read for item in selected),
+            "raw_reads": sum(item.metrics.raw_reads for item in selected),
+            "full_file_reads": sum(item.metrics.full_file_reads for item in selected),
+            "redundant_calls": sum(item.metrics.redundant_calls for item in selected),
+            "renders": sum(item.metrics.renders for item in selected),
+            "receipt_path_uses": sum(item.metrics.receipt_path_uses for item in selected),
         }
     return by_agent
+
+
+def ergonomics_report_markdown(report: dict[str, Any]) -> str:
+    """Render the concise, non-qualification pilot report."""
+
+    summary = report.get("summary", {})
+    lines = [
+        "# MeshProbe CLI ergonomics pilot",
+        "",
+        "This diagnostic compares Claude Opus and Codex Luna on paired basic and "
+        "intermediate episodes. It is not a release qualification result.",
+        "",
+        "| Agent | Attempts | Answer passes | Evidence passes | Input tokens | "
+        "Output tokens | Reasoning tokens | CLI operations | Invalid calls | Elapsed (s) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for agent in ErgonomicsAgent:
+        values = summary.get(agent, {})
+        lines.append(
+            f"| {agent} | {values.get('attempts', 0)} | {values.get('answer_passes', 0)} | "
+            f"{values.get('evidence_passes', 0)} | {values.get('input_tokens', 0)} | "
+            f"{values.get('output_tokens', 0)} | "
+            f"{values.get('reasoning_output_tokens', 0)} | "
+            f"{values.get('meshprobe_operations', 0)} | {values.get('invalid_calls', 0)} | "
+            f"{float(values.get('elapsed_seconds', 0)):.1f} |"
+        )
+    lines.extend(
+        (
+            "",
+            "The analysis uses exposed reasoning summaries and command trajectories only. "
+            "Hidden chain of thought was not collected or analyzed.",
+            "",
+        )
+    )
+    return "\n".join(lines)
 
 
 def _json_events(raw: str) -> list[dict[str, Any]]:

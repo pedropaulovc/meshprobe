@@ -57,7 +57,10 @@ def dispatch(server: DaemonServer, request: dict[str, Any]) -> object:
         return {"pid": os.getpid(), "protocol_version": 1}
     if action == "execute":
         command = COMMAND_ADAPTER.validate_python(request.get("command"))
-        return server.manager.execute(session, command).model_dump(mode="json")
+        blender = request.get("blender")
+        if blender is not None and not isinstance(blender, str):
+            raise ValueError("blender must be a string")
+        return server.manager.execute(session, command, blender=blender).model_dump(mode="json")
     if action == "resolve":
         return {"component_id": server.manager.resolve_component(session, str(request["value"]))}
     if action == "list":
@@ -86,7 +89,7 @@ def serve(root: Path, *, blender: str | None = None) -> None:
         "pid": os.getpid(),
         "token": token,
     }
-    atomic_json(root / "daemon.json", metadata)
+    atomic_json(root / "daemon.json", metadata, mode=0o600)
     try:
         server.serve_forever(poll_interval=0.1)
     finally:

@@ -325,6 +325,7 @@ def run_cli_ergonomics(
             "root": str(result.root),
             "attempts": len(result.attempts),
             "report": str(result.report_path),
+            "report_markdown": str(result.report_markdown_path),
             "qualification": False,
         }
     )
@@ -411,7 +412,11 @@ def open_scene(
 
     _execute(
         ctx,
-        SceneOpenCommand(request_id=_request_id("open"), op="scene.open", source_path=str(source)),
+        SceneOpenCommand(
+            request_id=_request_id("open"),
+            op="scene.open",
+            source_path=str(source.expanduser().resolve(strict=True)),
+        ),
         blender=blender,
     )
 
@@ -599,7 +604,7 @@ def render_image(
         RenderImageCommand(
             request_id=_request_id("render-image"),
             op="render.image",
-            output_path=str(destination),
+            output_path=str(destination.expanduser().resolve()),
             width=width,
             height=height,
             samples=samples,
@@ -634,7 +639,7 @@ def render_sheet(
         RenderContactSheetCommand(
             request_id=_request_id("render-sheet"),
             op="render.contact_sheet",
-            output_path=str(destination),
+            output_path=str(destination.expanduser().resolve()),
             focus_component_ids=_component_ids(ctx, focus),
             panel_width=panel_width,
             panel_height=panel_height,
@@ -659,9 +664,7 @@ def list_sessions(ctx: typer.Context) -> None:
     try:
         sessions = client.list_sessions()
     except ValueError as error:
-        if "not running" not in str(error):
-            raise typer.BadParameter(str(error)) from error
-        sessions = []
+        raise typer.BadParameter(str(error)) from error
     if _options(ctx).output in {"json", "raw"}:
         _emit({"sessions": sessions})
         return

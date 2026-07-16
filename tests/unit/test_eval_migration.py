@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from meshprobe.evals.ergonomics import select_paired_episodes
+from meshprobe.evals.ergonomics import ergonomics_report_markdown, select_paired_episodes
 from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.evals.migration import (
@@ -86,3 +86,27 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
     assert len(selected) == 4
     assert [spec.difficulty for spec in specs].count(Difficulty.BASIC) == 2
     assert [spec.difficulty for spec in specs].count(Difficulty.INTERMEDIATE) == 2
+
+
+def test_ergonomics_markdown_is_explicitly_diagnostic() -> None:
+    report = {
+        "summary": {
+            "claude-opus": {
+                "attempts": 2,
+                "answer_passes": 1,
+                "evidence_passes": 2,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "reasoning_output_tokens": 0,
+                "meshprobe_operations": 5,
+                "invalid_calls": 1,
+                "elapsed_seconds": 12.5,
+            }
+        }
+    }
+
+    markdown = ergonomics_report_markdown(report)
+
+    assert "| claude-opus | 2 | 1 | 2 | 100 | 20 | 0 | 5 | 1 | 12.5 |" in markdown
+    assert "not a release qualification result" in markdown
+    assert "Hidden chain of thought was not collected" in markdown

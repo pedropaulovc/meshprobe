@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import json
+import os
+import socket
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from meshprobe.client import MeshProbeClient
+from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
+
+
+def _daemon_metadata(pid: int) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "host": "127.0.0.1",
+        "port": 12345,
+        "pid": pid,
+        "token": "secret",
+    }
+
+
+def _session_metadata(name: str = "review") -> SessionMetadata:
+    now = utc_now()
+    return SessionMetadata(
+        name=name,
+        source_path="/models/assembly.glb",
+        source_sha256="a" * 64,
+        blender="/opt/blender/blender",
+        status="closed",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_list_sessions_reads_durable_metadata_without_daemon(tmp_path: Path) -> None:
+    client = MeshProbeClient(tmp_path)
+    metadata = _session_metadata()
+    path = client.root / "sessions" / metadata.name / "metadata.json"
+    atomic_json(path, metadata.model_dump(mode="json"))
+
+    assert client.list_sessions() == [metadata.model_dump(mode="json")]
+
+
+def test_stale_start_lock_is_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MeshProbeClient(tmp_path)
+    client.root.mkdir(parents=True)
+    lock = client.root / "daemon.lock"
+    lock.write_text('{"pid":999999,"created_at":0}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        MeshProbeClient,
+        "_pid_alive",
+        staticmethod(lambda pid: pid == os.getpid()),
+    )
+
+    assert client._acquire_start_lock(lock) is True
+    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+
+def test_request_does_not_retry_after_read_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class TimeoutConnection:
+        def __enter__(self) -> TimeoutConnection:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout > 10
+
+        def sendall(self, payload: bytes) -> None:
+            assert b'"action":"execute"' in payload
+
+        def recv(self, size: int) -> bytes:
+            raise TimeoutError("renderer still running")
+
+    client = MeshProbeClient(tmp_path)
+    atomic_json(client.root / "daemon.json", _daemon_metadata(os.getpid()), mode=0o600)
+    connections = 0
+
+    def connect(*args: object, **kwargs: object) -> TimeoutConnection:
+        nonlocal connections
+        connections += 1
+        return TimeoutConnection()
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(
+        client,
+        "_start_daemon",
+        lambda: pytest.fail("a delivered operation must not be retried"),
+    )
+
+    with pytest.raises(TimeoutError, match="renderer still running"):
+        client.request("execute", command={})
+    assert connections == 1
+
+
+def test_close_all_waits_for_graceful_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    metadata = _daemon_metadata(1234)
+    waited: list[bool] = []
+    monkeypatch.setattr(client, "_metadata", lambda optional=False: metadata)
+    monkeypatch.setattr(client, "request", lambda *args, **kwargs: {"sessions": []})
+    monkeypatch.setattr(
+        client,
+        "_wait_for_shutdown",
+        lambda expected, *, force: waited.append(force),
+    )
+
+    assert client.close_all() == []
+    assert waited == [False]
+
+
+def test_kill_all_falls_back_to_process_tree_and_updates_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    daemon = _daemon_metadata(1234)
+    session = _session_metadata()
+    atomic_json(
+        client.root / "sessions" / session.name / "metadata.json",
+        session.model_dump(mode="json"),
+    )
+    forced: list[bool] = []
+    monkeypatch.setattr(client, "_metadata", lambda optional=False: daemon)
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("wedged")),
+    )
+    monkeypatch.setattr(
+        client,
+        "_wait_for_shutdown",
+        lambda expected, *, force: forced.append(force),
+    )
+
+    receipts = client.kill_all()
+
+    persisted = json.loads(
+        (client.root / "sessions" / session.name / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert forced == [True]
+    assert [receipt.session for receipt in receipts] == [session.name]
+    assert persisted["status"] == "killed"
+    assert persisted["worker_pid"] is None
