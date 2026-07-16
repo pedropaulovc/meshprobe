@@ -93,6 +93,10 @@ def test_cli_adapter_runs_interactive_tool_calls_and_submission(tmp_path: Path) 
     assert run.submission is not None
     assert run.submission.answer == episode.ground_truth.answer
     assert [event.operation for event in broker.events] == ["scene.open", "session.snapshot"]
+    logs = tmp_path / "evaluator" / "agent-run"
+    assert (logs / "prompt.txt").read_text(encoding="utf-8") == episode.spec.prompt
+    assert '"type": "submission"' in (logs / "stream.jsonl").read_text(encoding="utf-8")
+    assert (logs / "stderr.log").read_text(encoding="utf-8") == ""
 
 
 def test_cli_adapter_reports_invalid_protocol_without_tool_execution(tmp_path: Path) -> None:

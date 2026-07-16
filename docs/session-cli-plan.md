@@ -98,7 +98,7 @@ The required agent commands are:
 
 ```text
 claude -p --model opus --output-format stream-json --verbose \
-  --no-session-persistence --safe-mode
+  --no-session-persistence --safe-mode --allowedTools=Bash
 codex exec --model gpt-5.6-luna --json --ephemeral --ignore-user-config --ignore-rules
 ```
 
@@ -121,6 +121,12 @@ from the attempt record in the checkpoint report.
 Windows ergonomics runs remain disabled until the pilot supports the same boundary through
 the existing AppContainer launcher, including provider network access, credential-file
 projection, and a writable attempt directory. There is no unsandboxed fallback.
+
+These audit controls apply to qualification too. Every external CLI, MCP, reference, and
+ergonomics agent uses the platform sandbox and writes an exact `prompt.txt`, live
+`stream.jsonl`, and live `stderr.log`. Qualification stores them under each episode's
+`evaluator/agent-run`; ergonomics stores them directly under the numbered attempt. Private
+truth and evaluator passes remain outside the agent mount namespace.
 
 Metrics cover correctness and evidence gates, time and tokens to open, help and invalid
 calls, retries, reference use, `rg`/`jq`/`yq` use, bytes read, full raw reads, redundant calls,

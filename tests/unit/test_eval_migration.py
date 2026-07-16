@@ -99,9 +99,9 @@ def test_ergonomics_attempt_persists_exact_prompt(tmp_path: Path) -> None:
     prompt = "inspect this assigned model exactly"
     path = tmp_path / "prompt.txt"
 
-    persisted = ergonomics._persist_prompt(tmp_path, prompt)
+    persisted = ergonomics.prepare_attempt_files(tmp_path, prompt)
 
-    assert persisted == path
+    assert persisted.prompt == path
     assert path.read_text(encoding="utf-8") == prompt
 
 
@@ -138,7 +138,10 @@ def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     monkeypatch.setattr(
         ergonomics,
         "_agent_read_only_mounts",
-        lambda agent, cli_runtime: ((runtime, ergonomics.PurePosixPath("/opt/meshprobe-cli")),),
+        lambda agent, cli_runtime, input_root: (
+            (runtime, ergonomics.ERGONOMICS_RUNTIME),
+            (input_root, ergonomics.ERGONOMICS_INPUT),
+        ),
     )
 
     command = ergonomics._sandboxed_agent_command(
@@ -153,7 +156,7 @@ def test_ergonomics_agent_command_uses_bubblewrap_workspace_boundary(
     assert "bwrap" in " ".join(command)
     assert "--share-net" in command
     assert "/workspace/artifacts" in command
-    assert "/opt/meshprobe-cli" in command
+    assert str(ergonomics.ERGONOMICS_RUNTIME) in command
 
 
 def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:
@@ -252,6 +255,7 @@ def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatc
     assert result["claude_model"] == "available"
     assert result["codex_model"] == "available"
     assert commands[-2][0:4] == ("claude", "-p", "--model", "opus")
+    assert "--allowedTools=Bash" in commands[-2]
     assert commands[-1][0:5] == (
         "codex",
         "exec",

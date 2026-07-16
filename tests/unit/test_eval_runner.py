@@ -153,6 +153,12 @@ def test_runner_materializes_isolated_episode_scores_and_publishes_report(tmp_pa
     assert run.trace_path.read_text(encoding="utf-8").count("\n") == 4
     assert service.closed
     assert not (run.run_root / "agent-input" / "ground_truth").exists()
+    agent_run = run.run_root / "evaluator" / "agent-run"
+    assert (agent_run / "prompt.txt").read_text(encoding="utf-8") == (
+        run.run_root / "agent-input" / "prompt.txt"
+    ).read_text(encoding="utf-8")
+    assert (agent_run / "stream.jsonl").is_file()
+    assert (agent_run / "stderr.log").is_file()
 
     failed = run_episode(
         corpus_root=corpus.root,

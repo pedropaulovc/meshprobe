@@ -12,6 +12,7 @@ from typing import Protocol
 
 from meshprobe.evals.factory import CorpusBuild, validate_corpus
 from meshprobe.evals.harness.adapters import AdapterRun
+from meshprobe.evals.harness.attempts import prepare_attempt_files
 from meshprobe.evals.harness.broker import EvaluationBroker, EvaluationService
 from meshprobe.evals.oracles import OracleInputs, score_episode
 from meshprobe.evals.schemas import (
@@ -88,7 +89,12 @@ def run_episode(
     assigned_model = input_root / spec.model_file
     shutil.copy2(source_model, assigned_model)
     shutil.copy2(public_episode, input_root / "episode.json")
-    (input_root / "prompt.txt").write_text(spec.prompt + "\n", encoding="utf-8")
+    (input_root / "prompt.txt").write_text(spec.prompt, encoding="utf-8")
+    attempt_files = prepare_attempt_files(
+        evaluator_root / "agent-run",
+        spec.prompt,
+        reset_streams=True,
+    )
     source_before = snapshot_source(assigned_model)
     trace_path = evaluator_root / "trace.jsonl"
     service = service_factory()
@@ -142,6 +148,9 @@ def run_episode(
             "elapsed_seconds": adapter_run.elapsed_seconds,
             "timed_out": adapter_run.timed_out,
             "protocol_error": adapter_run.protocol_error,
+            "prompt_path": str(attempt_files.prompt),
+            "stream_path": str(attempt_files.stream),
+            "stderr_path": str(attempt_files.stderr),
         },
     )
     return EpisodeRun(

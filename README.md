@@ -190,6 +190,10 @@ uv run meshprobe eval migrate .corpora/private-v6 .corpora \
 full-investigation operation contract survived the migration. Schema-v1 corpora are rejected
 by the qualification runtime instead of being translated silently.
 
+Every qualification agent runs in the platform sandbox and retains its exact prompt, live
+protocol stream, and stderr under `episodes/<episode>/evaluator/agent-run/`. The same audit
+artifacts are retained by the ergonomics pilot.
+
 The separate CLI ergonomics pilot pairs 12 basic and 12 intermediate episodes across Claude
 Opus and Codex Luna (`gpt-5.6-luna`). It records exposed command trajectories and token
 accounting; it does not claim access to hidden chain of thought and does not replace release

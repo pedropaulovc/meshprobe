@@ -19,11 +19,11 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from meshprobe.evals.harness.attempts import prepare_attempt_files
 from meshprobe.evals.harness.sandbox import (
     IsolationLimits,
     NetworkAccess,
     isolated_process_command,
-    visible_input_path,
 )
 from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec
 from meshprobe.workspace import atomic_json, atomic_text
@@ -108,6 +108,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "--verbose",
         "--no-session-persistence",
         "--safe-mode",
+        "--allowedTools=Bash",
     ),
     ErgonomicsAgent.CODEX: (
         "codex",
@@ -125,6 +126,8 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
 }
 MODEL_PREFLIGHT_PROMPT = "Reply with exactly MESHPROBE_PREFLIGHT_OK and do not use tools."
 DEFAULT_TOKEN_LIMIT = 256_000
+ERGONOMICS_RUNTIME = PurePosixPath("/workspace/artifacts/.meshprobe-runtime")
+ERGONOMICS_INPUT = PurePosixPath("/workspace/artifacts/input")
 
 
 def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tuple[str, ...]:
@@ -237,7 +240,7 @@ def _prepare_cli_runtime(output_root: Path) -> Path:
     )
     staged_entrypoint = staging / "bin" / "meshprobe"
     lines = staged_entrypoint.read_bytes().splitlines(keepends=True)
-    lines[0] = b"#!/opt/meshprobe-cli/bin/python\n"
+    lines[0] = f"#!{ERGONOMICS_RUNTIME}/bin/python\n".encode()
     staged_entrypoint.write_bytes(b"".join(lines))
     staging.replace(runtime)
     return runtime
@@ -246,6 +249,7 @@ def _prepare_cli_runtime(output_root: Path) -> Path:
 def _agent_read_only_mounts(
     agent: ErgonomicsAgent,
     cli_runtime: Path,
+    input_root: Path,
 ) -> tuple[tuple[Path, PurePosixPath], ...]:
     home = Path.home()
     credential = (
@@ -259,7 +263,8 @@ def _agent_read_only_mounts(
         else PurePosixPath("/tmp/home/.codex/auth.json")
     )
     return (
-        (cli_runtime, PurePosixPath("/opt/meshprobe-cli")),
+        (cli_runtime, ERGONOMICS_RUNTIME),
+        (input_root, ERGONOMICS_INPUT),
         (credential, guest_credential),
     )
 
@@ -290,8 +295,8 @@ def _sandboxed_agent_command(
             output_bytes=output_bytes,
         ),
         network=NetworkAccess.SHARED,
-        read_only_mounts=_agent_read_only_mounts(agent, cli_runtime),
-        path_entries=(PurePosixPath("/opt/meshprobe-cli/bin"),),
+        read_only_mounts=_agent_read_only_mounts(agent, cli_runtime, public),
+        path_entries=(ERGONOMICS_RUNTIME / "bin",),
     )
 
 
@@ -421,9 +426,9 @@ def _run_attempt(
         shutil.copy2(source_model, assigned_model)
     prompt = _prompt(
         spec,
-        Path(visible_input_path(assigned_model)),
+        Path(ERGONOMICS_INPUT / assigned_model.name),
     )
-    prompt_path = _persist_prompt(root, prompt)
+    attempt_files = prepare_attempt_files(root, prompt, reset_streams=True)
     command = (*AGENT_COMMANDS[agent], prompt)
     sandbox_command = _sandboxed_agent_command(
         command,
@@ -435,8 +440,8 @@ def _run_attempt(
         input_root=input_root,
         workspace=workspace,
     )
-    raw_path = root / "stream.jsonl"
-    stderr_path = root / "stderr.log"
+    raw_path = attempt_files.stream
+    stderr_path = attempt_files.stderr
     started_at = datetime.now(UTC)
     started = time.monotonic()
     provider_error: str | None = None
@@ -500,15 +505,9 @@ def _run_attempt(
         provider_error=provider_error,
         final=final,
         metrics=metrics,
-        prompt_path=str(prompt_path),
+        prompt_path=str(attempt_files.prompt),
         raw_stream_path=str(raw_path),
     )
-
-
-def _persist_prompt(root: Path, prompt: str) -> Path:
-    path = root / "prompt.txt"
-    atomic_text(path, prompt)
-    return path
 
 
 def _retryable_provider_failure(attempt: ErgonomicsAttempt) -> bool:
