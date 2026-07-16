@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 from contextlib import suppress
@@ -235,34 +236,43 @@ def _run_attempt(
     workspace.mkdir(parents=True, exist_ok=True)
     prompt = _prompt(spec, corpus_root / "public" / "models" / spec.model_file)
     command = (*AGENT_COMMANDS[agent], prompt)
+    raw_path = root / "stream.jsonl"
+    stderr_path = root / "stderr.log"
     started = time.monotonic()
     provider_error: str | None = None
-    try:
+    creation_flags = 0
+    if os.name == "nt":
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+    with (
+        raw_path.open("w", encoding="utf-8") as raw_stream,
+        stderr_path.open("w", encoding="utf-8") as stderr_stream,
+    ):
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            stdout=raw_stream,
+            stderr=stderr_stream,
+            text=True,
+            env={**os.environ, "NO_COLOR": "1"},
+            start_new_session=os.name != "nt",
+            creationflags=creation_flags,
+        )
         try:
-            completed = subprocess.run(
-                command,
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=spec.budgets.wall_seconds,
-                env={**os.environ, "NO_COLOR": "1"},
-            )
-            return_code = completed.returncode
-            raw = completed.stdout
-            stderr = completed.stderr
-        except subprocess.TimeoutExpired as error:
+            return_code = process.wait(timeout=spec.budgets.wall_seconds)
+        except subprocess.TimeoutExpired:
             return_code = 124
-            raw = error.stdout if isinstance(error.stdout, str) else ""
-            stderr = error.stderr if isinstance(error.stderr, str) else ""
             provider_error = f"timeout after {spec.budgets.wall_seconds:g} seconds"
-    finally:
-        _stop_workspace(workspace)
+            _terminate_agent(process)
+        except BaseException:
+            _terminate_agent(process)
+            raise
+        finally:
+            _stop_workspace(workspace)
     elapsed = time.monotonic() - started
+    raw = raw_path.read_text(encoding="utf-8")
+    stderr = stderr_path.read_text(encoding="utf-8")
     if return_code != 0 and provider_error is None:
         provider_error = (stderr or raw)[-2000:] or f"agent exited {return_code}"
-    raw_path = root / "stream.jsonl"
-    raw_path.write_text(raw, encoding="utf-8")
-    (root / "stderr.log").write_text(stderr, encoding="utf-8")
     events = _json_events(raw)
     final = _extract_final(raw, events)
     commands = tuple(_extract_commands(events))
@@ -298,6 +308,23 @@ def _stop_workspace(workspace: Path) -> None:
     client = MeshProbeClient(workspace)
     with suppress(OSError, RuntimeError, TimeoutError, ValueError):
         client.kill_all()
+
+
+def _terminate_agent(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=10)
 
 
 def _prompt(spec: EpisodeSpec, model_path: Path) -> str:
