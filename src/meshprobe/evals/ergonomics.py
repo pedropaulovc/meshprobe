@@ -583,7 +583,7 @@ def _run_attempt(
         provider_error = (stderr or raw)[-2000:] or f"agent exited {return_code}"
     events = _json_events(raw)
     final = _extract_final(raw, events)
-    commands = tuple(_extract_commands(events))
+    commands = tuple(_extract_commands(agent, events))
     tokens = _token_usage(agent, events)
     answer_gate = final is not None and final.get("answer") == truth.answer.model_dump(mode="json")
     evidence = final.get("evidence_manifest_paths", []) if final else []
@@ -753,8 +753,9 @@ def _metrics(
     workspace: Path,
 ) -> ErgonomicsMetrics:
     joined = "\n".join(commands)
-    meshprobe = [command for command in commands if re.search(r"\bmeshprobe\b", command)]
-    normalized = [re.sub(r"\s+", " ", command.strip()) for command in meshprobe]
+    meshprobe_calls = [call for command in commands for call in _meshprobe_calls(command)]
+    operations = [call for call in meshprobe_calls if "--help" not in call]
+    normalized = [re.sub(r"\s+", " ", call.strip()) for call in operations]
     return ErgonomicsMetrics(
         answer_gate=answer_gate,
         evidence_gate=evidence_gate,
@@ -774,9 +775,9 @@ def _metrics(
         raw_reads=len(re.findall(r"meshprobe[^\n]*--raw", joined)),
         full_file_reads=len(re.findall(r"\b(?:cat|less|head|tail)\s+[^|;&]+", joined)),
         redundant_calls=max(0, len(normalized) - len(set(normalized))),
-        meshprobe_operations=len(meshprobe),
+        meshprobe_operations=len(operations),
         renders=sum(
-            "render-image" in command or "render-sheet" in command for command in meshprobe
+            "render-image" in call or "render-sheet" in call for call in operations
         ),
         receipt_path_uses=len(re.findall(r"\.meshprobe/[^\s'\"]+", joined)),
     )
@@ -935,23 +936,44 @@ def _event_strings(events: list[dict[str, Any]]) -> list[str]:
     return strings
 
 
-def _extract_commands(events: list[dict[str, Any]]) -> list[str]:
+def _extract_commands(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> list[str]:
     commands: list[str] = []
-
-    def visit(value: object, key: str = "") -> None:
-        if isinstance(value, dict):
-            for child_key, child in value.items():
-                visit(child, child_key)
-            return
-        if isinstance(value, list):
-            for child in value:
-                visit(child, key)
-            return
-        if isinstance(value, str) and key in {"command", "cmd"}:
-            commands.append(value)
-
-    visit(events)
+    for event in events:
+        if agent is ErgonomicsAgent.CODEX:
+            item = event.get("item")
+            if event.get("type") != "item.completed" or not isinstance(item, dict):
+                continue
+            command = item.get("command") if item.get("type") == "command_execution" else None
+            if isinstance(command, str):
+                commands.append(command)
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "tool_use":
+                continue
+            tool_input = item.get("input")
+            if not isinstance(tool_input, dict):
+                continue
+            command = tool_input.get("command") or tool_input.get("cmd")
+            if isinstance(command, str):
+                commands.append(command)
     return commands
+
+
+_MESHPROBE_CALL = re.compile(
+    r"(?:^|[;&|]\s*|['\"])(?:[./\w-]+/)?meshprobe(?=\s)(?P<arguments>[^;&|\n]*)"
+)
+
+
+def _meshprobe_calls(command: str) -> tuple[str, ...]:
+    return tuple(
+        match.group("arguments").strip(" '\"") for match in _MESHPROBE_CALL.finditer(command)
+    )
 
 
 def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenUsage:
@@ -992,6 +1014,16 @@ def _token_usage(agent: ErgonomicsAgent, events: list[dict[str, Any]]) -> TokenU
 
 
 def _claude_token_usage(events: list[dict[str, Any]]) -> TokenUsage:
+    for event in reversed(events):
+        usage = event.get("usage")
+        if event.get("type") != "result" or not isinstance(usage, dict):
+            continue
+        return TokenUsage(
+            input=_usage_int(usage, "input_tokens"),
+            output=_usage_int(usage, "output_tokens"),
+            cache_creation=_usage_int(usage, "cache_creation_input_tokens"),
+            cache_read=_usage_int(usage, "cache_read_input_tokens"),
+        )
     messages: dict[str, dict[str, Any]] = {}
     for event in events:
         if event.get("type") != "assistant":

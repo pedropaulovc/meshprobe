@@ -297,6 +297,87 @@ def test_ergonomics_live_token_monitor_deduplicates_claude_messages(tmp_path: Pa
     assert monitor.total() == 650
 
 
+def test_ergonomics_claude_final_usage_overrides_incremental_messages() -> None:
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "usage": {
+                    "input_tokens": 2,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": 200,
+                    "output_tokens": 10,
+                },
+            },
+        },
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 3,
+                "cache_creation_input_tokens": 120,
+                "cache_read_input_tokens": 250,
+                "output_tokens": 40,
+            },
+        },
+    ]
+
+    usage = ergonomics._token_usage(ergonomics.ErgonomicsAgent.CLAUDE, events)
+
+    assert usage.input == 3
+    assert usage.cache_creation == 120
+    assert usage.cache_read == 250
+    assert usage.output == 40
+
+
+def test_ergonomics_extracts_each_provider_command_once() -> None:
+    codex_events = [
+        {
+            "type": "item.started",
+            "item": {"type": "command_execution", "command": "meshprobe list"},
+        },
+        {
+            "type": "item.completed",
+            "item": {"type": "command_execution", "command": "meshprobe list"},
+        },
+    ]
+    claude_events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": "meshprobe snapshot"},
+                    }
+                ]
+            },
+        }
+    ]
+
+    assert ergonomics._extract_commands(ergonomics.ErgonomicsAgent.CODEX, codex_events) == [
+        "meshprobe list"
+    ]
+    assert ergonomics._extract_commands(ergonomics.ErgonomicsAgent.CLAUDE, claude_events) == [
+        "meshprobe snapshot"
+    ]
+
+
+def test_ergonomics_counts_executables_not_meshprobe_state_paths() -> None:
+    command = (
+        "/bin/bash -lc 'command -v meshprobe; meshprobe --help; "
+        "cat .meshprobe/state.yml; ./.meshprobe-runtime/bin/meshprobe -s demo open model.glb "
+        "&& meshprobe -s demo render-sheet c1'"
+    )
+
+    assert ergonomics._meshprobe_calls(command) == (
+        "--help",
+        "-s demo open model.glb",
+        "-s demo render-sheet c1",
+    )
+
+
 def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatch) -> None:
     commands: list[tuple[str, ...]] = []
 
