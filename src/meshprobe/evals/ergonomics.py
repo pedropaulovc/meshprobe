@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from meshprobe.client import MeshProbeClient
 from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec
 from meshprobe.workspace import atomic_json, atomic_text
 
@@ -236,22 +238,25 @@ def _run_attempt(
     started = time.monotonic()
     provider_error: str | None = None
     try:
-        completed = subprocess.run(
-            command,
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=spec.budgets.wall_seconds,
-            env={**os.environ, "NO_COLOR": "1"},
-        )
-        return_code = completed.returncode
-        raw = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        return_code = 124
-        raw = error.stdout if isinstance(error.stdout, str) else ""
-        stderr = error.stderr if isinstance(error.stderr, str) else ""
-        provider_error = f"timeout after {spec.budgets.wall_seconds:g} seconds"
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=spec.budgets.wall_seconds,
+                env={**os.environ, "NO_COLOR": "1"},
+            )
+            return_code = completed.returncode
+            raw = completed.stdout
+            stderr = completed.stderr
+        except subprocess.TimeoutExpired as error:
+            return_code = 124
+            raw = error.stdout if isinstance(error.stdout, str) else ""
+            stderr = error.stderr if isinstance(error.stderr, str) else ""
+            provider_error = f"timeout after {spec.budgets.wall_seconds:g} seconds"
+    finally:
+        _stop_workspace(workspace)
     elapsed = time.monotonic() - started
     if return_code != 0 and provider_error is None:
         provider_error = (stderr or raw)[-2000:] or f"agent exited {return_code}"
@@ -287,6 +292,12 @@ def _run_attempt(
         metrics=metrics,
         raw_stream_path=str(raw_path),
     )
+
+
+def _stop_workspace(workspace: Path) -> None:
+    client = MeshProbeClient(workspace)
+    with suppress(OSError, RuntimeError, TimeoutError, ValueError):
+        client.kill_all()
 
 
 def _prompt(spec: EpisodeSpec, model_path: Path) -> str:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import meshprobe.evals.ergonomics as ergonomics
 from meshprobe.evals.ergonomics import ergonomics_report_markdown, select_paired_episodes
 from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
@@ -110,3 +111,23 @@ def test_ergonomics_markdown_is_explicitly_diagnostic() -> None:
     assert "| claude-opus | 2 | 1 | 2 | 100 | 20 | 0 | 5 | 1 | 12.5 |" in markdown
     assert "not a release qualification result" in markdown
     assert "Hidden chain of thought was not collected" in markdown
+
+
+def test_ergonomics_attempt_teardown_force_stops_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    killed: list[Path] = []
+
+    class Client:
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+
+        def kill_all(self) -> list[object]:
+            killed.append(self.workspace)
+            return []
+
+    monkeypatch.setattr(ergonomics, "MeshProbeClient", Client)
+
+    ergonomics._stop_workspace(tmp_path)
+
+    assert killed == [tmp_path]
