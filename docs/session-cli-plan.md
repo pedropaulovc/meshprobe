@@ -98,13 +98,17 @@ The required agent commands are:
 
 ```text
 claude -p --model opus --output-format stream-json --verbose \
-  --no-session-persistence --safe-mode --allowedTools=Bash
+  --no-session-persistence --safe-mode --allowedTools=Bash,Read
 codex exec --model gpt-5.6-luna --json --ephemeral --ignore-user-config --ignore-rules
 ```
 
 Preflight checks versions, authentication, and model availability with no model fallback.
 It also opens and closes a real public model inside the final sandbox layout, proves the
-assigned model is read-only, and proves the repository path is absent.
+assigned model is read-only, and proves the repository path is absent. The same runtime gate
+executes the wheel-installed Python interpreter, batch-loads JSON and YAML state, and creates
+and reopens a PNG with Pillow. This keeps Python available for compact batch operations and
+provides a deterministic image-reading fallback. Claude's built-in `Read` tool is explicitly
+allowed for direct visual inspection of rendered evidence.
 Run a four-pair canary before the remaining twenty. Infrastructure or provider failures may
 be retried once; semantic failures are not retried. The harness silently enforces a
 256,000-token ceiling per attempt from the live provider usage stream, alongside the episode
@@ -126,6 +130,13 @@ remain readable on the host at
 `attempts/<episode>/<agent>/attempt-<n>/{stream.jsonl,stderr.log}` while a run is in progress.
 The exact evaluated prompt is persisted beside them as `prompt.txt` and referenced from the
 attempt record in the checkpoint report.
+
+Retained pilot traces are audited for failed tool calls before a run is accepted. Missing
+sandbox capabilities are fixed and the affected run is restarted; malformed MeshProbe calls
+and unknown component references remain in the diagnostic record as CLI-ergonomics signals.
+The audit found successful Claude image reads, not a missing image-reader failure. It did find
+and remove infrastructure failures around the writable workspace, Blender runtime, loopback
+daemon, process/file/CPU limits, and shell command discovery.
 
 Windows ergonomics runs remain disabled until the pilot supports the same boundary through
 the existing AppContainer launcher, including provider network access, credential-file

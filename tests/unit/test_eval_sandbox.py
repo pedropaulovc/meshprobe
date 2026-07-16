@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -75,6 +76,35 @@ def test_sandbox_exposes_only_read_only_input_and_writable_artifacts(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert (artifacts / "evidence.txt").read_text(encoding="utf-8") == "evidence"
     assert (public / "model.glb").read_bytes() == b"model"
+
+
+def test_sandbox_keeps_python_available_for_batch_operations(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    (public / "first.json").write_text('{"value": 2}\n', encoding="utf-8")
+    (public / "second.json").write_text('{"value": 3}\n', encoding="utf-8")
+    input_directory = str(public.resolve()) if os.name == "nt" else "/workspace/input"
+    output = (
+        str((artifacts / "batch.json").resolve())
+        if os.name == "nt"
+        else "/workspace/artifacts/batch.json"
+    )
+    program = (
+        "import json\n"
+        "from pathlib import Path\n"
+        f"root=Path({input_directory!r})\n"
+        "values=[json.loads(path.read_text())['value'] "
+        "for path in sorted(root.glob('*.json'))]\n"
+        f"Path({output!r}).write_text(json.dumps({{'sum': sum(values)}}))\n"
+    )
+
+    result = run_isolated(
+        (sandbox_python(), "-c", program),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((artifacts / "batch.json").read_text(encoding="utf-8")) == {"sum": 5}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX runtime identity files are Linux-specific")

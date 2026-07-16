@@ -109,7 +109,7 @@ AGENT_COMMANDS: dict[ErgonomicsAgent, tuple[str, ...]] = {
         "--verbose",
         "--no-session-persistence",
         "--safe-mode",
-        "--allowedTools=Bash",
+        "--allowedTools=Bash,Read",
     ),
     ErgonomicsAgent.CODEX: (
         "codex",
@@ -210,6 +210,7 @@ def _prepare_cli_runtime(output_root: Path) -> Path:
     runtime = output_root / "cli-runtime"
     entrypoint = runtime / "bin" / "meshprobe"
     if entrypoint.is_file():
+        _install_runtime_helpers(runtime)
         return runtime
     uv = shutil.which("uv")
     if uv is None:
@@ -246,8 +247,25 @@ def _prepare_cli_runtime(output_root: Path) -> Path:
     lines = staged_entrypoint.read_bytes().splitlines(keepends=True)
     lines[0] = f"#!{ERGONOMICS_RUNTIME}/bin/python\n".encode()
     staged_entrypoint.write_bytes(b"".join(lines))
+    _install_runtime_helpers(staging)
     staging.replace(runtime)
     return runtime
+
+
+def _install_runtime_helpers(runtime: Path) -> None:
+    """Keep common shell discovery available in the minimal agent runtime."""
+
+    helper = runtime / "bin" / "which"
+    helper.write_text(
+        "#!/bin/sh\n"
+        "status=0\n"
+        'for name in "$@"; do\n'
+        '    command -v "$name" || status=1\n'
+        "done\n"
+        'exit "$status"\n',
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
 
 
 def _agent_read_only_mounts(
@@ -327,6 +345,29 @@ def _preflight_runtime_boundary(
     shutil.copy2(model, assigned)
     repository = Path(__file__).parents[3]
     visible_model = ERGONOMICS_INPUT / assigned.name
+    python_probe = "\n".join(
+        (
+            "import json, sys",
+            "from pathlib import Path",
+            "import yaml",
+            "from PIL import Image",
+            f"assert Path(sys.prefix) == Path({str(ERGONOMICS_RUNTIME)!r})",
+            "state_path = Path('.meshprobe/sessions/runtime-proof/state.yml')",
+            "state = yaml.safe_load(state_path.read_text(encoding='utf-8'))",
+            "assert state['schema_version'] == 1",
+            "result_paths = sorted(state_path.parent.joinpath('results').glob('*.json'))",
+            "results = [json.loads(path.read_text(encoding='utf-8')) for path in result_paths]",
+            "assert any(result['op'] == 'scene.open' for result in results)",
+            "image_path = Path('.python-image-probe.png')",
+            "Image.new('RGB', (2, 2), color=(12, 34, 56)).save(image_path)",
+            "with Image.open(image_path) as image:",
+            "    assert image.size == (2, 2)",
+            "Path('.python-batch-probe.json').write_text(",
+            "    json.dumps({'python': sys.version_info[:2], 'results': len(results)}),",
+            "    encoding='utf-8',",
+            ")",
+        )
+    )
     script = "\n".join(
         (
             "set -eu",
@@ -334,6 +375,9 @@ def _preflight_runtime_boundary(
             f"! touch {shlex.quote(str(ERGONOMICS_INPUT / '.write-probe'))}",
             f"meshprobe -s runtime-proof open {shlex.quote(str(visible_model))}",
             "test -f .meshprobe/sessions/runtime-proof/state.yml",
+            f"python3 -c {shlex.quote(python_probe)}",
+            "test -s .python-batch-probe.json",
+            "test -s .python-image-probe.png",
             "meshprobe -s runtime-proof close",
         )
     )

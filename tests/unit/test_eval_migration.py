@@ -202,6 +202,22 @@ def test_ergonomics_runtime_preflight_checks_mount_boundary(
     assert "runtime-proof/state.yml" in script
     assert "pyproject.toml" in script
     assert ".write-probe" in script
+    assert "python3 -c" in script
+    assert "Path(sys.prefix)" in script
+    assert "yaml.safe_load" in script
+    assert "Image.open" in script
+    assert ".python-batch-probe.json" in script
+
+
+def test_ergonomics_runtime_installs_shell_discovery_helper(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+
+    ergonomics._install_runtime_helpers(runtime)
+
+    helper = runtime / "bin" / "which"
+    assert helper.stat().st_mode & 0o111
+    assert 'command -v "$name"' in helper.read_text(encoding="utf-8")
 
 
 def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None:
@@ -300,7 +316,7 @@ def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatc
     assert result["claude_model"] == "available"
     assert result["codex_model"] == "available"
     assert commands[-2][0:4] == ("claude", "-p", "--model", "opus")
-    assert "--allowedTools=Bash" in commands[-2]
+    assert "--allowedTools=Bash,Read" in commands[-2]
     assert commands[-1][0:5] == (
         "codex",
         "exec",
