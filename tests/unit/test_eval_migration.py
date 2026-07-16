@@ -23,6 +23,7 @@ from meshprobe.evals.schemas import (
     EpisodeGroundTruth,
     EpisodeSpec,
     ModelSource,
+    StructuredAnswer,
     TaskFamily,
 )
 
@@ -88,6 +89,15 @@ def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Pa
         seeds=(0,),
         model_source=ModelSource.CURATED,
     )
+    for path in (corpus.root / "public" / "episodes").glob("*.json"):
+        spec = EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        if spec.difficulty is not Difficulty.BASIC:
+            continue
+        neutral_file = f"{Path(spec.model_file).stem}--rigid_transform.glb"
+        path.write_text(
+            spec.model_copy(update={"model_file": neutral_file}).model_dump_json(indent=2),
+            encoding="utf-8",
+        )
     selected = select_paired_episodes(corpus.root, per_difficulty=2)
     specs = [
         EpisodeSpec.model_validate_json(
@@ -130,6 +140,45 @@ def test_ergonomics_selection_rejects_hidden_role_and_ambiguous_tasks(tmp_path: 
     ]
 
     assert not any(ergonomics._ergonomics_eligible(spec) for spec in specs)
+
+
+def test_ergonomics_basic_selection_uses_neutral_curated_variants(tmp_path: Path) -> None:
+    corpus = build_corpus(
+        tmp_path,
+        corpus_version="neutral-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+        model_source=ModelSource.CURATED,
+    )
+    specs = [
+        EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (corpus.root / "public" / "episodes").glob("*.json")
+    ]
+    basic = next(spec for spec in specs if spec.difficulty is Difficulty.BASIC)
+
+    assert ergonomics._ergonomics_eligible(
+        basic.model_copy(update={"model_file": "assembly--rigid_transform.glb"})
+    )
+    assert not ergonomics._ergonomics_eligible(
+        basic.model_copy(update={"model_file": "assembly--extra_occluder.glb"})
+    )
+
+
+def test_ergonomics_answer_gate_applies_public_defaults() -> None:
+    truth = StructuredAnswer.model_validate(
+        {
+            "status": "answered",
+            "values": {"target_component_id": "cmp_target"},
+        }
+    )
+    final = {
+        "answer": {
+            "status": "answered",
+            "values": {"target_component_id": "cmp_target"},
+        }
+    }
+
+    assert ergonomics._answer_matches(final, truth)
 
 
 def test_ergonomics_attempt_persists_exact_prompt(tmp_path: Path) -> None:

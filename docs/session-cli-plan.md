@@ -92,7 +92,8 @@ The diagnostic pilot is separate from qualification and runs through `meshprobe 
 ergonomics`. It uses 24 paired public episodes: 12 basic and 12 intermediate, deterministically
 stratified. The pilot represents ordinary, non-adversarial navigation: every target or answer
 criterion must be recoverable from the public prompt and model through names, hierarchy,
-geometry, or an explicit criterion. Basic tasks come from positive curated identity episodes;
+geometry, or an explicit criterion. Basic tasks come from positive curated identity episodes
+using only neutral rigid-transform, rescale, and material variants;
 intermediate tasks require a unique public target and explicit criteria, and exclude negative
 or ambiguous families. The corpus's `adversarial` label is not used as an ergonomics verdict:
 for intermediate procedural episodes it denotes qualification evidence pressure even when the

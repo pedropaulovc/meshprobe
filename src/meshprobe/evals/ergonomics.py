@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from meshprobe.evals.harness.attempts import prepare_attempt_files
 from meshprobe.evals.harness.sandbox import (
@@ -32,6 +32,7 @@ from meshprobe.evals.schemas import (
     EpisodeGroundTruth,
     EpisodeSpec,
     ModelSource,
+    StructuredAnswer,
     TaskFamily,
 )
 from meshprobe.workspace import atomic_json, atomic_text
@@ -142,6 +143,7 @@ ERGONOMICS_PROCESS_LIMIT = 512
 ERGONOMICS_RUNTIME = PurePosixPath("/workspace/artifacts/.meshprobe-runtime")
 ERGONOMICS_INPUT = PurePosixPath("/workspace/artifacts/input")
 ERGONOMICS_BLENDER = PurePosixPath("/workspace/artifacts/.blender-runtime")
+NEUTRAL_CURATED_VARIANTS = frozenset({"material", "rescale", "rigid_transform"})
 
 
 def select_paired_episodes(corpus_root: Path, *, per_difficulty: int = 12) -> tuple[str, ...]:
@@ -176,7 +178,9 @@ def _ergonomics_eligible(spec: EpisodeSpec) -> bool:
     """Select ordinary tasks whose answer is recoverable from the public episode."""
     if spec.difficulty is Difficulty.BASIC:
         return (
-            spec.episode_class is EpisodeClass.POSITIVE and spec.model_source is ModelSource.CURATED
+            spec.episode_class is EpisodeClass.POSITIVE
+            and spec.model_source is ModelSource.CURATED
+            and _curated_variant(spec.model_file) in NEUTRAL_CURATED_VARIANTS
         )
     if spec.difficulty is Difficulty.INTERMEDIATE:
         return (
@@ -184,6 +188,11 @@ def _ergonomics_eligible(spec: EpisodeSpec) -> bool:
             and spec.family is not TaskFamily.NEGATIVE_AMBIGUOUS
         )
     return False
+
+
+def _curated_variant(model_file: str) -> str | None:
+    stem = Path(model_file).stem
+    return stem.rsplit("--", 1)[1] if "--" in stem else None
 
 
 def preflight_agents(
@@ -612,7 +621,7 @@ def _run_attempt(
     final = _extract_final(raw, events)
     commands = tuple(_extract_commands(agent, events))
     tokens = _token_usage(agent, events)
-    answer_gate = final is not None and final.get("answer") == truth.answer.model_dump(mode="json")
+    answer_gate = _answer_matches(final, truth.answer)
     evidence = final.get("evidence_manifest_paths", []) if final else []
     evidence_gate = not truth.evidence_requirements or bool(evidence)
     metrics = _metrics(
@@ -797,9 +806,9 @@ def _metrics(
         invalid_calls=_count_nonzero_exits(raw),
         retries=0,
         short_ref_uses=len(re.findall(r"\bc\d+\b", joined)),
-        rg_calls=len(re.findall(r"(?:^|[;&|]\s*)rg\b", joined, re.MULTILINE)),
-        jq_calls=len(re.findall(r"(?:^|[;&|]\s*)jq\b", joined, re.MULTILINE)),
-        yq_calls=len(re.findall(r"(?:^|[;&|]\s*)yq\b", joined, re.MULTILINE)),
+        rg_calls=len(re.findall(r"(?<![\w.-])rg\b", joined)),
+        jq_calls=len(re.findall(r"(?<![\w.-])jq\b", joined)),
+        yq_calls=len(re.findall(r"(?<![\w.-])yq\b", joined)),
         bytes_read=_bytes_read(commands, workspace),
         raw_reads=len(re.findall(r"meshprobe[^\n]*--raw", joined)),
         full_file_reads=len(re.findall(r"\b(?:cat|less|head|tail)\s+[^|;&]+", joined)),
@@ -826,6 +835,16 @@ def _time_to_open_seconds(workspace: Path, started_at: datetime) -> float | None
     if not accepted:
         return None
     return max(0.0, (min(accepted) - started_at).total_seconds())
+
+
+def _answer_matches(final: dict[str, Any] | None, truth: StructuredAnswer) -> bool:
+    if final is None:
+        return False
+    try:
+        candidate = StructuredAnswer.model_validate(final.get("answer"))
+    except (TypeError, ValidationError):
+        return False
+    return candidate == truth
 
 
 def _checkpoint(
