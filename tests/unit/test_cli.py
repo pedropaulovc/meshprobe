@@ -504,3 +504,39 @@ def test_session_commands_surface_client_errors(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert all(result.exit_code == 2 for result in results)
+
+
+@pytest.mark.parametrize(
+    "adapter_arguments",
+    (
+        ["--adapter", "reference", "--agent-command-json", '["agent"]'],
+        ["--adapter", "cli"],
+        ["--adapter", "mcp", "--agent-command-json", '{"command":"agent"}'],
+    ),
+)
+def test_run_tier_rejects_invalid_adapter_commands(
+    tmp_path: Path,
+    adapter_arguments: list[str],
+) -> None:
+    corpus = build_corpus(
+        tmp_path / "corpus",
+        corpus_version="source-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    manifest = tmp_path / "tier.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run-tier",
+            str(corpus.root),
+            str(manifest),
+            str(tmp_path / "runs"),
+            *adapter_arguments,
+        ],
+    )
+
+    assert result.exit_code == 2
