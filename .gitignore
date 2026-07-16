@@ -4,6 +4,7 @@
 .ruff_cache/
 .hypothesis/
 .coverage
+.coverage.*
 __pycache__/
 *.py[cod]
 build/

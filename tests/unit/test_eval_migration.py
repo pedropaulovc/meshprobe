@@ -7,8 +7,12 @@ import pytest
 from meshprobe.evals.ergonomics import select_paired_episodes
 from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.evals.migration import migrate_corpus_v2, restore_schema_v1_source
-from meshprobe.evals.schemas import Difficulty, EpisodeSpec
+from meshprobe.evals.migration import (
+    codify_opaque_family,
+    migrate_corpus_v2,
+    restore_schema_v1_source,
+)
+from meshprobe.evals.schemas import Difficulty, EpisodeGroundTruth, EpisodeSpec, ModelSource
 
 
 def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> None:
@@ -35,6 +39,33 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
     assert audit.model_hashes_unchanged
     assert audit.episode_ids_unchanged
     assert audit.truth_payloads_unchanged
+
+    existing, repeated_audit = migrate_corpus_v2(
+        source.root,
+        tmp_path,
+        corpus_version="procedural-v6",
+    )
+    assert existing.root == migrated.root
+    assert repeated_audit == audit
+
+
+def test_private_opaque_family_construction_is_a_production_step(tmp_path: Path) -> None:
+    corpus = build_corpus(
+        tmp_path,
+        corpus_version="private-v7",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(32, 33),
+        model_source=ModelSource.PRIVATE,
+    )
+
+    codify_opaque_family(corpus.root)
+    validated = validate_corpus(corpus.root)
+    truth = EpisodeGroundTruth.model_validate_json(
+        next((corpus.root / "private" / "ground_truth").glob("*.json")).read_text(encoding="utf-8")
+    )
+
+    assert validated.manifest.generator_families == ("hidden_clip", "opaque_family_v7")
+    assert truth.generator_family == "opaque_family_v7"
 
 
 def test_ergonomics_selection_pairs_basic_and_intermediate_episodes(tmp_path: Path) -> None:

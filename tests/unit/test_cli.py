@@ -172,6 +172,55 @@ def test_eval_orchestration_commands_emit_compact_summaries(
     assert reference.exit_code == 0
 
 
+def test_eval_migration_and_ergonomics_commands_emit_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    corpus = build_corpus(
+        tmp_path / "corpus",
+        corpus_version="source-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    audit = SimpleNamespace(source_version="v1", destination_version="v2")
+    monkeypatch.setattr("meshprobe.cli.migrate_corpus_v2", lambda *args, **kwargs: (corpus, audit))
+    monkeypatch.setattr("meshprobe.cli.audit_migration", lambda *args, **kwargs: audit)
+    ergonomics = SimpleNamespace(
+        root=tmp_path / "ergonomics",
+        attempts=(object(), object()),
+        report_path=tmp_path / "ergonomics" / "report.json",
+    )
+    monkeypatch.setattr("meshprobe.cli.run_ergonomics_pilot", lambda *args, **kwargs: ergonomics)
+
+    migrated = runner.invoke(
+        app,
+        [
+            "eval",
+            "migrate",
+            str(corpus.root),
+            str(tmp_path / "output"),
+            "--version",
+            "destination-v2",
+        ],
+    )
+    audited = runner.invoke(
+        app,
+        ["eval", "audit-migration", str(corpus.root), str(corpus.root)],
+    )
+    pilot = runner.invoke(
+        app,
+        ["eval", "ergonomics", str(corpus.root), str(tmp_path / "runs")],
+    )
+
+    assert migrated.exit_code == 0
+    assert json.loads(migrated.stdout)["audit"]["destination_version"] == "v2"
+    assert audited.exit_code == 0
+    assert json.loads(audited.stdout)["source_version"] == "v1"
+    assert pilot.exit_code == 0
+    assert json.loads(pilot.stdout)["attempts"] == 2
+    assert json.loads(pilot.stdout)["qualification"] is False
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.commands: list[Command] = []
@@ -210,6 +259,12 @@ class FakeClient:
     def kill_all(self) -> list[OperationReceipt]:
         self.killed.append("all")
         return [OperationReceipt(session="review", op="session.kill")]
+
+    def list_sessions(self) -> list[dict[str, object]]:
+        return [{"name": "review", "status": "active", "source_path": "assembly.glb"}]
+
+    def delete_data(self) -> Path:
+        return Path(".meshprobe")
 
 
 def test_flat_cli_uses_named_session_and_compact_receipts(
@@ -273,3 +328,179 @@ def test_json_and_raw_output_are_explicit(monkeypatch: pytest.MonkeyPatch) -> No
     assert json.loads(json_result.stdout)["result_path"].endswith("result.json")
     assert raw_result.exit_code == 0
     assert json.loads(raw_result.stdout) == {"op": "session.snapshot"}
+
+
+def test_flat_operation_commands_build_typed_protocol_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    camera = json.dumps(
+        {
+            "pose": {"position_mm": [1, 2, 3], "orientation_xyzw": [0, 0, 0, 1]},
+            "projection": {"mode": "perspective", "focal_length_mm": 50},
+        }
+    )
+    commands = (
+        ["--session", "review", "find", "**/idler*"],
+        ["--session", "review", "inspect", "c2"],
+        ["--session", "review", "view-set", "--camera-json", camera, "--focus", "c2"],
+        [
+            "--session",
+            "review",
+            "view-orbit",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--azimuth",
+            "45",
+            "--elevation",
+            "30",
+            "--distance",
+            "100",
+            "--projection-json",
+            '{"mode":"orthographic","scale_mm":100}',
+        ],
+        ["--session", "review", "illumination-set", "raking_left"],
+        ["--session", "review", "mark", "c2", "--mode", "highlighted"],
+        [
+            "--session",
+            "review",
+            "render-image",
+            "--output",
+            str(tmp_path / "image.png"),
+            "--samples",
+            "1",
+        ],
+        [
+            "--session",
+            "review",
+            "render-sheet",
+            "c2",
+            "--output",
+            str(tmp_path / "sheet.png"),
+            "--samples",
+            "1",
+        ],
+        ["--session", "review", "reset"],
+    )
+
+    results = [runner.invoke(app, command) for command in commands]
+
+    assert all(result.exit_code == 0 for result in results), [result.output for result in results]
+    assert [command.op for command in client.commands] == [
+        "component.find",
+        "component.inspect",
+        "view.set",
+        "view.orbit",
+        "illumination.set",
+        "component.mark",
+        "render.image",
+        "render.contact_sheet",
+        "session.reset",
+    ]
+
+
+def test_list_and_delete_data_have_text_and_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    listed = runner.invoke(app, ["list"])
+    listed_json = runner.invoke(app, ["--json", "list"])
+    deleted = runner.invoke(app, ["delete-data"])
+    deleted_json = runner.invoke(app, ["--json", "delete-data"])
+
+    assert "review\tactive\tassembly.glb" in listed.stdout
+    assert json.loads(listed_json.stdout)["sessions"][0]["name"] == "review"
+    assert deleted.stdout == "deleted .meshprobe\n"
+    assert json.loads(deleted_json.stdout) == {"deleted": ".meshprobe"}
+
+
+def test_global_output_modes_are_mutually_exclusive() -> None:
+    result = runner.invoke(app, ["--json", "--raw", "snapshot"])
+
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+
+
+@pytest.mark.parametrize(
+    ("target", "arguments"),
+    (
+        ("build_corpus", ["eval", "generate", "{root}"]),
+        ("validate_corpus", ["eval", "validate", "{root}"]),
+        (
+            "migrate_corpus_v2",
+            ["eval", "migrate", "{root}", "{output}", "--version", "v2"],
+        ),
+        ("audit_migration", ["eval", "audit-migration", "{root}", "{root}"]),
+        (
+            "load_catalog",
+            ["eval", "curated-generate", "{file}", "{root}", "{output}"],
+        ),
+        ("merge_corpora", ["eval", "merge", "{output}", "{root}", "{root}"]),
+        ("current_runtime_pin", ["eval", "pin", "{root}", "{output}"]),
+        ("run_ergonomics_pilot", ["eval", "ergonomics", "{root}", "{output}"]),
+    ),
+)
+def test_eval_commands_surface_domain_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    arguments: list[str],
+) -> None:
+    source_file = tmp_path / "catalog.json"
+    source_file.write_text("{}", encoding="utf-8")
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise ValueError("deliberate domain error")
+
+    monkeypatch.setattr(f"meshprobe.cli.{target}", fail)
+    replacements = {
+        "{root}": str(tmp_path),
+        "{output}": str(tmp_path / "output"),
+        "{file}": str(source_file),
+    }
+    command = [replacements.get(argument, argument) for argument in arguments]
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 2
+    assert "deliberate domain error" in result.output
+
+
+def test_session_commands_surface_client_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingClient(FakeClient):
+        def execute(self, session: str, command: Command) -> OperationReceipt:
+            raise ValueError("execute failed")
+
+        def resolve_component(self, session: str, value: str) -> str:
+            raise ValueError("resolve failed")
+
+        def list_sessions(self) -> list[dict[str, object]]:
+            raise ValueError("list failed")
+
+        def close(self, session: str) -> OperationReceipt:
+            raise ValueError("close failed")
+
+        def kill(self, session: str) -> OperationReceipt:
+            raise ValueError("kill failed")
+
+        def delete_data(self) -> Path:
+            raise ValueError("delete failed")
+
+    client = FailingClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    results = (
+        runner.invoke(app, ["snapshot"]),
+        runner.invoke(app, ["--session", "review", "display", "c2", "--mode", "hidden"]),
+        runner.invoke(app, ["list"]),
+        runner.invoke(app, ["close"]),
+        runner.invoke(app, ["kill"]),
+        runner.invoke(app, ["delete-data"]),
+    )
+
+    assert all(result.exit_code == 2 for result in results)
