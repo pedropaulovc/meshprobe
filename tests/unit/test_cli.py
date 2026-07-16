@@ -207,7 +207,13 @@ def test_eval_migration_and_ergonomics_commands_emit_reports(
         report_path=tmp_path / "ergonomics" / "report.json",
         report_markdown_path=tmp_path / "ergonomics" / "report.md",
     )
-    monkeypatch.setattr("meshprobe.cli.run_ergonomics_pilot", lambda *args, **kwargs: ergonomics)
+    ergonomics_options: dict[str, object] = {}
+
+    def run_ergonomics(*args: object, **kwargs: object) -> object:
+        ergonomics_options.update(kwargs)
+        return ergonomics
+
+    monkeypatch.setattr("meshprobe.cli.run_ergonomics_pilot", run_ergonomics)
 
     migrated = runner.invoke(
         app,
@@ -226,7 +232,14 @@ def test_eval_migration_and_ergonomics_commands_emit_reports(
     )
     pilot = runner.invoke(
         app,
-        ["eval", "ergonomics", str(corpus.root), str(tmp_path / "runs")],
+        [
+            "eval",
+            "ergonomics",
+            str(corpus.root),
+            str(tmp_path / "runs"),
+            "--max-pairs",
+            "1",
+        ],
     )
 
     assert migrated.exit_code == 0
@@ -236,6 +249,7 @@ def test_eval_migration_and_ergonomics_commands_emit_reports(
     assert pilot.exit_code == 0
     assert json.loads(pilot.stdout)["attempts"] == 2
     assert json.loads(pilot.stdout)["qualification"] is False
+    assert ergonomics_options["max_pairs"] == 1
 
 
 class FakeClient:

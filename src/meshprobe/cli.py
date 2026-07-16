@@ -351,6 +351,7 @@ def run_cli_ergonomics(
     per_difficulty: Annotated[int, typer.Option("--per-difficulty", min=1, max=50)] = 12,
     canary_pairs: Annotated[int, typer.Option("--canary-pairs", min=1, max=24)] = 4,
     token_limit: Annotated[int, typer.Option("--token-limit", min=1_000)] = 768_000,
+    max_pairs: Annotated[int | None, typer.Option("--max-pairs", min=1, max=100)] = None,
 ) -> None:
     """Run the paired Claude Opus and Codex Luna CLI ergonomics pilot."""
 
@@ -361,6 +362,7 @@ def run_cli_ergonomics(
             per_difficulty=per_difficulty,
             canary_pairs=canary_pairs,
             token_limit=token_limit,
+            max_pairs=max_pairs,
         )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         raise typer.BadParameter(str(error)) from error

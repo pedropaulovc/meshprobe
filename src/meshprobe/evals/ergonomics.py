@@ -431,6 +431,7 @@ def run_ergonomics_pilot(
     per_difficulty: int = 12,
     canary_pairs: int = 4,
     token_limit: int = DEFAULT_TOKEN_LIMIT,
+    max_pairs: int | None = None,
 ) -> ErgonomicsRun:
     if token_limit < 1_000:
         raise ValueError("ergonomics token limit must be at least 1000")
@@ -456,6 +457,8 @@ def run_ergonomics_pilot(
         raise
     atomic_json(output_root / "preflight.json", preflight)
     episodes = select_paired_episodes(corpus_root, per_difficulty=per_difficulty)
+    if max_pairs is not None:
+        episodes = episodes[:max_pairs]
     attempts = _load_attempts(output_root)
     for index, episode_id in enumerate(episodes):
         order = (

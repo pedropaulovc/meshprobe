@@ -104,6 +104,8 @@ Before tool use, each agent briefly reports its task understanding, whether the 
 tools appear sufficient, and any missing capability it wants. The final structured result
 reassesses the same questions so reported friction can be compared with the command trace;
 this self-report is diagnostic and is not a correctness gate. Every attempt is checkpointed.
+Use `--max-pairs 1` for the first paired episode analysis; rerunning without that limit resumes
+from the checkpoint instead of repeating completed attempts.
 
 The required agent commands are:
 
