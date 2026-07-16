@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-16
+## [0.2.0] - 2026-07-16
 
 ### Added
 
@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An isolated qualification harness with procedural and curated corpora, pinned public and
   private tiers, clean-install verification, and JSON and Markdown reports.
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
+- PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/pedropaulovc/meshprobe/releases/tag/v0.1.0
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pedropaulovc/meshprobe/releases/tag/v0.2.0
