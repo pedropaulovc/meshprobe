@@ -104,7 +104,7 @@ class EpisodeBudgets(EvalModel):
     tool_calls: Annotated[int, Field(ge=1, le=500)] = 80
     renders: Annotated[int, Field(ge=0, le=100)] = 16
     total_pixels: Annotated[int, Field(ge=0, le=2_000_000_000)] = 80_000_000
-    output_bytes: Annotated[int, Field(ge=0, le=20_000_000_000)] = 1_000_000_000
+    output_bytes: Annotated[int, Field(ge=0, le=20_000_000_000)] = 3_000_000_000
     wall_seconds: Annotated[float, Field(gt=0, le=7_200, allow_inf_nan=False)] = 600
 
 

@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue
 
-from meshprobe.evals.harness.broker import EvaluationBroker
+from meshprobe.evals.harness.broker import (
+    EvaluationBroker,
+    _contact_sheet_minimum_output_reservation,
+    _render_output_reservation,
+)
 from meshprobe.evals.harness.sandbox import visible_artifact_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceStatus
 from meshprobe.protocol import (
@@ -438,6 +442,26 @@ def test_broker_rejects_undersized_contact_sheet_budget_before_rendering(
     assert active.metrics.renders == 0
     assert active.metrics.total_pixels == 0
     assert active.metrics.output_bytes == 0
+
+
+def test_default_budget_fits_default_resolution_evidence_workflow() -> None:
+    # A default render-image plus a default contact sheet must fit inside the
+    # default output-byte budget under the harness's conservative per-render
+    # reservations. Otherwise an agent following the standard render +
+    # contact-sheet evidence flow trips budget.output_bytes purely from the
+    # inspection-grade default resolutions (issue #57).
+    image = RenderImageCommand(request_id="img", op="render.image", output_path="evidence.png")
+    sheet = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path="sheet.png",
+        focus_component_ids=("target",),
+    )
+    workflow_reservation = _render_output_reservation(
+        image.width * image.height
+    ) + _contact_sheet_minimum_output_reservation(sheet.panel_width, sheet.panel_height)
+
+    assert workflow_reservation <= EpisodeBudgets().output_bytes
 
 
 def test_broker_accepts_the_sandbox_visible_artifact_prefix(tmp_path: Path) -> None:
