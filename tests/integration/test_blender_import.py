@@ -1964,6 +1964,24 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: P
             ),
             evaluator_output_dir=evaluator_dir,
         )
+        blocked_evaluator = tmp_path / "blocked-evaluator"
+        blocked_evaluator.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(BlenderWorkerError, match="File exists"):
+            controller.render_image(
+                RenderImageCommand(
+                    request_id="render-edges-rejected",
+                    op="render.image",
+                    output_path=str(tmp_path / "rejected-edges.png"),
+                    width=320,
+                    height=240,
+                    samples=1,
+                    style=RenderStyle.SHADED_EDGES,
+                ),
+                evaluator_output_dir=blocked_evaluator,
+            )
+        rejected_runtime = controller.request("session.runtime")
+        assert rejected_runtime["render"]["use_freestyle"] is False
+
         edged = controller.render_image(
             RenderImageCommand(
                 request_id="render-edges",

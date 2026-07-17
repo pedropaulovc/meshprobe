@@ -18,6 +18,8 @@ import sys
 import tempfile
 import traceback
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from statistics import median
@@ -1552,7 +1554,6 @@ def configure_render(command: dict[str, Any]) -> str:
     scene.render.image_settings.color_depth = "8"
     scene.render.image_settings.file_format = "PNG"
     scene.render.use_file_extension = False
-    configure_render_style(command)
     if engine == "cycles":
         configure_cycles_gpu(command["samples"])
         return "cuda"
@@ -1564,6 +1565,52 @@ def configure_render(command: dict[str, Any]) -> str:
         )
     configure_eevee_samples(command["samples"])
     return f"graphics_{platform['device_class']}"
+
+
+@contextmanager
+def restore_render_style_on_error() -> Iterator[None]:
+    scene = bpy.context.scene
+    freestyle = bpy.context.view_layer.freestyle_settings
+    line_set = freestyle.linesets[0]
+    selectors = (
+        "select_silhouette",
+        "select_border",
+        "select_crease",
+        "select_material_boundary",
+        "select_contour",
+        "select_external_contour",
+    )
+    original_use_freestyle = scene.render.use_freestyle
+    original_crease_angle = freestyle.crease_angle
+    original_material_boundaries = freestyle.use_material_boundaries
+    original_visibility_selection = line_set.select_by_visibility
+    original_visibility = line_set.visibility
+    original_edge_selection = line_set.select_by_edge_types
+    original_selectors = {attribute: getattr(line_set, attribute) for attribute in selectors}
+    original_edge_mark = line_set.select_edge_mark
+    original_ridge_valley = line_set.select_ridge_valley
+    original_suggestive_contour = line_set.select_suggestive_contour
+    original_line_style = line_set.linestyle
+    original_color = tuple(original_line_style.color) if original_line_style is not None else None
+    original_thickness = original_line_style.thickness if original_line_style is not None else None
+    try:
+        yield
+    except Exception:
+        scene.render.use_freestyle = original_use_freestyle
+        freestyle.crease_angle = original_crease_angle
+        freestyle.use_material_boundaries = original_material_boundaries
+        line_set.select_by_visibility = original_visibility_selection
+        line_set.visibility = original_visibility
+        line_set.select_by_edge_types = original_edge_selection
+        for attribute, value in original_selectors.items():
+            setattr(line_set, attribute, value)
+        line_set.select_edge_mark = original_edge_mark
+        line_set.select_ridge_valley = original_ridge_valley
+        line_set.select_suggestive_contour = original_suggestive_contour
+        if original_line_style is not None:
+            original_line_style.color = original_color
+            original_line_style.thickness = original_thickness
+        raise
 
 
 def configure_render_style(command: dict[str, Any]) -> None:
@@ -1996,15 +2043,17 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
-    device = configure_render(command)
-    render_still(output)
-    luminance = luminance_summary(output)
-    evaluator = None
-    if command.get("evaluator_output_dir") is not None:
-        evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
-        evaluator_dir.mkdir(parents=True, exist_ok=True)
-        evaluator = render_evaluator_passes(evaluator_dir, output.stem)
-    session = session_snapshot()
+    with restore_render_style_on_error():
+        device = configure_render(command)
+        configure_render_style(command)
+        render_still(output)
+        luminance = luminance_summary(output)
+        evaluator = None
+        if command.get("evaluator_output_dir") is not None:
+            evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
+            evaluator_dir.mkdir(parents=True, exist_ok=True)
+            evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+        session = session_snapshot()
     return {
         "schema_version": 1,
         "source_sha256": manifest["source_sha256"],
