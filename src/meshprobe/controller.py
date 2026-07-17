@@ -20,6 +20,7 @@ from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
+    Camera,
     Component,
     ContactSheetCallout,
     ContactSheetManifest,
@@ -606,7 +607,11 @@ class BlenderController:
                 )
             )
 
-            occlusion = self._remove_occluders(command, focus_ids)
+            occlusion = self._remove_occluders(
+                command,
+                focus_ids,
+                camera=panels[-1].render.session.camera,
+            )
             removed_occluders = tuple(step.component_id for step in occlusion.steps)
             third_caption = self._removed_occluder_caption(occlusion.steps)
             if not removed_occluders:
@@ -868,6 +873,8 @@ class BlenderController:
         self,
         command: RenderContactSheetCommand,
         focus_ids: tuple[str, ...],
+        *,
+        camera: Camera,
     ) -> OcclusionEvidence:
         width, height = self._visibility_dimensions(command.panel_width, command.panel_height)
 
@@ -941,6 +948,10 @@ class BlenderController:
                     stop_reason = "threshold_met"
                     break
         return OcclusionEvidence(
+            camera=camera,
+            camera_source="generated_focus_context",
+            visibility_width_px=width,
+            visibility_height_px=height,
             visibility_threshold=command.visibility_threshold,
             removal_budget=command.occluder_budget,
             sample_count=sample_count,
@@ -1025,7 +1036,7 @@ class BlenderController:
     @staticmethod
     def _visibility_dimensions(width: int, height: int) -> tuple[int, int]:
         scale = min(1.0, 256 / max(width, height))
-        return max(64, round(width * scale)), max(64, round(height * scale))
+        return max(4, round(width * scale)), max(4, round(height * scale))
 
     def _render_contact_panel(
         self,
