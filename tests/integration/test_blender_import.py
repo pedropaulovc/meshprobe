@@ -63,6 +63,23 @@ pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender
 runner = CliRunner()
 
 
+def build_obj_axes(tmp_path: Path) -> Path:
+    output = tmp_path / "axes.obj"
+    output.write_text(
+        """o axes
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 0 0 1
+l 1 2
+l 1 3
+l 1 4
+""",
+        encoding="utf-8",
+    )
+    return output
+
+
 def build_glb(tmp_path: Path) -> Path:
     output = tmp_path / "fixture.glb"
     script = tmp_path / "build_fixture.py"
@@ -638,6 +655,27 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     assert source_pose.camera.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
 
 
+def test_obj_source_frame_matches_default_importer_axis_conversion(tmp_path: Path) -> None:
+    source = build_obj_axes(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        rotated = controller.request(
+            "view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=15,
+            frame="source",
+        )
+
+    assert manifest.coordinate_frames.source.name == "obj_y_up_assumed"
+    assert manifest.coordinate_frames.source_to_world == pytest.approx(
+        (1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1)
+    )
+    assert manifest.root_bounds.minimum_mm == pytest.approx((0, -1_000, 0), abs=1e-3)
+    assert manifest.root_bounds.maximum_mm == pytest.approx((1_000, 0, 1_000), abs=1e-3)
+    assert rotated["camera_operation"]["axis_world"] == pytest.approx((0, -1, 0))
+
+
 def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=30) as controller:
@@ -707,12 +745,14 @@ def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
         ("frame", "component", "camera rotation frame must be source or world"),
         ("degrees", math.nan, "degrees must be finite"),
         ("degrees", math.inf, "degrees must be finite"),
+        ("target_mm", (math.nan, 0, 0), "target_mm must contain three finite numbers"),
+        ("target_mm", (0, math.inf, 0), "target_mm must contain three finite numbers"),
     ],
 )
 def test_rejected_raw_rotation_contract_preserves_camera_state(
     tmp_path: Path,
     invalid_field: str,
-    invalid_value: str | float,
+    invalid_value: object,
     error: str,
 ) -> None:
     source = build_glb(tmp_path)

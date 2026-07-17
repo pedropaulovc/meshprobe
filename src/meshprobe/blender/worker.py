@@ -599,7 +599,15 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("degrees must be finite")
     axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
     axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
-    target = Vector(command["target_mm"])
+    target_mm = command["target_mm"]
+    if not isinstance(target_mm, (list, tuple)) or len(target_mm) != 3:
+        raise ValueError("target_mm must contain three finite numbers")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+        for value in target_mm
+    ):
+        raise ValueError("target_mm must contain three finite numbers")
+    target = Vector(target_mm)
     if frame == "source":
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
