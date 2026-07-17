@@ -602,10 +602,10 @@ def test_view_rotate_exposes_source_frame_semantics(
 
     help_result = runner.invoke(app, ["view-orbit", "--help"])
     assert help_result.exit_code == 0
-    assert "right-handed" in help_result.stdout
-    assert "Absolute degrees from +X" in help_result.stdout
-    assert "toward +Y about world" in help_result.stdout
-    assert "not relative deltas" in help_result.stdout
+    help_text = " ".join(unstyle(help_result.stdout).replace("│", " ").split())
+    assert "Set an absolute orbit in right-handed, Z-up MeshProbe world coordinates." in help_text
+    assert "Absolute degrees from +X toward +Y about world +Z." in help_text
+    assert "Angles are degrees, not relative deltas." in help_text
 
 
 def test_close_and_kill_have_distinct_selected_and_all_semantics(
