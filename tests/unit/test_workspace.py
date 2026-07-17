@@ -855,6 +855,30 @@ def test_resolve_component_ids_expands_globs_and_falls_back_to_exact(
         manager.resolve_component_ids("review", "c999")
 
 
+def test_resolve_component_ids_prefers_exact_names_with_glob_metacharacters(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+    payload["components"][1]["name"] = "panel[1]"
+    payload["components"][2]["path"] = "assembly/drive/gear?"
+    files.components.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    # A literal name/path that happens to contain glob metacharacters is matched
+    # exactly, not interpreted as a pattern.
+    assert manager.resolve_component_ids("review", "panel[1]") == (payload["components"][1]["id"],)
+    assert manager.resolve_component_ids("review", "assembly/drive/gear?") == (
+        payload["components"][2]["id"],
+    )
+
+
 def test_reset_clears_replay_and_artifact_detection_is_render_only(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:

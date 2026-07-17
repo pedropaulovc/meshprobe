@@ -59,7 +59,15 @@ class MeshProbeClient:
         return str(payload["component_id"])
 
     def resolve_component_ids(self, session: str, value: str) -> tuple[str, ...]:
-        payload = self.request("resolve-ids", session=session, value=value)
+        try:
+            payload = self.request("resolve-ids", session=session, value=value)
+        except ValueError as error:
+            if "unsupported daemon action" not in str(error):
+                raise
+            # A daemon started before resolve-ids only speaks the exact `resolve`
+            # action, so exact tokens keep working across an in-place upgrade;
+            # globs surface the daemon's usual unknown-component error.
+            return (self.resolve_component(session, value),)
         return tuple(str(component_id) for component_id in payload["component_ids"])
 
     def list_sessions(self) -> list[dict[str, Any]]:
