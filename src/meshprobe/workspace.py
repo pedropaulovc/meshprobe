@@ -131,6 +131,7 @@ class ComponentStateDefaults(BaseModel):
 class ComponentStateOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    name: str | None = None
     display: DisplayMode | None = None
     mark: MarkMode | None = None
     mark_color: SrgbHexColor | None = None
@@ -711,6 +712,7 @@ class SessionManager:
         overrides: dict[str, dict[str, str]] = {}
         components_payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
         refs = {item["id"]: item["ref"] for item in components_payload["components"]}
+        names = {item["id"]: item["name"] for item in components_payload["components"]}
         for component_id, visual in sorted(snapshot.components.items()):
             entry: dict[str, str] = {}
             if visual.display is not default_display:
@@ -720,6 +722,7 @@ class SessionManager:
             if visual.mark_color is not None:
                 entry["mark_color"] = visual.mark_color
             if entry:
+                entry["name"] = names[component_id]
                 overrides[refs[component_id]] = entry
         resolved_render_style = render_style
         if resolved_render_style is None and files.state.exists():
