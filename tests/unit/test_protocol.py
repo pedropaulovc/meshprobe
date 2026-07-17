@@ -266,6 +266,25 @@ def test_render_command_bounds_engine_and_samples() -> None:
         )
 
 
+def test_render_command_defaults_favor_inspection_resolution() -> None:
+    image = COMMAND_ADAPTER.validate_python(
+        {"request_id": "render", "op": "render.image", "output_path": "evidence.png"}
+    )
+    assert isinstance(image, RenderImageCommand)
+    assert (image.width, image.height) == (2576, 2576)
+
+    sheet = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "sheet",
+            "op": "render.contact_sheet",
+            "output_path": "evidence.png",
+            "focus_component_ids": ["component-id"],
+        }
+    )
+    assert isinstance(sheet, RenderContactSheetCommand)
+    assert (sheet.panel_width, sheet.panel_height) == (1288, 1288)
+
+
 def test_custom_contact_sheet_requires_nine_declared_panels() -> None:
     panel = {
         "caption": "inspection",
