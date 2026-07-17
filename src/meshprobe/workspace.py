@@ -287,6 +287,12 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _string_warnings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
 def atomic_text(path: Path, content: str, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
@@ -490,6 +496,7 @@ class SessionManager:
                 if isinstance(command, ComponentFindCommand) and isinstance(response.result, list)
                 else None
             )
+            warnings = (*warnings, *self._render_warnings(command.op, response.result))
             return self._receipt(
                 files,
                 command.op,
@@ -842,6 +849,21 @@ class SessionManager:
 
         visit(result)
         return tuple(dict.fromkeys(found))
+
+    @staticmethod
+    def _render_warnings(operation: str, result: object) -> tuple[str, ...]:
+        if not isinstance(result, dict):
+            return ()
+        if operation == "render.image":
+            return _string_warnings(result.get("warnings"))
+        if operation == "render.contact_sheet":
+            collected: list[str] = []
+            panels = result.get("panels")
+            for panel in panels if isinstance(panels, list) else ():
+                if isinstance(panel, dict) and isinstance(panel.get("render"), dict):
+                    collected.extend(_string_warnings(panel["render"].get("warnings")))
+            return tuple(dict.fromkeys(collected))
+        return ()
 
     @staticmethod
     def _update_checkpoint(

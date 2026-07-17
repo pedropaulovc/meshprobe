@@ -105,7 +105,16 @@ def _without_render_variance(value: JsonValue) -> JsonValue:
         return [_without_render_variance(item) for item in value]
     if not isinstance(value, dict):
         return value
-    ignored = {"color", "evaluator", "sheet", "luminance", "device", "blender_version"}
+    ignored = {
+        "color",
+        "evaluator",
+        "sheet",
+        "luminance",
+        "foreground",
+        "warnings",
+        "device",
+        "blender_version",
+    }
     return {
         key: _without_render_variance(item) for key, item in value.items() if key not in ignored
     }

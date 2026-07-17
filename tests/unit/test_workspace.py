@@ -988,6 +988,59 @@ def test_reset_clears_replay_and_artifact_detection_is_render_only(
     assert service.killed
 
 
+def test_render_warnings_extracts_image_and_sheet_warnings() -> None:
+    assert SessionManager._render_warnings("render.image", {"warnings": ["blank"]}) == ("blank",)
+    assert SessionManager._render_warnings("render.image", {"warnings": []}) == ()
+    assert SessionManager._render_warnings("component.display", {"warnings": ["ignored"]}) == ()
+    assert SessionManager._render_warnings("render.image", "not-a-dict") == ()
+    sheet = {
+        "panels": [
+            {"render": {"warnings": ["blank"]}},
+            {"render": {"warnings": ["blank", "askew"]}},
+            {"render": {"warnings": []}},
+            {"caption": "no render key"},
+        ]
+    }
+    assert SessionManager._render_warnings("render.contact_sheet", sheet) == ("blank", "askew")
+
+
+@pytest.mark.parametrize(
+    ("render_warnings", "expected"),
+    [(["frame is empty"], ("frame is empty",)), ([], ())],
+)
+def test_render_receipt_surfaces_worker_warnings(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    render_warnings: list[str],
+    expected: tuple[str, ...],
+) -> None:
+    class WarningService(FakeSessionService):
+        def execute(self, command: Command) -> CommandResponse:
+            if isinstance(command, RenderImageCommand):
+                assert self.session is not None
+                return CommandResponse(
+                    request_id=command.request_id,
+                    op=command.op,
+                    result={"warnings": render_warnings},
+                )
+            return super().execute(command)
+
+    service = WarningService(scene_manifest)
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=lambda: service)
+    manager.open("review", source)
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path=str(tmp_path / "frame.png"),
+        ),
+    )
+    assert receipt.warnings == expected
+
+
 def test_invalid_session_name_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="session name"):
         SessionFiles(tmp_path / ".meshprobe", "bad/name")

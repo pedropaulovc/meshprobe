@@ -2040,6 +2040,91 @@ def luminance_summary(path: Path) -> dict[str, float]:
         bpy.data.images.remove(image)
 
 
+# A rendered frame whose visible foreground covers less than this fraction of the
+# pixels is treated as effectively empty and earns a warning, regardless of the cause
+# (camera framing that misses the model, a leftover isolate/hidden display override,
+# an empty shown set, ...). Measured post-render, so it catches every cause uniformly.
+EMPTY_FRAME_COVERAGE_THRESHOLD = 0.001
+FOREGROUND_MASK_MAX_DIMENSION = 256
+# 8-bit channel value above which a foreground-mask pixel counts as covered; ignores the
+# pure-black background plus anti-aliasing/dither fringe.
+FOREGROUND_PIXEL_CUTOFF = 8
+
+
+def count_foreground_pixels(path: Path) -> int:
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        pixels = image.pixels[:]
+        count = 0
+        for offset in range(0, len(pixels), 4):
+            if any(
+                round(pixels[offset + channel] * 255) >= FOREGROUND_PIXEL_CUTOFF
+                for channel in range(3)
+            ):
+                count += 1
+        return count
+    finally:
+        bpy.data.images.remove(image)
+
+
+def foreground_coverage() -> dict[str, Any]:
+    """Measure how much of the current frame any shown component actually covers.
+
+    Renders the visible components as a flat white mask on black at a reduced
+    resolution (coverage is resolution-independent) so an agent reading receipts can
+    tell "nothing is here" from a real shot — which ``luminance`` cannot, since a
+    blank frame reads as normal uniform background exposure.
+    """
+
+    scene = bpy.context.scene
+    original_resolution = (
+        scene.render.resolution_x,
+        scene.render.resolution_y,
+        scene.render.resolution_percentage,
+    )
+    original_engine = scene.render.engine
+    width = scene.render.resolution_x
+    height = scene.render.resolution_y
+    scale = min(1.0, FOREGROUND_MASK_MAX_DIMENSION / max(width, height))
+    sample_width = max(4, round(width * scale))
+    sample_height = max(4, round(height * scale))
+    colors = {component_id: (255, 255, 255) for component_id in COMPONENT_OBJECTS}
+    with tempfile.TemporaryDirectory(prefix="meshprobe-foreground-") as directory:
+        mask_path = Path(directory) / "foreground.png"
+        try:
+            scene.render.resolution_x = sample_width
+            scene.render.resolution_y = sample_height
+            scene.render.resolution_percentage = 100
+            render_mask(mask_path, colors)
+            visible_pixels = count_foreground_pixels(mask_path)
+        finally:
+            (
+                scene.render.resolution_x,
+                scene.render.resolution_y,
+                scene.render.resolution_percentage,
+            ) = original_resolution
+            scene.render.engine = original_engine
+    sampled_pixels = sample_width * sample_height
+    return {
+        "visible_fraction": visible_pixels / sampled_pixels if sampled_pixels else 0.0,
+        "visible_pixels": visible_pixels,
+        "sampled_pixels": sampled_pixels,
+        "sample_width": sample_width,
+        "sample_height": sample_height,
+    }
+
+
+def empty_frame_warnings(coverage: dict[str, Any]) -> list[str]:
+    if coverage["visible_fraction"] >= EMPTY_FRAME_COVERAGE_THRESHOLD:
+        return []
+    threshold_percent = EMPTY_FRAME_COVERAGE_THRESHOLD * 100
+    return [
+        "Rendered frame is effectively empty: visible foreground covers less than "
+        f"{threshold_percent:g}% of the frame. No shown component occupies the view — "
+        "check the camera framing and the component display/isolation state."
+    ]
+
+
 def emission_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
     material = EMISSION_MATERIALS.get(name)
     if material is None:
@@ -2383,6 +2468,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
         luminance = luminance_summary(output)
+        foreground = foreground_coverage()
         evaluator = None
         if command.get("evaluator_output_dir") is not None:
             evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
@@ -2407,6 +2493,8 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "color": artifact(output, "image/png"),
         "evaluator": evaluator,
         "luminance": luminance,
+        "foreground": foreground,
+        "warnings": empty_frame_warnings(foreground),
         "resolved_depth_of_field": resolved_depth_of_field(),
     }
 

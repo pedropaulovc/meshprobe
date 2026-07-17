@@ -23,6 +23,7 @@ from meshprobe.models import (
     PointLight,
     Pose,
     PresetIllumination,
+    RenderForeground,
     RenderManifest,
     SceneManifest,
     SensorFit,
@@ -50,6 +51,39 @@ def test_occlusion_schema_distinguishes_ray_ranking_from_pixel_visibility() -> N
     assert "attributed camera" in properties["visibility_height_px"]["description"]
     assert "visibility denominator" in properties["isolated_pixel_count"]["description"]
     assert "divided by isolated" in properties["visible_fraction_before"]["description"]
+
+
+def test_render_foreground_accepts_consistent_pixel_counts() -> None:
+    foreground = RenderForeground(
+        visible_fraction=0.25,
+        visible_pixels=16,
+        sampled_pixels=64,
+        sample_width=8,
+        sample_height=8,
+    )
+    assert foreground.visible_fraction == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"visible_pixels": 100}, "cannot exceed"),
+        ({"visible_fraction": 0.9}, "must match pixel counts"),
+    ],
+)
+def test_render_foreground_rejects_inconsistent_counts(
+    updates: dict[str, object], message: str
+) -> None:
+    payload: dict[str, object] = {
+        "visible_fraction": 0.25,
+        "visible_pixels": 16,
+        "sampled_pixels": 64,
+        "sample_width": 8,
+        "sample_height": 8,
+    }
+    payload.update(updates)
+    with pytest.raises(ValidationError, match=message):
+        RenderForeground.model_validate(payload)
 
 
 def occlusion_evidence(**updates: object) -> dict[str, object]:

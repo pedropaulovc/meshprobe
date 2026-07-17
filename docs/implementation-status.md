@@ -20,6 +20,7 @@ exist. Counts and test names refer to the current branch.
 | Basis, FOV, frustum, target depth, focus projected bounds | Complete | `CameraDiagnostics`; pure geometry and Blender integration tests |
 | Area, point, spot, sun, RGB, and color temperature | Complete | illumination contracts and Blender application tests |
 | Named illumination presets and luminance diagnostics | Complete | preset integration and render manifest tests |
+| Empty-frame foreground-coverage warning | Complete | render manifest `foreground`; warns when no shown component occupies the frame, regardless of cause; workspace propagation and Blender empty-frame tests |
 | Content-addressed HDR/EXR environment maps | Complete | cache verification, EXR Blender integration, path-independent state hash test |
 | Hide, show, isolate, ghost, select, highlight, and label | Complete | visual state and reset integration test |
 | Eevee/Cycles color renders and evaluator-only passes | Complete | color, EXR, component-ID, and highlighted pass tests |

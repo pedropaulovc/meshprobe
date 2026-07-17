@@ -13,6 +13,7 @@ from PIL import Image, ImageChops, ImageFilter, ImageStat
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
 from meshprobe.models import (
     Component,
+    DisplayMode,
     IlluminationPreset,
     PerspectiveProjection,
     PresetIllumination,
@@ -20,6 +21,7 @@ from meshprobe.models import (
     RenderStyle,
 )
 from meshprobe.protocol import (
+    ComponentDisplayCommand,
     IlluminationSetCommand,
     RenderImageCommand,
     ViewOrbitCommand,
@@ -345,3 +347,59 @@ def test_shaded_edges_keeps_freestyle_off_the_evaluator_passes(tmp_path: Path) -
     edges = edge_magnitude(Image.open(rendered.color.path).convert("RGB"))
     shaded_edges_baseline = edge_magnitude(Image.open(COLOR_GOLDEN).convert("RGB"))
     assert edges > shaded_edges_baseline
+
+
+def test_render_flags_effectively_empty_frame_when_nothing_is_shown(tmp_path: Path) -> None:
+    source = build_golden_scene(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="framed-view",
+                op="view.orbit",
+                target_mm=(0, 0, 800),
+                azimuth_degrees=-55,
+                elevation_degrees=28,
+                distance_mm=5_200,
+                projection=PerspectiveProjection(focal_length_mm=62),
+            )
+        )
+        framed = controller.render_image(
+            RenderImageCommand(
+                request_id="framed-render",
+                op="render.image",
+                output_path=str(tmp_path / "framed.png"),
+                width=192,
+                height=192,
+                samples=1,
+                engine=RenderEngine.EEVEE,
+            )
+        )
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-all",
+                op="component.display",
+                component_ids=tuple(component.id for component in manifest.components),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        blank = controller.render_image(
+            RenderImageCommand(
+                request_id="blank-render",
+                op="render.image",
+                output_path=str(tmp_path / "blank.png"),
+                width=192,
+                height=192,
+                samples=1,
+                engine=RenderEngine.EEVEE,
+            )
+        )
+
+    assert framed.foreground.visible_fraction > 0.01
+    assert framed.warnings == ()
+
+    assert blank.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in blank.warnings)
