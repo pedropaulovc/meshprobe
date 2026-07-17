@@ -1978,8 +1978,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         ]
         assert white_preset_runtime["world"]["background_rgb"] == pytest.approx([1, 1, 1])
         assert white_preset_runtime["world"]["background_strength"] == pytest.approx(1)
-        assert white_preset_runtime["world"]["ambient_rgb"] == pytest.approx([0.03, 0.03, 0.03])
-        assert white_preset_runtime["world"]["ambient_strength"] == pytest.approx(0.15)
+        assert white_preset_runtime["world"]["ambient_rgb"] == pytest.approx([0.10, 0.10, 0.10])
+        assert white_preset_runtime["world"]["ambient_strength"] == pytest.approx(0.5)
 
         custom = controller.execute(
             IlluminationSetCommand(

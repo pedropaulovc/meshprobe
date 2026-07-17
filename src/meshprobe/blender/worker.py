@@ -1071,15 +1071,22 @@ def preset_lights(preset: str) -> dict[str, Any]:
     ambient = 0.15
     definitions: list[tuple[str, Vector, float, float]] = []
     if preset == "neutral_studio":
+        # A dark backdrop with almost no ambient fill left the default preset for
+        # light-less sources near-black from every angle (issue #53): only the faces
+        # the three-point rig hit directly caught any light. Lift the neutral backdrop
+        # and ambient fill and strengthen the rig so the default is legible at any
+        # orbit while still reading softer than high_key.
+        background = [0.10, 0.10, 0.10]
+        ambient = 0.5
         definitions = [
-            ("key", center + frame_offset(frame, (span, -span, span)), 900.0, span),
+            ("key", center + frame_offset(frame, (span, -span, span)), 1_400.0, span),
             (
                 "fill",
                 center + frame_offset(frame, (-span, -span / 2, span / 2)),
-                450.0,
+                800.0,
                 span,
             ),
-            ("rim", center + frame_offset(frame, (0, span, span)), 600.0, span / 2),
+            ("rim", center + frame_offset(frame, (0, span, span)), 900.0, span / 2),
         ]
     elif preset == "high_key":
         background = [0.25, 0.25, 0.25]
