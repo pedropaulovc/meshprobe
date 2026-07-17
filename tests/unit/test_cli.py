@@ -38,10 +38,11 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
-def _property_description(schema: dict[str, object], model: str, field: str) -> str:
-    defs = schema.get("$defs", {})
+def _property_description(envelope: dict[str, object], model: str, field: str) -> str:
+    result_schema = envelope["properties"]["result"]  # type: ignore[index]
+    defs = result_schema.get("$defs", {})
     assert isinstance(defs, dict)
-    properties = defs[model]["properties"]  # type: ignore[index]
+    properties = defs[model]["properties"]
     return properties[field].get("description", "")
 
 
@@ -59,8 +60,13 @@ def test_schema_results_kind_documents_result_envelope_fields() -> None:
         "scene.open",
     } <= payload.keys()
 
+    # The per-op schema is the CommandResponse envelope pinned to that op.
+    render_envelope = payload["render.image"]
+    assert render_envelope["required"] == ["request_id", "op", "result"]
+    assert render_envelope["properties"]["op"]["const"] == "render.image"
+
     # Render luminance exposure block.
-    assert _property_description(payload["render.image"], "LuminanceSummary", "median").strip()
+    assert _property_description(render_envelope, "LuminanceSummary", "median").strip()
 
     # Projected component frame bounds and camera intrinsics from an occlusion query.
     occlusion = payload["component.occlusion"]

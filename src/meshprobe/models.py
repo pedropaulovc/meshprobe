@@ -1267,6 +1267,9 @@ class SessionResetResult(ContractModel):
 class SessionSnapshotResult(ContractModel):
     """Result of session.snapshot."""
 
+    scene: SceneManifest = Field(
+        description="The imported scene manifest: components, coordinate frames, and capabilities."
+    )
     session: SessionSnapshot = Field(
         description="Complete camera, illumination, and per-component visual state snapshot."
     )

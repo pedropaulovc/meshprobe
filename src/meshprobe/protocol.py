@@ -235,5 +235,22 @@ _RESULT_MODELS: dict[str, object] = {
 
 
 def command_result_json_schema() -> dict[str, object]:
-    """Describe the full result envelope each command op returns, keyed by op."""
-    return {op: TypeAdapter(model).json_schema() for op, model in _RESULT_MODELS.items()}
+    """Describe the full result envelope each command op returns, keyed by op.
+
+    Each entry is the ``CommandResponse`` envelope a caller reads back (from a
+    ``results/*.json`` file or an adapter response): ``request_id``, ``op`` pinned to the
+    command, and ``result`` expanded to that op's concrete result schema.
+    """
+    return {
+        op: {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["request_id", "op", "result"],
+            "properties": {
+                "request_id": {"type": "string"},
+                "op": {"const": op},
+                "result": TypeAdapter(model).json_schema(),
+            },
+        }
+        for op, model in _RESULT_MODELS.items()
+    }
