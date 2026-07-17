@@ -3593,6 +3593,102 @@ def test_empty_frame_warning_ignores_fully_transparent_geometry(tmp_path: Path) 
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
 
+def test_empty_frame_warning_does_not_erase_opaque_geometry_behind_transparency(
+    tmp_path: Path,
+) -> None:
+    # A fully transparent "blocker" fully covers the smaller, farther "target" from
+    # this camera, so the color render shows the opaque target through it. The mask
+    # must show it too — a Holdout material for the transparent front face was tried
+    # first, but it always reveals the world background regardless of what else is
+    # behind it on screen, incorrectly erasing the visible opaque target's mask color.
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-transparent-in-front",
+                op="render.image",
+                output_path=str(tmp_path / "transparent-in-front.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_render_mask_renders_at_one_sample_and_restores_the_color_render_setting(
+    tmp_path: Path,
+) -> None:
+    """The foreground mask is a binary coverage check, not an anti-aliased shot, so
+    it must not inherit the color render's (possibly thousands of) Eevee samples —
+    that would render the mask that many times over just to answer a yes/no
+    question. ``render_mask`` is exercised directly (loaded by file path, bypassing
+    the package's pydantic-dependent ``__init__.py``, which is not importable
+    inside Blender's bundled Python) with ``render_still`` stubbed out to capture
+    the live sample count instead of actually rendering."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "probe_mask_samples.py"
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = "cube"
+
+worker.COMPONENT_OBJECTS = {{"cube": cube}}
+
+scene = bpy.context.scene
+scene.render.engine = worker.eevee_engine()
+worker.configure_eevee_samples(256)
+
+captured = []
+
+def fake_render_still(path):
+    captured.append(worker.eevee_render_samples())
+
+worker.render_still = fake_render_still
+
+worker.render_mask({json.dumps(str(tmp_path / "probe_mask.png"))}, {{"cube": (255, 0, 0)}})
+
+print(json.dumps({{
+    "samples_during_mask_render": captured[0],
+    "samples_after_call": worker.eevee_render_samples(),
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    assert result["samples_during_mask_render"] == 1
+    assert result["samples_after_call"] == 256
+
+
 def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
     source = build_occluded_glb(
         tmp_path,

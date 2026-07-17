@@ -2153,20 +2153,27 @@ def emission_material(
 
 
 def invisible_mask_material() -> bpy.types.Material:
-    """A Holdout surface: renders as the (black) world background, so a polygon assigned
-    it contributes nothing to a foreground mask — matching a fully transparent or
-    culled-away source material, which is likewise invisible in the real color render."""
+    """A fully transparent surface: alpha-blends through to whatever is actually
+    behind it — the world background, or another component's mask color — matching
+    a fully transparent or culled-away source material, which is likewise invisible
+    in the real color render but still lets geometry behind it show through.
+
+    A Holdout shader was tried first but always reveals the world background
+    regardless of what else is behind the polygon, incorrectly erasing an opaque
+    component's mask color when a transparent face sits in front of it on screen.
+    """
     name = "MeshProbeMask-invisible"
     material = EMISSION_MATERIALS.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
         EMISSION_MATERIALS[name] = material
     material.use_nodes = True
+    material.blend_method = "BLEND"
     nodes = material.node_tree.nodes
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
-    holdout = nodes.new("ShaderNodeHoldout")
-    material.node_tree.links.new(holdout.outputs["Holdout"], output.inputs["Surface"])
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    material.node_tree.links.new(transparent.outputs["BSDF"], output.inputs["Surface"])
     return material
 
 
@@ -2226,6 +2233,11 @@ def render_mask(
     scene.view_settings.gamma = 1.0
     scene.render.dither_intensity = 0.0
     scene.render.engine = eevee_engine()
+    original_samples = eevee_render_samples()
+    # A binary coverage mask needs no anti-aliasing; inheriting the color render's
+    # (possibly thousands of) samples would render the mask that many times over
+    # just to answer a yes/no coverage question.
+    configure_eevee_samples(1)
     try:
         for obj in other_visibility:
             obj.hide_render = True
@@ -2288,6 +2300,7 @@ def render_mask(
         scene.view_settings.exposure = original_exposure
         scene.view_settings.gamma = original_gamma
         scene.render.dither_intensity = original_dither
+        configure_eevee_samples(original_samples)
 
 
 def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) -> int:
