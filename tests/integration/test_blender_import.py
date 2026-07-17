@@ -3563,6 +3563,36 @@ def test_worker_excludes_fully_transparent_focus_until_marked(tmp_path: Path) ->
     assert marked["visible_rays"] > 0
 
 
+def test_empty_frame_warning_ignores_fully_transparent_geometry(tmp_path: Path) -> None:
+    # A shown-but-fully-transparent component is blank in the real color render; the
+    # foreground mask must agree, not paint it opaque and suppress the warning.
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-transparent-only",
+                op="render.image",
+                output_path=str(tmp_path / "transparent-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
 def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
     source = build_occluded_glb(
         tmp_path,
@@ -3710,6 +3740,37 @@ def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
     assert mixed["sample_count"] == rendered_only["sample_count"]
     assert mixed["visible_rays"] == rendered_only["visible_rays"]
     assert mixed["unresolved_rays"] == 0
+
+
+def test_empty_frame_warning_ignores_culled_backfaces(tmp_path: Path) -> None:
+    # A shown-but-culled-away single-sided component is blank in the real color render (the
+    # camera only sees its back); the foreground mask must agree, not paint it opaque and
+    # suppress the warning.
+    source = build_backface_culling_glb(tmp_path, back_facing=True)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-culled-only",
+                op="render.image",
+                output_path=str(tmp_path / "culled-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
 
 
 def test_worker_budgets_only_rendered_focus_candidates(tmp_path: Path) -> None:

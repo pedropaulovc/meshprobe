@@ -18,6 +18,7 @@ from meshprobe.models import (
     PerspectiveProjection,
     PresetIllumination,
     RenderEngine,
+    RenderManifest,
     RenderStyle,
 )
 from meshprobe.protocol import (
@@ -403,3 +404,10 @@ def test_render_flags_effectively_empty_frame_when_nothing_is_shown(tmp_path: Pa
 
     assert blank.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in blank.warnings)
+
+    # A manifest persisted before `foreground` existed still declares schema_version 2 and
+    # omits the key entirely; it must stay readable rather than fail validation.
+    legacy_payload = blank.model_dump(mode="json")
+    del legacy_payload["foreground"]
+    legacy = RenderManifest.model_validate(legacy_payload)
+    assert legacy.foreground is None

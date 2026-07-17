@@ -110,8 +110,10 @@ def _without_render_variance(value: JsonValue) -> JsonValue:
         "evaluator",
         "sheet",
         "luminance",
+        # foreground is continuous pixel-derived data (visible_fraction) subject to the same
+        # artifact/device variance as luminance; warnings is a discrete signal (e.g. the
+        # empty-frame detection) that a regression must actually reproduce, so it stays in.
         "foreground",
-        "warnings",
         "device",
         "blender_version",
     }

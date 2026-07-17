@@ -113,3 +113,30 @@ def test_render_replay_ignores_nondeterministic_artifact_fields() -> None:
         "state_sha256": "a" * 64,
         "panels": [{"caption": "front"}, {"caption": "back"}],
     }
+
+
+def test_render_replay_keeps_warnings_but_ignores_foreground_noise() -> None:
+    recorded = {
+        "state_sha256": "a" * 64,
+        "foreground": {"visible_fraction": 0.5},
+        "warnings": ["Rendered frame is effectively empty: ..."],
+    }
+    replayed_same_signal_noisy_pixels = {
+        "state_sha256": "a" * 64,
+        "foreground": {"visible_fraction": 0.4},
+        "warnings": ["Rendered frame is effectively empty: ..."],
+    }
+    replayed_regressed_signal = {
+        "state_sha256": "a" * 64,
+        "foreground": {"visible_fraction": 0.5},
+        "warnings": [],
+    }
+
+    # Pixel-derived visible_fraction is allowed to jitter across artifact/device variance.
+    assert _semantic_result(Operation.RENDER_IMAGE, recorded) == _semantic_result(
+        Operation.RENDER_IMAGE, replayed_same_signal_noisy_pixels
+    )
+    # But the discrete empty-frame warning must actually reproduce.
+    assert _semantic_result(Operation.RENDER_IMAGE, recorded) != _semantic_result(
+        Operation.RENDER_IMAGE, replayed_regressed_signal
+    )
