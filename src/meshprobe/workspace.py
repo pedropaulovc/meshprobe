@@ -21,6 +21,7 @@ from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.models import (
     Camera,
     DisplayMode,
+    GraphicsPlatform,
     Illumination,
     MarkMode,
     SceneManifest,
@@ -57,6 +58,7 @@ class SessionMetadata(BaseModel):
     created_at: str
     updated_at: str
     worker_pid: int | None = None
+    graphics: GraphicsPlatform | None = None
 
 
 class SessionCheckpoint(BaseModel):
@@ -144,6 +146,7 @@ class OperationReceipt(BaseModel):
     result_path: str | None = None
     state_path: str | None = None
     artifact_paths: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 def durable_state_json_schema() -> dict[str, object]:
@@ -277,6 +280,9 @@ class SessionService(Protocol):
     @property
     def worker_pid(self) -> int | None: ...
 
+    @property
+    def graphics(self) -> GraphicsPlatform | None: ...
+
     def execute(self, command: Command) -> CommandResponse: ...
 
     def close(self) -> None: ...
@@ -343,6 +349,7 @@ class SessionManager:
                 created_at=now,
                 updated_at=now,
                 worker_pid=service.worker_pid,
+                graphics=getattr(service, "graphics", None),
             )
             checkpoint = SessionCheckpoint(
                 source_path=command.source_path,
@@ -357,7 +364,9 @@ class SessionManager:
             atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
             result_path = self._write_result(files, command.request_id, response)
             self._event(files, command, "accepted", result_path=result_path)
-            return self._receipt(files, command.op, snapshot, result_path)
+            graphics = getattr(service, "graphics", None)
+            warnings = graphics.warnings if graphics is not None else ()
+            return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 
     def execute(
         self,
@@ -388,7 +397,16 @@ class SessionManager:
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
             self._event(files, command, "accepted", result_path=result_path)
             artifacts = self._artifact_paths(command.op, response.result)
-            return self._receipt(files, command.op, snapshot, result_path, artifacts)
+            graphics = getattr(service, "graphics", None)
+            warnings = graphics.warnings if graphics is not None else ()
+            return self._receipt(
+                files,
+                command.op,
+                snapshot,
+                result_path,
+                artifacts,
+                warnings=warnings,
+            )
 
     def close(self, name: str) -> OperationReceipt:
         with self._lock:
@@ -671,6 +689,8 @@ class SessionManager:
         snapshot: SessionSnapshot,
         result_path: Path,
         artifacts: tuple[str, ...] = (),
+        *,
+        warnings: tuple[str, ...] = (),
     ) -> OperationReceipt:
         return OperationReceipt(
             session=files.name,
@@ -679,4 +699,5 @@ class SessionManager:
             result_path=files.relative(result_path),
             state_path=files.relative(files.state),
             artifact_paths=artifacts,
+            warnings=warnings,
         )

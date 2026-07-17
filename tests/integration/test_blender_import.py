@@ -27,6 +27,7 @@ from meshprobe.models import (
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
+    GraphicsPolicy,
     IlluminationPreset,
     MarkMode,
     OrthographicProjection,
@@ -1053,6 +1054,71 @@ def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
     assert rendered.evaluator is None
     assert rendered.blender_version
     assert Image.open(rendered.color.path).size == (64, 64)
+
+
+@pytest.mark.skipif(
+    not Path("/dev/dxg").exists() or shutil.which("nvidia-smi") is None,
+    reason="this host is not WSL2 with an NVIDIA adapter",
+)
+def test_eevee_render_uses_wsl2_d3d12_hardware(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "eevee-hardware.png"
+    with BlenderController(timeout_seconds=120) as controller:
+        assert controller.graphics is not None
+        assert controller.graphics.device_class.value == "hardware"
+        assert controller.graphics.backend == "OPENGL"
+        assert "D3D12" in controller.graphics.renderer
+        assert "NVIDIA" in controller.graphics.renderer
+        graphics_renderer = controller.graphics.renderer
+        controller.open_scene(source)
+        rendered = controller.execute(
+            RenderImageCommand(
+                request_id="eevee-hardware",
+                op="render.image",
+                output_path=str(output),
+                width=64,
+                height=64,
+                samples=1,
+                engine=RenderEngine.EEVEE,
+                graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
+            )
+        )
+
+    assert isinstance(rendered, RenderManifest)
+    assert rendered.device == "graphics_hardware"
+    assert rendered.graphics.renderer == graphics_renderer
+    assert rendered.graphics.blender_device_type == "SOFTWARE"
+    assert rendered.graphics.warnings
+    assert Image.open(rendered.color.path).size == (64, 64)
+
+
+def test_eevee_hardware_policy_rejects_software_renderer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GALLIUM_DRIVER", "llvmpipe")
+    source = build_glb(tmp_path)
+    output = tmp_path / "eevee-software.png"
+    with BlenderController(timeout_seconds=120) as controller:
+        assert controller.graphics is not None
+        assert controller.graphics.device_class.value == "software"
+        assert "llvmpipe" in controller.graphics.renderer.casefold()
+        controller.open_scene(source)
+        with pytest.raises(BlenderWorkerError, match="hardware graphics required"):
+            controller.execute(
+                RenderImageCommand(
+                    request_id="eevee-software",
+                    op="render.image",
+                    output_path=str(output),
+                    width=64,
+                    height=64,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                    graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
+                )
+            )
+
+    assert not output.exists()
 
 
 def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(

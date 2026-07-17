@@ -11,6 +11,7 @@ from meshprobe.models import (
     ContactSheetPanelSpec,
     DisplayMode,
     FiniteFloat,
+    GraphicsPolicy,
     Illumination,
     MarkMode,
     Projection,
@@ -88,6 +89,7 @@ class RenderImageCommand(CommandModel):
     height: Annotated[int, Field(ge=64, le=16_384)] = 1024
     samples: Annotated[int, Field(ge=1, le=4_096)] = 64
     engine: RenderEngine = RenderEngine.EEVEE
+    graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
 
 
 class RenderContactSheetCommand(CommandModel):
@@ -100,6 +102,7 @@ class RenderContactSheetCommand(CommandModel):
     panel_height: Annotated[int, Field(ge=128, le=4_096)] = 768
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
     engine: RenderEngine = RenderEngine.EEVEE
+    graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
     visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.65
     occluder_budget: Annotated[int, Field(ge=0, le=32)] = 3
 

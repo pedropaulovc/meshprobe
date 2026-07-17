@@ -599,7 +599,7 @@ def test_list_and_delete_data_have_text_and_json_output(
     deleted = runner.invoke(app, ["delete-data"])
     deleted_json = runner.invoke(app, ["--json", "delete-data"])
 
-    assert "review\tactive\tassembly.glb" in listed.stdout
+    assert "review\tactive\tgraphics=unknown\tassembly.glb" in listed.stdout
     assert json.loads(listed_json.stdout)["sessions"][0]["name"] == "review"
     assert deleted.stdout == "deleted .meshprobe\n"
     assert json.loads(deleted_json.stdout) == {"deleted": ".meshprobe"}
