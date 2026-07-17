@@ -32,25 +32,31 @@ from meshprobe.models import (
 )
 
 
-def test_contact_sheet_contract_versions_pixel_visibility_schema() -> None:
+def test_contact_sheet_contract_versions_camera_attribution_schema() -> None:
     schema_version = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
 
-    assert schema_version["const"] == 4
-    assert schema_version["default"] == 4
-    with pytest.raises(ValidationError, match="Input should be 4"):
-        ContactSheetManifest.model_validate({"schema_version": 3})
+    assert schema_version["const"] == 5
+    assert schema_version["default"] == 5
+    with pytest.raises(ValidationError, match="Input should be 5"):
+        ContactSheetManifest.model_validate({"schema_version": 4})
 
 
 def test_occlusion_schema_distinguishes_ray_ranking_from_pixel_visibility() -> None:
     properties = OcclusionEvidence.model_json_schema()["properties"]
 
     assert "only to rank blocking components" in properties["sample_count"]["description"]
+    assert "attributed camera" in properties["visibility_width_px"]["description"]
+    assert "attributed camera" in properties["visibility_height_px"]["description"]
     assert "visibility denominator" in properties["isolated_pixel_count"]["description"]
     assert "divided by isolated" in properties["visible_fraction_before"]["description"]
 
 
 def occlusion_evidence(**updates: object) -> dict[str, object]:
     payload: dict[str, object] = {
+        "camera": render_session()["camera"],
+        "camera_source": "generated_focus_context",
+        "visibility_width_px": 256,
+        "visibility_height_px": 8,
         "visibility_threshold": 0.9,
         "removal_budget": 1,
         "sample_count": 9,
@@ -605,7 +611,7 @@ def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
     sheet_schema = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
 
     assert render_schema["const"] == 2
-    assert sheet_schema["const"] == 4
+    assert sheet_schema["const"] == 5
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:

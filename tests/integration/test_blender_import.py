@@ -2414,6 +2414,10 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
         assert focused_bounds == deoccluded_bounds
     else:
         assert focused_bounds != deoccluded_bounds
+    assert sheet.occlusion.camera_source == "generated_focus_context"
+    assert sheet.occlusion.camera == sheet.panels[1].render.session.camera
+    assert sheet.occlusion.visibility_width_px == 128
+    assert sheet.occlusion.visibility_height_px == 128
     assert focused_bounds.minimum_image_xy is not None
     assert focused_bounds.maximum_image_xy is not None
     focused_size = tuple(
@@ -2611,6 +2615,41 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     assert cleared["occluders"] == []
 
 
+@pytest.mark.parametrize(("width", "height"), [(256, 8), (8, 256)])
+def test_worker_visibility_accepts_aspect_preserving_small_axis(
+    tmp_path: Path,
+    width: int,
+    height: int,
+) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+
+        visibility = controller.request(
+            "component.visibility",
+            component_ids=[target.id],
+            width=width,
+            height=height,
+            graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
+        )
+        with pytest.raises(BlenderWorkerError, match="between 4 and 1024"):
+            controller.request(
+                "component.visibility",
+                component_ids=[target.id],
+                width=3,
+                height=height,
+                graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
+            )
+
+    assert visibility["width"] == width
+    assert visibility["height"] == height
+    assert visibility["visible_pixels"] >= 0
+    assert visibility["isolated_pixels"] >= 0
+
+
 def test_occlusion_evidence_steps_match_strict_blender_visibility_gain(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(
@@ -2633,6 +2672,7 @@ def test_occlusion_evidence_steps_match_strict_blender_visibility_gain(tmp_path:
                 aspect_ratio=1,
             )
         )
+        snapshot = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         evidence = controller._remove_occluders(
             RenderContactSheetCommand(
                 request_id="evidence",
@@ -2647,6 +2687,7 @@ def test_occlusion_evidence_steps_match_strict_blender_visibility_gain(tmp_path:
                 graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED,
             ),
             (target.id,),
+            camera=snapshot.camera,
         )
 
     assert evidence.visible_pixel_count_after > evidence.visible_pixel_count_before

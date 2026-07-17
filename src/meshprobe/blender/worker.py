@@ -1966,8 +1966,8 @@ def component_visibility(command: dict[str, Any]) -> dict[str, Any]:
     focus_ids = selected_component_ids(command)
     width = int(command.get("width", 256))
     height = int(command.get("height", 256))
-    if not 64 <= width <= 1_024 or not 64 <= height <= 1_024:
-        raise ValueError("component.visibility dimensions must be between 64 and 1024")
+    if not 4 <= width <= 1_024 or not 4 <= height <= 1_024:
+        raise ValueError("component.visibility dimensions must be between 4 and 1024")
     configure_render(
         {
             "engine": "eevee",

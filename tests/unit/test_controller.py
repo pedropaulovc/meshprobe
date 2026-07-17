@@ -1003,6 +1003,10 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert sheet.occlusion is not None
     assert sheet.occlusion.visible_fraction_before == visibility[0]
     assert sheet.occlusion.visible_fraction_after == visibility[-1]
+    assert sheet.occlusion.camera_source == "generated_focus_context"
+    assert sheet.occlusion.camera == sheet.panels[1].render.session.camera
+    assert sheet.occlusion.visibility_width_px == 128
+    assert sheet.occlusion.visibility_height_px == 128
     assert sheet.occlusion.visible_pixel_count_before == round(visibility[0] * 10)
     assert sheet.occlusion.visible_pixel_count_after == round(visibility[-1] * 10)
     assert sheet.occlusion.isolated_pixel_count == 10
@@ -1062,6 +1066,66 @@ def test_focused_orbit_extends_far_clip_past_large_target(
     projection = PerspectiveProjection.model_validate(request["projection"])
     distance = cast(float, request["distance_mm"])
     assert projection.far_clip_mm > distance + 80_000
+
+
+@pytest.mark.parametrize(
+    ("panel_dimensions", "visibility_dimensions"),
+    [
+        ((4096, 128), (256, 8)),
+        ((128, 4096), (8, 256)),
+        ((4096, 136), (256, 8)),
+        ((4096, 16), (256, 4)),
+        ((128, 128), (128, 128)),
+    ],
+)
+def test_visibility_dimensions_scale_to_supported_render_bounds(
+    panel_dimensions: tuple[int, int],
+    visibility_dimensions: tuple[int, int],
+) -> None:
+    dimensions = BlenderController._visibility_dimensions(*panel_dimensions)
+
+    assert dimensions == visibility_dimensions
+    assert min(dimensions) >= 4
+    assert max(dimensions) <= 256
+
+
+def test_occlusion_evidence_reports_actual_visibility_resolution(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    camera = InspectionSession(scene_manifest).snapshot().camera
+    request: dict[str, object] = {}
+
+    def visibility(operation: str, **arguments: object) -> dict[str, object]:
+        request.update(operation=operation, **arguments)
+        return {
+            "visible_pixels": 8,
+            "isolated_pixels": 8,
+            "visible_fraction": 1.0,
+            "projected": True,
+        }
+
+    monkeypatch.setattr(controller, "request", visibility)
+    evidence = controller._remove_occluders(
+        RenderContactSheetCommand(
+            request_id="sheet",
+            op="render.contact_sheet",
+            output_path=str(tmp_path / "contact.png"),
+            focus_component_ids=(scene_manifest.components[-1].id,),
+            panel_width=4096,
+            panel_height=136,
+        ),
+        (scene_manifest.components[-1].id,),
+        camera=camera,
+    )
+
+    assert request["width"] == 256
+    assert request["height"] == 8
+    assert evidence.visibility_width_px == 256
+    assert evidence.visibility_height_px == 8
+    assert evidence.camera == camera
 
 
 def test_contact_sheet_validates_scene_focus_and_output(

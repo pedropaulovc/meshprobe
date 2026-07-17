@@ -849,6 +849,24 @@ class OccluderRemovalStep(ContractModel):
 
 
 class OcclusionEvidence(ContractModel):
+    camera: Camera
+    camera_source: Literal["generated_focus_context", "current_session"]
+    visibility_width_px: Annotated[
+        int,
+        Field(
+            ge=4,
+            le=1_024,
+            description="Render width used to measure pixel visibility for the attributed camera.",
+        ),
+    ]
+    visibility_height_px: Annotated[
+        int,
+        Field(
+            ge=4,
+            le=1_024,
+            description="Render height used to measure pixel visibility for the attributed camera.",
+        ),
+    ]
     visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
     removal_budget: Annotated[int, Field(ge=0, le=32)]
     sample_count: Annotated[
@@ -938,7 +956,7 @@ class OcclusionEvidence(ContractModel):
 
 
 class ContactSheetManifest(ContractModel):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()
