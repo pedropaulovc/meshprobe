@@ -424,7 +424,7 @@ def apply_camera(
     target_mm: list[float] | tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
-    validate_camera_projection_focus(camera["projection"])
+    validate_camera_projection(camera["projection"])
     obj = camera_object()
     pose = camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
@@ -589,10 +589,11 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     focus_component_ids = command.get("focus_component_ids", ())
     aspect_ratio = command.get("aspect_ratio", 1.0)
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
+    frame = command.get("frame", "world")
     axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
     axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
     target = Vector(command["target_mm"])
-    if command["frame"] == "source":
+    if frame == "source":
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
     axis.normalize()
@@ -613,11 +614,11 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "pose": resulting_pose,
         "projection": command.get("projection") or CURRENT_CAMERA["projection"],
     }
-    validate_camera_projection_focus(camera["projection"])
+    validate_camera_projection(camera["projection"])
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "rotate",
-        "frame": command["frame"],
+        "frame": frame,
         "target_mm": command["target_mm"],
         "axis": command["axis"],
         "axis_world": list(axis),
@@ -644,16 +645,52 @@ def validate_camera_diagnostics_inputs(
         raise ValueError("aspect_ratio must be between 0.01 and 100")
 
 
-def validate_camera_projection_focus(projection: dict[str, Any]) -> None:
-    if projection.get("mode") != "perspective":
+def validate_positive_projection_number(projection: dict[str, Any], key: str) -> float:
+    value = projection[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{key} must be a positive finite number")
+    return float(value)
+
+
+def validate_camera_projection(projection: dict[str, Any]) -> None:
+    mode = projection["mode"]
+    if mode not in {"orthographic", "perspective"}:
+        raise ValueError(f"unknown projection mode: {mode}")
+    near_clip_mm = validate_positive_projection_number(projection, "near_clip_mm")
+    far_clip_mm = validate_positive_projection_number(projection, "far_clip_mm")
+    if far_clip_mm <= near_clip_mm:
+        raise ValueError("far_clip_mm must be greater than near_clip_mm")
+    if mode == "orthographic":
+        validate_positive_projection_number(projection, "scale_mm")
         return
+
+    validate_positive_projection_number(projection, "focal_length_mm")
+    validate_positive_projection_number(projection, "sensor_width_mm")
+    validate_positive_projection_number(projection, "sensor_height_mm")
+    sensor_fit = projection["sensor_fit"]
+    if sensor_fit not in {"auto", "horizontal", "vertical"}:
+        raise ValueError(f"unknown sensor fit: {sensor_fit}")
     depth_of_field = projection.get("depth_of_field", {"mode": "disabled"})
+    depth_of_field_mode = depth_of_field["mode"]
+    if depth_of_field_mode not in {"disabled", "enabled"}:
+        raise ValueError(f"unknown depth-of-field mode: {depth_of_field_mode}")
     focus = depth_of_field.get("focus")
-    if focus is None:
+    focus_distance_mm = depth_of_field.get("focus_distance_mm")
+    if depth_of_field_mode == "disabled":
+        if focus is not None or focus_distance_mm is not None:
+            raise ValueError("disabled depth of field cannot declare a focus target")
         return
-    component_id = focus["component_id"]
-    if component_id not in COMPONENT_OBJECTS:
-        raise ValueError(f"unknown depth-of-field component id: {component_id}")
+    validate_positive_projection_number(depth_of_field, "aperture_fstop")
+    if (focus is None) == (focus_distance_mm is None):
+        raise ValueError("enabled depth of field requires exactly one focus target")
+    if focus is not None:
+        component_id = focus["component_id"]
+        if component_id not in COMPONENT_OBJECTS:
+            raise ValueError(f"unknown depth-of-field component id: {component_id}")
+        return
+    validate_positive_projection_number(depth_of_field, "focus_distance_mm")
 
 
 def camera_diagnostics(
