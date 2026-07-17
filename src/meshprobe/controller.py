@@ -974,7 +974,7 @@ class BlenderController:
             "no_blockers": "no blocking components ranked",
             "focus_not_projected": "focus not projected",
         }[stop_reason]
-        return f"Alternate focused context; {detail}"
+        return f"Alternate focused context; previous focused view: {detail}"
 
     @staticmethod
     def _focused_context_camera(

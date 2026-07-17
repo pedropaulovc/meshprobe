@@ -548,6 +548,7 @@ def test_empty_occlusion_caption_reports_stop_reason(
     caption = BlenderController._empty_occlusion_caption(stop_reason)  # type: ignore[arg-type]
 
     assert expected in caption
+    assert "previous focused view" in caption
     assert "no occluders found" not in caption
 
 
