@@ -1472,7 +1472,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
     def highlighted_render(path: Path, *, rotate_view: bool) -> tuple[Image.Image, SessionSnapshot]:
         output = tmp_path / f"{path.stem}.png"
         evaluator = tmp_path / f"{path.stem}-evaluator"
-        with BlenderController(timeout_seconds=30) as controller:
+        with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
             manifest = controller.open_scene(path)
             controller.execute(
                 ComponentMarkCommand(
@@ -2771,7 +2771,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
 def test_occlusion_query_uses_current_camera_and_leaves_no_artifact(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(
-        timeout_seconds=30,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
@@ -3614,7 +3614,7 @@ def test_worker_visibility_accepts_aspect_preserving_small_axis(
     height: int,
 ) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component for component in manifest.components if component.display_name == "target"
