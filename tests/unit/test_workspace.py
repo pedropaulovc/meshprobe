@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.models import (
     CustomIllumination,
     DisplayMode,
@@ -29,7 +30,12 @@ from meshprobe.protocol import (
 )
 from meshprobe.service import CommandResponse
 from meshprobe.session import InspectionSession
-from meshprobe.workspace import SessionFiles, SessionManager, atomic_json
+from meshprobe.workspace import (
+    DurableSessionState,
+    SessionFiles,
+    SessionManager,
+    atomic_json,
+)
 
 
 class FakeSessionService:
@@ -124,6 +130,20 @@ def test_session_manager_writes_compact_queryable_state(
     assert changed.components[0].path == "assembly/cover/clip"
     assert state["components"]["default"] == {"display": "shown", "mark": "unmarked"}
     assert state["components"]["overrides"]["c2"] == {"display": "hidden"}
+    expected_azimuth, expected_elevation = orbit_angles_from_orientation(
+        tuple(state["camera"]["pose"]["orientation_xyzw"])
+    )
+    assert state["camera_orbit_angles"] == {
+        "azimuth_degrees": pytest.approx(expected_azimuth),
+        "elevation_degrees": pytest.approx(expected_elevation),
+    }
+    # A legacy v1 state.yml written before this field existed has no camera_orbit_angles;
+    # it must still validate and be backfilled from the camera orientation on read.
+    legacy = {key: value for key, value in state.items() if key != "camera_orbit_angles"}
+    restored = DurableSessionState.model_validate(legacy)
+    assert restored.camera_orbit_angles is not None
+    assert restored.camera_orbit_angles.azimuth_degrees == pytest.approx(expected_azimuth)
+    assert restored.camera_orbit_angles.elevation_degrees == pytest.approx(expected_elevation)
     assert state["render_style"] == {
         "style": "shaded",
         "shaded_edges": {

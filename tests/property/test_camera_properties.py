@@ -6,7 +6,13 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from meshprobe.camera import _normalize, _quaternion_from_matrix, camera_diagnostics, orbit_camera
+from meshprobe.camera import (
+    _normalize,
+    _quaternion_from_matrix,
+    camera_diagnostics,
+    orbit_angles_from_orientation,
+    orbit_camera,
+)
 from meshprobe.models import (
     Camera,
     CameraPoseFrame,
@@ -50,6 +56,52 @@ def test_orbit_camera_handles_vertical_view_and_roll() -> None:
 
     norm = math.sqrt(sum(value * value for value in camera.pose.orientation_xyzw))
     assert math.isclose(norm, 1.0, abs_tol=1e-12)
+
+
+@given(
+    azimuth=st.floats(min_value=-179.0, max_value=179.0),
+    elevation=st.floats(min_value=-89.0, max_value=89.0),
+)
+def test_orbit_angles_round_trip_through_orientation(azimuth: float, elevation: float) -> None:
+    camera = orbit_camera(
+        target_mm=(12.0, -3.0, 40.0),
+        azimuth_degrees=azimuth,
+        elevation_degrees=elevation,
+        roll_degrees=0.0,
+        distance_mm=500.0,
+        projection=PerspectiveProjection(focal_length_mm=50.0),
+    )
+
+    recovered_azimuth, recovered_elevation = orbit_angles_from_orientation(
+        camera.pose.orientation_xyzw
+    )
+
+    assert recovered_azimuth == pytest.approx(azimuth, abs=1e-6)
+    assert recovered_elevation == pytest.approx(elevation, abs=1e-6)
+
+
+def test_orbit_angles_are_target_and_distance_independent() -> None:
+    projection = PerspectiveProjection(focal_length_mm=50.0)
+    near = orbit_camera(
+        target_mm=(0.0, 0.0, 0.0),
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=0.0,
+        distance_mm=100.0,
+        projection=projection,
+    )
+    far = orbit_camera(
+        target_mm=(500.0, -200.0, 80.0),
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=0.0,
+        distance_mm=9_000.0,
+        projection=projection,
+    )
+
+    assert orbit_angles_from_orientation(near.pose.orientation_xyzw) == pytest.approx(
+        orbit_angles_from_orientation(far.pose.orientation_xyzw)
+    )
 
 
 def test_camera_math_covers_x_dominant_rotation_and_zero_vector() -> None:

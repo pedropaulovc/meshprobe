@@ -57,6 +57,26 @@ def orbit_camera(
     )
 
 
+def orbit_angles_from_orientation(orientation_xyzw: Quaternion) -> tuple[float, float]:
+    """Recover the (azimuth, elevation) an orbit would need to reproduce this view.
+
+    The inverse of ``orbit_camera``'s spherical placement: a camera looking along
+    ``forward`` sits on the orbit sphere at ``-forward``, so the returned angles fed
+    back to ``view-orbit`` (with the same target and distance) reproduce the current
+    viewing direction. Both are target-independent, so a caller recovers orbit
+    continuity from the stored orientation alone without decomposing the quaternion by
+    hand. Elevation is degrees above the world XY plane; azimuth is degrees from +X
+    toward +Y about +Z, matching ``view-orbit``. Looking straight up or down leaves
+    azimuth undetermined, and it degrades to 0.
+    """
+
+    forward = _rotate_vector(orientation_xyzw, (0.0, 0.0, -1.0))
+    offset_x, offset_y, offset_z = (-forward[0], -forward[1], -forward[2])
+    elevation = math.degrees(math.asin(max(-1.0, min(1.0, offset_z))))
+    azimuth = math.degrees(math.atan2(offset_y, offset_x))
+    return azimuth, elevation
+
+
 def camera_diagnostics(
     camera: Camera,
     *,

@@ -215,6 +215,18 @@ class Camera(ContractModel):
     projection: Projection
 
 
+class CameraOrbitAngles(ContractModel):
+    """View-orbit spherical angles derived from a world-frame camera orientation.
+
+    Feeding these back to ``view-orbit`` (with a target and distance) reproduces the
+    current viewing direction, so an orbit sequence stays continuous without decomposing
+    the stored quaternion by hand. Both angles are target-independent.
+    """
+
+    azimuth_degrees: FiniteFloat
+    elevation_degrees: FiniteFloat
+
+
 class ProjectedComponentBounds(ContractModel):
     projection_status: Literal["in_front", "behind", "crosses_camera_plane"]
     minimum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
