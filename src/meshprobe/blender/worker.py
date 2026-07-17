@@ -2061,7 +2061,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             evaluator = render_evaluator_passes(evaluator_dir, output.stem)
         session = session_snapshot()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha256": manifest["source_sha256"],
         "state_sha256": session["state_sha256"],
         "width": command["width"],
