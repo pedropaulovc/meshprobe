@@ -20,6 +20,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
+    ViewSetCommand,
 )
 from meshprobe.workspace import OperationReceipt
 
@@ -409,6 +410,36 @@ def test_component_commands_resolve_short_references(
     command = client.commands[-1]
     assert isinstance(command, ComponentDisplayCommand)
     assert command.component_ids == ("component-id",)
+
+
+def test_view_set_applies_depth_of_field_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    camera = {
+        "pose": {"position_mm": [0, 0, 1_000], "orientation_xyzw": [0, 0, 0, 1]},
+        "projection": {"mode": "perspective", "focal_length_mm": 20},
+    }
+
+    result = runner.invoke(
+        app,
+        [
+            "view-set",
+            "--camera-json",
+            json.dumps(camera),
+            "--aperture-fstop",
+            "3.8",
+            "--focus-distance",
+            "75cm",
+        ],
+    )
+
+    assert result.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, ViewSetCommand)
+    projection = command.camera.projection
+    assert projection.mode == "perspective"
+    assert projection.depth_of_field.aperture_fstop == 3.8
+    assert projection.depth_of_field.focus_distance_mm == 750
 
 
 def test_close_and_kill_have_distinct_selected_and_all_semantics(

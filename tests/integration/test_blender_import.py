@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 from typer.testing import CliRunner
 
 from meshprobe.cli import app
@@ -25,6 +25,7 @@ from meshprobe.models import (
     ContactSheetOrbit,
     ContactSheetPanelSpec,
     CustomIllumination,
+    DepthOfField,
     DisplayMode,
     EnvironmentMap,
     GraphicsPolicy,
@@ -452,6 +453,81 @@ def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
         result = controller.request("scene.open", source_path=str(source))
 
     assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    enabled_path = tmp_path / "depth-of-field-enabled.png"
+    disabled_path = tmp_path / "depth-of-field-disabled.png"
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        projection = manifest.imported_camera.projection
+        assert isinstance(projection, PerspectiveProjection)
+        enabled_projection = projection.model_copy(
+            update={
+                "depth_of_field": DepthOfField(
+                    mode="enabled",
+                    aperture_fstop=0.5,
+                    focus_distance_mm=1_000,
+                )
+            }
+        )
+        enabled_camera = manifest.imported_camera.model_copy(
+            update={"projection": enabled_projection}
+        )
+        controller.execute(
+            ViewSetCommand(
+                request_id="enable-depth-of-field",
+                op="view.set",
+                camera=enabled_camera,
+            )
+        )
+        runtime = controller.request("session.runtime")
+        enabled = controller.render_image(
+            RenderImageCommand(
+                request_id="render-enabled",
+                op="render.image",
+                output_path=str(enabled_path),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+        disabled_camera = enabled_camera.model_copy(
+            update={
+                "projection": enabled_projection.model_copy(
+                    update={"depth_of_field": DepthOfField()}
+                )
+            }
+        )
+        controller.execute(
+            ViewSetCommand(
+                request_id="disable-depth-of-field",
+                op="view.set",
+                camera=disabled_camera,
+            )
+        )
+        disabled = controller.render_image(
+            RenderImageCommand(
+                request_id="render-disabled",
+                op="render.image",
+                output_path=str(disabled_path),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+
+    assert runtime["camera"]["depth_of_field"] == pytest.approx(
+        {"aperture_fstop": 0.5, "focus_distance_mm": 1_000}
+    )
+    assert enabled.resolved_depth_of_field is not None
+    assert enabled.resolved_depth_of_field.aperture_fstop == pytest.approx(0.5)
+    assert enabled.resolved_depth_of_field.focus_distance_mm == pytest.approx(1_000)
+    assert disabled.resolved_depth_of_field is None
+    enabled_image = Image.open(enabled.color.path).convert("RGB")
+    disabled_image = Image.open(disabled.color.path).convert("RGB")
+    assert ImageChops.difference(enabled_image, disabled_image).getbbox() is not None
 
 
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:

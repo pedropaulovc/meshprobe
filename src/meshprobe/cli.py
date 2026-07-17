@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
 from enum import StrEnum
@@ -29,10 +30,15 @@ from meshprobe.evals.harness.suite import run_tier
 from meshprobe.evals.migration import audit_migration, migrate_corpus_v2
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import (
+    Camera,
+    ComponentFocus,
+    DepthOfField,
+    DepthOfFieldMode,
     DisplayMode,
     GraphicsPolicy,
     IlluminationPreset,
     MarkMode,
+    PerspectiveProjection,
     Projection,
     RenderEngine,
 )
@@ -419,6 +425,65 @@ def _request_id(operation: str) -> str:
     return f"{operation}-{uuid.uuid4().hex[:12]}"
 
 
+def _distance_mm(value: str | None) -> float:
+    if value is None:
+        return 0.0
+    match = re.fullmatch(
+        r"\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(mm|cm|m)?\s*",
+        value,
+    )
+    if match is None:
+        raise typer.BadParameter(f"invalid distance {value!r}; use mm, cm, or m")
+    magnitude = float(match.group(1))
+    scale = {None: 1.0, "mm": 1.0, "cm": 10.0, "m": 1_000.0}[match.group(2)]
+    return magnitude * scale
+
+
+def _camera_with_depth_of_field(
+    camera: Camera,
+    *,
+    aperture_fstop: float | None,
+    focus_distance: str | None,
+    focus_component_id: str | None,
+    disable: bool,
+) -> Camera:
+    changed = (
+        aperture_fstop is not None or focus_distance is not None or focus_component_id is not None
+    )
+    if not changed and not disable:
+        return camera
+    if not isinstance(camera.projection, PerspectiveProjection):
+        raise typer.BadParameter("depth of field requires a perspective camera")
+    if disable and changed:
+        raise typer.BadParameter("--disable-depth-of-field cannot be combined with focus controls")
+    if disable:
+        projection = camera.projection.model_copy(update={"depth_of_field": DepthOfField()})
+        return camera.model_copy(update={"projection": projection})
+    if focus_distance is not None and focus_component_id is not None:
+        raise typer.BadParameter("provide either --focus-distance or --focus-component")
+    current = camera.projection.depth_of_field
+    resolved_distance = (
+        _distance_mm(focus_distance) if focus_distance is not None else current.focus_distance_mm
+    )
+    resolved_focus = (
+        ComponentFocus(component_id=focus_component_id)
+        if focus_component_id is not None
+        else current.focus
+    )
+    if focus_distance is not None:
+        resolved_focus = None
+    if focus_component_id is not None:
+        resolved_distance = None
+    depth_of_field = DepthOfField(
+        mode=DepthOfFieldMode.ENABLED,
+        aperture_fstop=aperture_fstop or current.aperture_fstop,
+        focus_distance_mm=resolved_distance,
+        focus=resolved_focus,
+    )
+    projection = camera.projection.model_copy(update={"depth_of_field": depth_of_field})
+    return camera.model_copy(update={"projection": projection})
+
+
 def _emit_receipt(
     ctx: typer.Context,
     client: MeshProbeClient,
@@ -602,12 +667,29 @@ def view_set(
     camera_json: Annotated[str, typer.Option("--camera-json")],
     focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    aperture_fstop: Annotated[float | None, typer.Option("--aperture-fstop", min=0.000001)] = None,
+    focus_distance: Annotated[
+        str | None, typer.Option("--focus-distance", help="Exact focus distance (mm, cm, or m).")
+    ] = None,
+    focus_component: Annotated[
+        str | None,
+        typer.Option("--focus-component", help="Component ref, stable ID, or exact path."),
+    ] = None,
+    disable_depth_of_field: Annotated[bool, typer.Option("--disable-depth-of-field")] = False,
 ) -> None:
     """Set an exact camera from a JSON object."""
 
-    from meshprobe.models import Camera
-
     camera = Camera.model_validate_json(camera_json)
+    focus_component_id = (
+        _component_ids(ctx, [focus_component])[0] if focus_component is not None else None
+    )
+    camera = _camera_with_depth_of_field(
+        camera,
+        aperture_fstop=aperture_fstop,
+        focus_distance=focus_distance,
+        focus_component_id=focus_component_id,
+        disable=disable_depth_of_field,
+    )
     _execute(
         ctx,
         ViewSetCommand(

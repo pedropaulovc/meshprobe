@@ -219,6 +219,15 @@ def imported_camera(
                 "sensor_fit": data.sensor_fit.lower(),
                 "near_clip_mm": data.clip_start * MILLIMETERS_PER_METER,
                 "far_clip_mm": data.clip_end * MILLIMETERS_PER_METER,
+                "depth_of_field": (
+                    {
+                        "mode": "enabled",
+                        "aperture_fstop": data.dof.aperture_fstop,
+                        "focus_distance_mm": data.dof.focus_distance * MILLIMETERS_PER_METER,
+                    }
+                    if data.dof.use_dof
+                    else {"mode": "disabled"}
+                ),
             }
         return (
             {
@@ -416,6 +425,7 @@ def apply_camera(
     if mode == "orthographic":
         data.type = "ORTHO"
         data.ortho_scale = projection["scale_mm"] / MILLIMETERS_PER_METER
+        data.dof.use_dof = False
     else:
         data.type = "PERSP"
         data.lens = projection["focal_length_mm"]
@@ -425,6 +435,21 @@ def apply_camera(
         if sensor_fit not in {"auto", "horizontal", "vertical"}:
             raise ValueError(f"unknown sensor fit: {sensor_fit}")
         data.sensor_fit = sensor_fit.upper()
+        depth_of_field = projection.get("depth_of_field", {"mode": "disabled"})
+        data.dof.use_dof = depth_of_field["mode"] == "enabled"
+        data.dof.focus_object = None
+        if data.dof.use_dof:
+            data.dof.aperture_fstop = depth_of_field["aperture_fstop"]
+            focus = depth_of_field.get("focus")
+            if focus is not None:
+                component_id = focus["component_id"]
+                if component_id not in COMPONENT_OBJECTS:
+                    raise ValueError(f"unknown depth-of-field component id: {component_id}")
+                data.dof.focus_object = COMPONENT_OBJECTS[component_id]
+            if depth_of_field.get("focus_distance_mm") is not None:
+                data.dof.focus_distance = (
+                    depth_of_field["focus_distance_mm"] / MILLIMETERS_PER_METER
+                )
     global CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
     CURRENT_CAMERA = deepcopy(camera)
     CURRENT_CAMERA_DIAGNOSTICS = camera_diagnostics(
@@ -1102,6 +1127,7 @@ def runtime_diagnostics() -> dict[str, Any]:
             "lens": camera.data.lens,
             "sensor_fit": camera.data.sensor_fit,
             "ortho_scale_mm": camera.data.ortho_scale * MILLIMETERS_PER_METER,
+            "depth_of_field": resolved_depth_of_field(),
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
         "environment_map": (
@@ -1555,6 +1581,23 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "color": artifact(output, "image/png"),
         "evaluator": evaluator,
         "luminance": luminance,
+        "resolved_depth_of_field": resolved_depth_of_field(),
+    }
+
+
+def resolved_depth_of_field() -> dict[str, float] | None:
+    camera = camera_object()
+    data = camera.data
+    if data.type != "PERSP" or not data.dof.use_dof:
+        return None
+    focus_distance = data.dof.focus_distance
+    if data.dof.focus_object is not None:
+        camera_position = camera.matrix_world.translation
+        focus_position = data.dof.focus_object.matrix_world.translation
+        focus_distance = (focus_position - camera_position).length
+    return {
+        "aperture_fstop": data.dof.aperture_fstop,
+        "focus_distance_mm": focus_distance * MILLIMETERS_PER_METER,
     }
 
 
