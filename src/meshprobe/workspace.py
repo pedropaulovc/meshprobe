@@ -556,13 +556,15 @@ class SessionManager:
         resolved = self._exact_component_id(components, value)
         if resolved is not None:
             return resolved
-        raise self._unresolved_component_error(components, value)
+        raise self._unknown_component_error(value)
 
     def resolve_component_ids(self, name: str, value: str) -> tuple[str, ...]:
         components = self._load_components(name)
         # An exact ref/ID/name/path wins even when it contains glob metacharacters
         # (e.g. `panel[1]`, `gear?`), which are legal in real component names and
-        # paths; only a token that matches nothing exactly is read as a glob.
+        # paths. An ambiguous literal raises here rather than falling through, so it
+        # keeps its ambiguous-name error instead of being reinterpreted as a glob;
+        # only a token that matches nothing exactly is read as a glob.
         resolved = self._exact_component_id(components, value)
         if resolved is not None:
             return (resolved,)
@@ -579,7 +581,7 @@ class SessionManager:
             if matched:
                 return tuple(str(component["id"]) for component in matched)
             raise ValueError(f"no components match glob pattern: {value}")
-        raise self._unresolved_component_error(components, value)
+        raise self._unknown_component_error(value)
 
     def _load_components(self, name: str) -> list[dict[str, Any]]:
         files = self._require_files(name)
@@ -588,6 +590,13 @@ class SessionManager:
 
     @staticmethod
     def _exact_component_id(components: list[dict[str, Any]], value: str) -> str | None:
+        """Return the id of an exact ref/ID/path/name match, or None if nothing matches.
+
+        A display name shared by several components is unresolvable, not unmatched, so
+        it raises the ambiguous-name error rather than returning None (which a caller
+        would otherwise reinterpret as a glob).
+        """
+
         for field in ("ref", "id", "path"):
             for component in components:
                 if value == component[field]:
@@ -595,17 +604,16 @@ class SessionManager:
         named = [component for component in components if value == component["name"]]
         if len(named) == 1:
             return str(named[0]["id"])
-        return None
-
-    @staticmethod
-    def _unresolved_component_error(components: list[dict[str, Any]], value: str) -> ValueError:
-        named = [component for component in components if value == component["name"]]
         if named:
             paths = ", ".join(sorted(str(component["path"]) for component in named))
-            return ValueError(
+            raise ValueError(
                 f"ambiguous component display name {value!r}; matches: {paths}; "
                 "use an exact path or stable ID"
             )
+        return None
+
+    @staticmethod
+    def _unknown_component_error(value: str) -> ValueError:
         return ValueError(
             f"unknown component reference, stable ID, exact display name, or exact path: {value}"
         )

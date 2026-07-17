@@ -879,6 +879,30 @@ def test_resolve_component_ids_prefers_exact_names_with_glob_metacharacters(
     )
 
 
+def test_resolve_component_ids_reports_ambiguous_glob_looking_names(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+    payload["components"][1]["name"] = "panel[1]"
+    payload["components"][2]["name"] = "panel[1]"
+    files.components.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    # A glob-looking literal shared by several components stays an ambiguous-name
+    # error instead of being silently reinterpreted as a glob pattern.
+    with pytest.raises(ValueError, match="ambiguous component display name") as error:
+        manager.resolve_component_ids("review", "panel[1]")
+    assert "assembly/cover/clip" in str(error.value)
+    assert "assembly/drive/idler" in str(error.value)
+
+
 def test_reset_clears_replay_and_artifact_detection_is_render_only(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
