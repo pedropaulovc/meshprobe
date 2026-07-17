@@ -22,6 +22,7 @@ class Operation(StrEnum):
     COMPONENT_INSPECT = "component.inspect"
     VIEW_SET = "view.set"
     VIEW_ORBIT = "view.orbit"
+    VIEW_MOVE = "view.move"
     ILLUMINATION_SET = "illumination.set"
     COMPONENT_DISPLAY = "component.display"
     COMPONENT_MARK = "component.mark"

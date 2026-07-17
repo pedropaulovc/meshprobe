@@ -66,6 +66,7 @@ DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
 STATE_OPERATIONS = {
     "view.set",
     "view.orbit",
+    "view.move",
     "illumination.set",
     "component.display",
     "component.mark",

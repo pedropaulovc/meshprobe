@@ -46,6 +46,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SessionResetCommand,
+    ViewMoveCommand,
     ViewOrbitCommand,
     ViewSetCommand,
 )
@@ -528,6 +529,58 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
     enabled_image = Image.open(enabled.color.path).convert("RGB")
     disabled_image = Image.open(disabled.color.path).convert("RGB")
     assert ImageChops.difference(enabled_image, disabled_image).getbbox() is not None
+
+
+def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+        moved = controller.execute(
+            ViewMoveCommand(
+                request_id="move",
+                op="view.move",
+                world_delta_mm=(0, 0, 100),
+                camera_delta_mm=(-25, 0, 50),
+            )
+        )
+
+    diagnostics = initial.camera_diagnostics
+    expected_delta = tuple(
+        world + diagnostics.right[axis] * -25 + diagnostics.forward[axis] * 50
+        for axis, world in enumerate((0, 0, 100))
+    )
+    expected_position = tuple(
+        initial.camera.pose.position_mm[axis] + expected_delta[axis] for axis in range(3)
+    )
+    assert isinstance(moved, SessionSnapshot)
+    assert moved.camera.pose.position_mm == pytest.approx(expected_position)
+    assert moved.camera.pose.orientation_xyzw == initial.camera.pose.orientation_xyzw
+    assert moved.camera.projection == initial.camera.projection
+    assert moved.camera_operation is not None
+    assert moved.camera_operation.requested_world_delta_mm == (0, 0, 100)
+    assert moved.camera_operation.requested_camera_delta_mm == (-25, 0, 50)
+    assert moved.camera_operation.resolved_world_delta_mm == pytest.approx(expected_delta)
+
+
+def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        before = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.move",
+                world_delta_mm=[100, 0, 0],
+                camera_delta_mm=[0, 0, 0],
+                focus_component_ids=["missing"],
+                aspect_ratio=1,
+            )
+        after = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+
+    assert after.camera == before.camera
+    assert after.camera_operation == before.camera_operation
+    assert after.state_sha256 == before.state_sha256
 
 
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:

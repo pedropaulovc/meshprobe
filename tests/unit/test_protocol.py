@@ -11,6 +11,7 @@ from meshprobe.protocol import (
     ComponentFindCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
+    ViewMoveCommand,
     command_json_schema,
     parse_command_json,
 )
@@ -44,6 +45,7 @@ def test_schema_contains_all_public_operations() -> None:
         "component.inspect",
         "view.set",
         "view.orbit",
+        "view.move",
         "illumination.set",
         "component.display",
         "component.mark",
@@ -69,6 +71,23 @@ def test_orbit_rejects_nonfinite_angles(field: str) -> None:
     payload[field] = math.inf
     with pytest.raises(ValidationError):
         COMMAND_ADAPTER.validate_python(payload)
+
+
+def test_move_combines_world_and_camera_deltas() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "move",
+            "op": "view.move",
+            "world_delta_mm": [0, 0, 100],
+            "camera_delta_mm": [-25, 0, 50],
+        }
+    )
+
+    assert isinstance(command, ViewMoveCommand)
+    assert command.world_delta_mm == (0, 0, 100)
+    assert command.camera_delta_mm == (-25, 0, 50)
+    with pytest.raises(ValidationError, match="non-zero"):
+        COMMAND_ADAPTER.validate_python({"request_id": "stationary", "op": "view.move"})
 
 
 def test_render_command_bounds_engine_and_samples() -> None:
