@@ -664,6 +664,22 @@ def test_default_render_path_accepts_meshprobe_workspace_root(
     assert "[default: 120]" in render_help_text
 
 
+def test_render_defaults_favor_inspection_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    image = runner.invoke(app, ["--session", "review", "render-image", "--samples", "1"])
+    sheet = runner.invoke(app, ["--session", "review", "render-sheet", "c2", "--samples", "1"])
+
+    assert image.exit_code == 0, image.output
+    assert sheet.exit_code == 0, sheet.output
+    image_command, sheet_command = client.commands
+    assert isinstance(image_command, RenderImageCommand)
+    assert isinstance(sheet_command, RenderContactSheetCommand)
+    assert (image_command.width, image_command.height) == (2576, 2576)
+    assert (sheet_command.panel_width, sheet_command.panel_height) == (1288, 1288)
+
+
 def test_component_commands_resolve_short_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

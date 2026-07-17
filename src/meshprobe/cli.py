@@ -1359,8 +1359,8 @@ def mark_components(
 def render_image(
     ctx: typer.Context,
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
-    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = 1024,
-    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 1024,
+    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = 2576,
+    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 2576,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     style: Annotated[
@@ -1456,8 +1456,8 @@ def render_sheet(
         ),
     ],
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
-    panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 768,
-    panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 768,
+    panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 1288,
+    panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 1288,
     samples: Annotated[int, typer.Option("--samples", min=1)] = 32,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     graphics_policy: Annotated[
