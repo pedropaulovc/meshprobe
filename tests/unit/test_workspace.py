@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from meshprobe.models import CustomIllumination, DisplayMode, EnvironmentMap, SceneManifest
+from meshprobe.models import (
+    CustomIllumination,
+    DisplayMode,
+    EnvironmentMap,
+    RenderStyle,
+    RenderStyleState,
+    SceneManifest,
+)
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -107,6 +114,39 @@ def test_session_manager_writes_compact_queryable_state(
     assert changed.components[0].path == "assembly/cover/clip"
     assert state["components"]["default"] == {"display": "shown", "mark": "unmarked"}
     assert state["components"]["overrides"]["c2"] == {"display": "hidden"}
+    assert state["render_style"] == {
+        "style": "shaded",
+        "shaded_edges": {
+            "line_color": "#202020",
+            "line_width": 1.5,
+            "crease_angle_degrees": 60.0,
+            "edge_types": ["silhouette", "border", "crease", "material_boundary"],
+        },
+    }
+    assert services[0].session is not None
+    SessionManager._write_state(
+        SessionFiles(manager.root, "review"),
+        services[0].session.snapshot(),
+        render_style=RenderStyleState(
+            style=RenderStyle.SHADED_EDGES,
+            shaded_edges={
+                "line_color": "#101820",
+                "line_width": 2,
+                "crease_angle_degrees": 45,
+                "edge_types": ("silhouette", "crease"),
+            },
+        ),
+    )
+    styled_state = yaml.safe_load((session_root / "state.yml").read_text(encoding="utf-8"))
+    assert styled_state["render_style"] == {
+        "style": "shaded_edges",
+        "shaded_edges": {
+            "line_color": "#101820",
+            "line_width": 2.0,
+            "crease_angle_degrees": 45.0,
+            "edge_types": ["silhouette", "crease"],
+        },
+    }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
 

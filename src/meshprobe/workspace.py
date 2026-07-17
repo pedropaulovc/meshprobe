@@ -24,6 +24,7 @@ from meshprobe.models import (
     GraphicsPlatform,
     Illumination,
     MarkMode,
+    RenderStyleState,
     SceneManifest,
     SessionSnapshot,
     SrgbHexColor,
@@ -31,6 +32,7 @@ from meshprobe.models import (
 from meshprobe.protocol import (
     Command,
     IlluminationSetCommand,
+    RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
 )
@@ -121,6 +123,7 @@ class DurableSessionState(BaseModel):
     state_sha256: str
     camera: Camera
     illumination: Illumination
+    render_style: RenderStyleState = RenderStyleState()
     components: ComponentStateIndex
     results: str
     artifacts: str
@@ -406,7 +409,15 @@ class SessionManager:
                 self._event(files, command, "rejected", error=str(error))
                 raise
             result_path = self._write_result(files, command.request_id, response)
-            self._write_state(files, snapshot)
+            self._write_state(
+                files,
+                snapshot,
+                render_style=(
+                    RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
+                    if isinstance(command, RenderImageCommand)
+                    else None
+                ),
+            )
             self._update_checkpoint(files, command, snapshot)
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
             self._event(files, command, "accepted", result_path=result_path)
@@ -618,7 +629,12 @@ class SessionManager:
         )
 
     @staticmethod
-    def _write_state(files: SessionFiles, snapshot: SessionSnapshot) -> None:
+    def _write_state(
+        files: SessionFiles,
+        snapshot: SessionSnapshot,
+        *,
+        render_style: RenderStyleState | None = None,
+    ) -> None:
         default_display = DisplayMode.SHOWN
         default_mark = MarkMode.UNMARKED
         overrides: dict[str, dict[str, str]] = {}
@@ -634,10 +650,17 @@ class SessionManager:
                 entry["mark_color"] = visual.mark_color
             if entry:
                 overrides[refs[component_id]] = entry
+        resolved_render_style = render_style
+        if resolved_render_style is None and files.state.exists():
+            current = DurableSessionState.model_validate(
+                yaml.safe_load(files.state.read_text(encoding="utf-8"))
+            )
+            resolved_render_style = current.render_style
         payload = DurableSessionState(
             state_sha256=snapshot.state_sha256,
             camera=snapshot.camera,
             illumination=snapshot.illumination,
+            render_style=resolved_render_style or RenderStyleState(),
             components=ComponentStateIndex(
                 default=ComponentStateDefaults(display=default_display, mark=default_mark),
                 overrides={

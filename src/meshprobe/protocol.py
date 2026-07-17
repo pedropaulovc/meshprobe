@@ -17,6 +17,8 @@ from meshprobe.models import (
     MarkMode,
     Projection,
     RenderEngine,
+    RenderStyle,
+    ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
 )
@@ -123,6 +125,8 @@ class RenderImageCommand(CommandModel):
     height: Annotated[int, Field(ge=64, le=16_384)] = 1024
     samples: Annotated[int, Field(ge=1, le=4_096)] = 64
     engine: RenderEngine = RenderEngine.EEVEE
+    style: RenderStyle = RenderStyle.SHADED
+    shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
 
 

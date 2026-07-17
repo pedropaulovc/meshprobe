@@ -38,8 +38,10 @@ from meshprobe.models import (
     PresetIllumination,
     RenderEngine,
     RenderManifest,
+    RenderStyle,
     SceneManifest,
     SessionSnapshot,
+    ShadedEdgesStyle,
     VisibleBackgroundMode,
 )
 from meshprobe.protocol import (
@@ -125,6 +127,67 @@ bpy.ops.export_scene.gltf(
     export_format='GLB',
     export_cameras=True,
     export_lights=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_edge_style_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "edge-style.glb"
+    script = tmp_path / "build_edge_style.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+def material(name, color):
+    value = bpy.data.materials.new(name)
+    value.diffuse_color = (*color, 1.0)
+    return value
+
+panel_material = material('panel-material', (0.72, 0.78, 0.86))
+cube_material = material('cube-material', (0.85, 0.32, 0.08))
+
+mesh = bpy.data.meshes.new('triangulated-panel-mesh')
+mesh.from_pydata(
+    [(-1.5, -1.5, 0), (1.5, -1.5, 0), (1.5, 1.5, 0), (-1.5, 1.5, 0)],
+    [],
+    [(0, 1, 2), (0, 2, 3)],
+)
+panel = bpy.data.objects.new('triangulated-panel', mesh)
+panel.location = (-1.8, 0, 0)
+panel.data.materials.append(panel_material)
+bpy.context.scene.collection.objects.link(panel)
+
+bpy.ops.mesh.primitive_cube_add(size=1.5, location=(1.25, 0, 0.75))
+cube = bpy.context.object
+cube.name = 'creased-cube'
+cube.data.materials.append(cube_material)
+
+camera_data = bpy.data.cameras.new('edge-camera')
+camera = bpy.data.objects.new('edge-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (0, -9, 7)
+direction = Vector((0, 0, 0.4)) - camera.location
+camera.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
+camera_data.lens = 55
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
 )
 """,
         encoding="utf-8",
@@ -1872,7 +1935,109 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     pass_header = Path(rendered.evaluator.multilayer.path).read_bytes()[:4_096]
     assert b"Depth" in pass_header
     assert b"Normal" in pass_header
+
     assert snapshot_source(source) == before
+
+
+def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: Path) -> None:
+    source = build_edge_style_glb(tmp_path)
+    plain_output = tmp_path / "plain.png"
+    edge_output = tmp_path / "shaded-edges.png"
+    evaluator_dir = tmp_path / "plain-evaluator"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        controller.execute(
+            IlluminationSetCommand(
+                request_id="edge-lighting",
+                op="illumination.set",
+                illumination=PresetIllumination(preset=IlluminationPreset.FLAT_DIAGNOSTIC),
+            )
+        )
+        plain = controller.render_image(
+            RenderImageCommand(
+                request_id="render-plain",
+                op="render.image",
+                output_path=str(plain_output),
+                width=320,
+                height=240,
+                samples=1,
+            ),
+            evaluator_output_dir=evaluator_dir,
+        )
+        edged = controller.render_image(
+            RenderImageCommand(
+                request_id="render-edges",
+                op="render.image",
+                output_path=str(edge_output),
+                width=320,
+                height=240,
+                samples=1,
+                style=RenderStyle.SHADED_EDGES,
+                shaded_edges=ShadedEdgesStyle(
+                    line_color="#101820",
+                    line_width=2,
+                    crease_angle_degrees=120,
+                    edge_types=("silhouette", "border", "crease"),
+                ),
+            )
+        )
+        edge_runtime = controller.request("session.runtime")
+
+    assert plain.evaluator is not None
+    assert plain.session.state_sha256 == edged.session.state_sha256
+    assert plain.session.camera == edged.session.camera
+    assert edged.style is RenderStyle.SHADED_EDGES
+    assert edged.shaded_edges.line_color == "#101820"
+    assert edge_runtime["render"]["use_freestyle"] is True
+
+    plain_image = Image.open(plain.color.path).convert("RGB")
+    edge_image = Image.open(edged.color.path).convert("RGB")
+    component_image = Image.open(plain.evaluator.component_ids.path).convert("RGB")
+    changed = {
+        (x, y)
+        for y in range(plain_image.height)
+        for x in range(plain_image.width)
+        if max(
+            abs(left - right)
+            for left, right in zip(
+                plain_image.getpixel((x, y)), edge_image.getpixel((x, y)), strict=True
+            )
+        )
+        >= 24
+    }
+    ids_by_name = {component.display_name: component.id for component in manifest.components}
+    colors = plain.evaluator.component_colors
+    panel_color = colors[ids_by_name["triangulated-panel"]]
+    cube_color = colors[ids_by_name["creased-cube"]]
+
+    def pixels_of(color: tuple[int, int, int]) -> set[tuple[int, int]]:
+        return {
+            (x, y)
+            for y in range(component_image.height)
+            for x in range(component_image.width)
+            if component_image.getpixel((x, y)) == color
+        }
+
+    def deep_pixels(pixels: set[tuple[int, int]], radius: int = 4) -> set[tuple[int, int]]:
+        return {
+            (x, y)
+            for x, y in pixels
+            if all(
+                (x + dx, y + dy) in pixels
+                for dx in range(-radius, radius + 1)
+                for dy in range(-radius, radius + 1)
+            )
+        }
+
+    panel_pixels = pixels_of(panel_color)
+    cube_pixels = pixels_of(cube_color)
+    panel_boundary = panel_pixels - deep_pixels(panel_pixels, radius=2)
+    cube_deep = deep_pixels(cube_pixels)
+    panel_deep = deep_pixels(panel_pixels)
+
+    assert len(changed & panel_boundary) >= 40
+    assert len(changed & cube_deep) >= 10
+    assert len(changed & panel_deep) <= 2
 
 
 @pytest.mark.skipif(

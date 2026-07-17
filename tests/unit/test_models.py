@@ -21,6 +21,7 @@ from meshprobe.models import (
     RenderManifest,
     SceneManifest,
     SensorFit,
+    ShadedEdgesStyle,
     SpotLight,
     SunLight,
     VisibleBackgroundMode,
@@ -507,6 +508,13 @@ def test_render_manifest_rejects_unordered_luminance() -> None:
                 },
             }
         )
+
+
+def test_shaded_edges_style_rejects_duplicate_or_empty_edge_types() -> None:
+    with pytest.raises(ValidationError, match="at least one"):
+        ShadedEdgesStyle(edge_types=())
+    with pytest.raises(ValidationError, match="must be unique"):
+        ShadedEdgesStyle(edge_types=("crease", "crease"))
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:
