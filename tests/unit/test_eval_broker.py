@@ -13,6 +13,7 @@ from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceStatus
 from meshprobe.protocol import (
     Command,
     IlluminationSetCommand,
+    RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
@@ -327,6 +328,72 @@ def test_broker_reserves_output_bytes_before_calling_renderer(tmp_path: Path) ->
     assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
 
 
+def test_broker_reserves_remaining_bytes_for_dynamic_contact_sheet_captions(
+    tmp_path: Path,
+) -> None:
+    output_budget = 123_456_789
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(
+            tool_calls=1,
+            renders=9,
+            total_pixels=9 * 128 * 128,
+            output_bytes=output_budget,
+        ),
+    )
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path="sheet.png",
+        focus_component_ids=("target",),
+        panel_width=128,
+        panel_height=128,
+        samples=1,
+    )
+
+    _translated, _renders, _pixels, byte_reservation, _staging = active._translate_and_reserve(
+        command, 1
+    )
+
+    assert byte_reservation == output_budget
+
+
+def test_broker_rejects_undersized_contact_sheet_budget_before_rendering(
+    tmp_path: Path,
+) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(
+            tool_calls=2,
+            renders=18,
+            total_pixels=18 * 128 * 128,
+            output_bytes=1,
+        ),
+    )
+
+    for sequence in range(2):
+        rejected = active.execute(
+            RenderContactSheetCommand(
+                request_id=f"undersized-{sequence}",
+                op="render.contact_sheet",
+                output_path=f"sheet-{sequence}.png",
+                focus_component_ids=("target",),
+                panel_width=128,
+                panel_height=128,
+                samples=1,
+            )
+        )
+        assert rejected.error is not None
+        assert rejected.error.code == "budget.output_bytes"
+
+    assert service.commands == []
+    assert active.metrics.renders == 0
+    assert active.metrics.total_pixels == 0
+    assert active.metrics.output_bytes == 0
+
+
 def test_broker_accepts_the_sandbox_visible_artifact_prefix(tmp_path: Path) -> None:
     active = broker(tmp_path)
     artifact = tmp_path / "agent" / "artifacts" / "visible.png"
@@ -415,6 +482,8 @@ def test_broker_discards_output_that_exceeds_reserved_bound(tmp_path: Path) -> N
 
     assert rejected.error is not None
     assert rejected.error.code == "budget.output_bytes"
+    assert active.metrics.renders == 1
+    assert active.metrics.total_pixels == 4_096
     assert active.metrics.output_bytes == 0
     assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
     assert not any((tmp_path / "agent" / "artifacts").rglob("*.png"))

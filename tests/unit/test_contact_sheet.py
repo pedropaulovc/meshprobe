@@ -42,3 +42,74 @@ def test_compose_contact_sheet_builds_captioned_grid(tmp_path: Path) -> None:
 def test_compose_contact_sheet_requires_nine_panels(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="exactly nine"):
         compose_contact_sheet((), tmp_path / "sheet.png", 80, 60)
+
+
+def test_compose_contact_sheet_expands_to_render_every_caption_line(tmp_path: Path) -> None:
+    names = tuple(f"blocker-{index}-" + "x" * 80 for index in range(1, 10))
+    caption = "Occluders removed:\n" + "\n".join(
+        f"{index}. {name}" for index, name in enumerate(names, 1)
+    )
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"long-panel-{index}.png"
+        Image.new("RGB", (80, 60), "black").save(path)
+        panels.append((path, caption if index == 2 else "Panel", ()))
+
+    output = tmp_path / "long-sheet.png"
+    compose_contact_sheet(tuple(panels), output, 80, 60)
+
+    assert Image.open(output).height > 324
+    assert all(name in caption for name in names)
+
+
+def test_compose_contact_sheet_expands_for_full_callout_label(tmp_path: Path) -> None:
+    label = "selected-component-" + "x" * 230
+    callout = ContactSheetCallout(
+        number=1,
+        component_id="cmp_target",
+        label=label,
+        image_xy=(0.5, 0.5),
+    )
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"callout-panel-{index}.png"
+        Image.new("RGB", (80, 60), "black").save(path)
+        panels.append((path, "Panel", (callout,) if index == 0 else ()))
+
+    output = tmp_path / "callout-sheet.png"
+    compose_contact_sheet(tuple(panels), output, 80, 60)
+
+    assert Image.open(output).height > 324
+
+
+def test_compose_contact_sheet_wraps_long_single_line_caption(tmp_path: Path) -> None:
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"caption-panel-{index}.png"
+        Image.new("RGB", (80, 60), "black").save(path)
+        panels.append((path, "x" * 256 if index == 0 else "Panel", ()))
+
+    output = tmp_path / "caption-sheet.png"
+    compose_contact_sheet(tuple(panels), output, 80, 60)
+
+    assert Image.open(output).height > 324
+
+
+def test_compose_contact_sheet_bounds_font_for_tall_narrow_panels(tmp_path: Path) -> None:
+    label = "selected-component-" + "x" * 230
+    callout = ContactSheetCallout(
+        number=1,
+        component_id="cmp_target",
+        label=label,
+        image_xy=(0.5, 0.5),
+    )
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"tall-panel-{index}.png"
+        Image.new("RGB", (8, 8), "black").save(path)
+        panels.append((path, label, (callout,) if index == 0 else ()))
+
+    output = tmp_path / "tall-sheet.png"
+    compose_contact_sheet(tuple(panels), output, 128, 4096)
+
+    assert Image.open(output).height < 4 * 4096

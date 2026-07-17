@@ -30,6 +30,15 @@ from meshprobe.models import (
 )
 
 
+def test_contact_sheet_contract_uses_named_occluder_schema() -> None:
+    schema_version = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
+
+    assert schema_version["const"] == 3
+    assert schema_version["default"] == 3
+    with pytest.raises(ValidationError, match="Input should be 3"):
+        ContactSheetManifest.model_validate({"schema_version": 2})
+
+
 def render_session(state_sha256: str = "b" * 64) -> dict[str, object]:
     return {
         "camera": {
@@ -536,7 +545,7 @@ def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
     sheet_schema = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
 
     assert render_schema["const"] == 2
-    assert sheet_schema["const"] == 2
+    assert sheet_schema["const"] == 3
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:

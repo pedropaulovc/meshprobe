@@ -37,6 +37,13 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def test_render_sheet_help_advertises_occlusion_analysis() -> None:
+    result = runner.invoke(app, ["render-sheet", "--help"])
+
+    assert result.exit_code == 0
+    assert "automatic occlusion analysis" in unstyle(result.stdout)
+
+
 def test_schema_command_documents_durable_state_files() -> None:
     result = runner.invoke(app, ["schema", "--kind", "state"])
 

@@ -14,6 +14,32 @@ def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
 
 
+def _wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    width: int,
+) -> tuple[str, ...]:
+    """Wrap every character into the image instead of clipping long identifiers."""
+    lines: list[str] = []
+    for paragraph in text.splitlines() or ("",):
+        remaining = paragraph
+        if not remaining:
+            lines.append("")
+            continue
+        while remaining:
+            end = len(remaining)
+            while end > 1 and draw.textlength(remaining[:end], font=font) > width:
+                end -= 1
+            if end < len(remaining):
+                word_end = remaining.rfind(" ", 0, end + 1)
+                if word_end > 0:
+                    end = word_end
+            lines.append(remaining[:end].rstrip())
+            remaining = remaining[end:].lstrip()
+    return tuple(lines)
+
+
 def compose_contact_sheet(
     panels: tuple[tuple[Path, str, tuple[ContactSheetCallout, ...]], ...],
     output_path: Path,
@@ -22,14 +48,41 @@ def compose_contact_sheet(
 ) -> ImageArtifact:
     if len(panels) != 9:
         raise ValueError("focused_3x3 requires exactly nine panels")
-    caption_height = max(48, panel_height // 10)
-    sheet = Image.new("RGB", (panel_width * 3, (panel_height + caption_height) * 3), "#17191d")
-    font = ImageFont.load_default(size=max(14, caption_height // 2))
-    for panel_index, (path, caption, callouts) in enumerate(panels):
+    minimum_caption_height = max(48, panel_height // 10)
+    font_size = max(14, min(minimum_caption_height // 4, panel_width // 12))
+    font = ImageFont.load_default(size=font_size)
+    measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    line_box = measuring_draw.textbbox((0, 0), "Ag", font=font)
+    line_height = int(line_box[3] - line_box[1] + 3)
+    panel_lines: list[tuple[str, ...]] = []
+    panel_caption_line_counts: list[int] = []
+    for panel_index, (_path, caption, callouts) in enumerate(panels):
+        numbered_caption = f"{panel_index + 1}. {caption}"
+        caption_lines = _wrap_text(measuring_draw, numbered_caption, font, panel_width - 12)
+        lines = list(caption_lines)
+        panel_caption_line_counts.append(len(caption_lines))
+        if callouts:
+            legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
+            lines.extend(_wrap_text(measuring_draw, legend, font, panel_width - 12))
+        panel_lines.append(tuple(lines))
+    row_caption_heights = tuple(
+        max(
+            minimum_caption_height,
+            max(len(panel_lines[index]) for index in range(row * 3, row * 3 + 3)) * line_height
+            + 12,
+        )
+        for row in range(3)
+    )
+    sheet = Image.new(
+        "RGB",
+        (panel_width * 3, panel_height * 3 + sum(row_caption_heights)),
+        "#17191d",
+    )
+    for panel_index, (path, _caption, callouts) in enumerate(panels):
         column = panel_index % 3
         row = panel_index // 3
         left = column * panel_width
-        top = row * (panel_height + caption_height)
+        top = row * panel_height + sum(row_caption_heights[:row])
         with Image.open(path) as source:
             fitted = ImageOps.fit(source.convert("RGB"), (panel_width, panel_height))
         callout_draw = ImageDraw.Draw(fitted)
@@ -51,24 +104,17 @@ def compose_contact_sheet(
                 anchor="mm",
             )
         sheet.paste(fitted, (left, top))
+        caption_height = row_caption_heights[row]
         caption_layer = Image.new("RGB", (panel_width, caption_height), "#17191d")
         caption_draw = ImageDraw.Draw(caption_layer)
-        caption_y = caption_height // 2 if not callouts else caption_height // 3
-        caption_draw.text(
-            (10, caption_y),
-            f"{panel_index + 1}. {caption}",
-            fill="#f2f4f8",
-            font=font,
-            anchor="lm",
-        )
-        if callouts:
-            legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
+        caption_line_count = panel_caption_line_counts[panel_index]
+        for line_index, line in enumerate(panel_lines[panel_index]):
             caption_draw.text(
-                (10, caption_height * 2 // 3),
-                legend,
-                fill="#ffd43b",
+                (6, 6 + line_index * line_height),
+                line,
+                fill="#f2f4f8" if line_index < caption_line_count else "#ffd43b",
                 font=font,
-                anchor="lm",
+                anchor="la",
             )
         sheet.paste(caption_layer, (left, top + panel_height))
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1107,7 +1107,7 @@ def render_sheet(
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
-    """Render the focused 3x3 diagnostic sheet."""
+    """Render a focused 3x3 sheet with automatic occlusion analysis."""
 
     options = _options(ctx)
     destination = output or (
