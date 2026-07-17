@@ -23,6 +23,7 @@ from meshprobe.models import (
     MarkMode,
     OcclusionQueryResult,
     OrthonormalBasis,
+    PerspectiveProjection,
     Projection,
     RenderEngine,
     RenderManifest,
@@ -84,6 +85,17 @@ class ViewOrbitCommand(CommandModel):
     distance_mm: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     projection: Projection
     focus_component_ids: tuple[str, ...] = ()
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+
+
+class ViewFrameCommand(CommandModel):
+    op: Literal["view.frame"]
+    focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    azimuth_degrees: FiniteFloat = 45.0
+    elevation_degrees: FiniteFloat = 30.0
+    roll_degrees: FiniteFloat = 0.0
+    margin: Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)] = 1.25
+    projection: Projection = PerspectiveProjection()
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
@@ -195,6 +207,7 @@ type Command = Annotated[
     | ComponentOcclusionCommand
     | ViewSetCommand
     | ViewOrbitCommand
+    | ViewFrameCommand
     | ViewMoveCommand
     | ViewRotateCommand
     | IlluminationSetCommand

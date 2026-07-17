@@ -53,6 +53,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewRotateCommand,
     ViewSetCommand,
@@ -588,6 +589,80 @@ def test_focused_context_camera_stays_outside_scene_and_preserves_framing() -> N
     assert framed_distance == pytest.approx(distance)
     assert projection.focal_length_mm > 50
     assert projection.far_clip_mm > distance + context_radius
+
+
+def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    snapshot = InspectionSession(scene_manifest).snapshot()
+    captured: dict[str, Any] = {}
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        captured["operation"] = operation
+        captured["arguments"] = arguments
+        return snapshot.model_dump(mode="json")
+
+    monkeypatch.setattr(controller, "request", request)
+    target = scene_manifest.components[-1]
+
+    result = controller.execute(
+        ViewFrameCommand(request_id="frame", op="view.frame", focus_component_ids=(target.id,))
+    )
+
+    assert captured["operation"] == "view.orbit"
+    arguments = captured["arguments"]
+    assert arguments["target_mm"] == [0.0, 0.0, 0.0]
+    assert arguments["focus_component_ids"] == [target.id]
+    span = math.sqrt(3 * 20.0**2)
+    projection = PerspectiveProjection()
+    framing_fov = min(
+        projection.horizontal_fov_degrees(1.0),
+        projection.vertical_fov_degrees(1.0),
+    )
+    expected_distance = (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
+    assert cast(float, arguments["distance_mm"]) == pytest.approx(expected_distance)
+    assert result == {
+        "camera": snapshot.camera.model_dump(mode="json"),
+        "camera_diagnostics": snapshot.camera_diagnostics.model_dump(mode="json"),
+        "state_sha256": snapshot.state_sha256,
+    }
+    assert [operation for operation, _ in controller._accepted_commands] == ["view.orbit"]
+
+
+def test_frame_view_rejects_unknown_focus_component(scene_manifest) -> None:  # type: ignore[no-untyped-def]
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    with pytest.raises(BlenderWorkerError, match="unknown component ids"):
+        controller.frame_view(
+            ViewFrameCommand(request_id="frame", op="view.frame", focus_component_ids=("missing",))
+        )
+
+
+def test_frame_view_requires_open_scene() -> None:
+    controller = BlenderController()
+    with pytest.raises(BlenderWorkerError, match="cannot frame the camera"):
+        controller.frame_view(
+            ViewFrameCommand(request_id="frame", op="view.frame", focus_component_ids=("c1",))
+        )
+
+
+def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
+    span = 40.0
+    perspective, distance = BlenderController._frame_camera(
+        PerspectiveProjection(), span, aspect_ratio=1.0, margin=1.25
+    )
+    framing_fov = min(
+        perspective.horizontal_fov_degrees(1.0),
+        perspective.vertical_fov_degrees(1.0),
+    )
+    assert distance == pytest.approx((span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25)
+
+    orthographic, ortho_distance = BlenderController._frame_camera(
+        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=1.0, margin=1.5
+    )
+    assert isinstance(orthographic, OrthographicProjection)
+    assert orthographic.scale_mm == pytest.approx(span * 1.5)
+    assert ortho_distance == pytest.approx(span)
 
 
 def test_occlusion_query_reports_current_camera_samples_and_named_blockers(

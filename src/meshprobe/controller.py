@@ -56,6 +56,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -331,6 +332,8 @@ class BlenderController:
                     component.model_dump(mode="json") for component in index.find(command.selector)
                 ]
             return index.by_id(command.component_id).model_dump(mode="json")
+        if isinstance(command, ViewFrameCommand):
+            return self.frame_view(command)
         if isinstance(command, RenderImageCommand):
             return self.render_image(command)
         if isinstance(command, RenderContactSheetCommand):
@@ -435,6 +438,54 @@ class BlenderController:
             component_path=component.path,
             ray_hit_count=ray_hit_count,
         )
+
+    def frame_view(self, command: ViewFrameCommand) -> object:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot frame the camera before a scene is open")
+        focus_ids = tuple(dict.fromkeys(command.focus_component_ids))
+        known_ids = {component.id for component in self._manifest.components}
+        unknown = set(focus_ids) - known_ids
+        if unknown:
+            raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
+        center, span = self._bounds_center_span(self._focus_bounds(focus_ids))
+        projection, distance = self._frame_camera(
+            command.projection, span, command.aspect_ratio, command.margin
+        )
+        return self.execute(
+            ViewOrbitCommand(
+                request_id=command.request_id,
+                op="view.orbit",
+                target_mm=center,
+                azimuth_degrees=command.azimuth_degrees,
+                elevation_degrees=command.elevation_degrees,
+                roll_degrees=command.roll_degrees,
+                distance_mm=distance,
+                projection=projection,
+                focus_component_ids=focus_ids,
+                aspect_ratio=command.aspect_ratio,
+            )
+        )
+
+    @staticmethod
+    def _frame_camera(
+        projection: Projection,
+        span: float,
+        aspect_ratio: float,
+        margin: float,
+    ) -> tuple[Projection, float]:
+        if isinstance(projection, OrthographicProjection):
+            distance = max(span, 1.0)
+            projection = projection.model_copy(update={"scale_mm": span * margin})
+        else:
+            framing_fov = min(
+                projection.horizontal_fov_degrees(aspect_ratio),
+                projection.vertical_fov_degrees(aspect_ratio),
+            )
+            distance = max((span / 2) / math.tan(math.radians(framing_fov / 2)) * margin, 1.0)
+        required_far_clip_mm = distance + span
+        if projection.far_clip_mm <= required_far_clip_mm:
+            projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
+        return projection, distance
 
     @staticmethod
     def _state_operation_result(command: Command, snapshot: SessionSnapshot) -> dict[str, object]:

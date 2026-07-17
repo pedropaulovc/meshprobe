@@ -34,7 +34,15 @@ yq '.components[] | select(.name | test("idler"; "i"))' \
 uv run meshprobe --session gearbox display c7 --mode isolated
 uv run meshprobe --session gearbox illumination-set raking_left
 uv run meshprobe --session gearbox render-sheet c7
+uv run meshprobe --session gearbox view-frame c7
+uv run meshprobe --session gearbox render-image --output idler.png
 ```
+
+`view-frame` computes the camera that tightly fits a component's bounds and persists it like
+`view-orbit`, so a following `render-image` fills the frame with an isolated part instead of
+inheriting a camera framed for the whole assembly. The `--focus` option on the `view-*`
+commands is a projection diagnostic (it reports where components land in the image); it never
+moves the camera.
 
 Normal output is a short receipt containing the result and state paths. Add `--json` or
 `--yaml` for a machine-readable receipt, or `--raw` when the full operation result is actually

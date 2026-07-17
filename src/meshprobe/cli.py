@@ -66,6 +66,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -592,6 +593,13 @@ def _request_id(operation: str) -> str:
     return f"{operation}-{uuid.uuid4().hex[:12]}"
 
 
+_FOCUS_DIAGNOSTIC_HELP = (
+    "Component ref, stable ID, exact name, exact path, or glob to report projected image "
+    "bounds for (camera diagnostics only). This does NOT move or reframe the camera; use "
+    "view-frame to frame a component."
+)
+
+
 def _distance_mm(value: str | None) -> float:
     if value is None:
         return 0.0
@@ -868,7 +876,7 @@ def view_set(
     camera_json: Annotated[str, typer.Option("--camera-json")],
     focus: Annotated[
         list[str] | None,
-        typer.Option("--focus", help="Component ref, stable ID, exact name, exact path, or glob."),
+        typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
     aperture_fstop: Annotated[float | None, typer.Option("--aperture-fstop", min=0.000001)] = None,
@@ -939,7 +947,7 @@ def view_orbit(
     ] = 0.0,
     focus: Annotated[
         list[str] | None,
-        typer.Option("--focus", help="Component ref, stable ID, exact name, exact path, or glob."),
+        typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
@@ -975,6 +983,74 @@ def view_orbit(
     )
 
 
+@app.command("view-frame")
+def view_frame(
+    ctx: typer.Context,
+    components: Annotated[
+        list[str],
+        typer.Argument(
+            help="Component refs, stable IDs, exact names, or exact paths to frame tightly."
+        ),
+    ],
+    azimuth: Annotated[
+        float,
+        typer.Option("--azimuth", help="Absolute degrees from +X toward +Y about world +Z."),
+    ] = 45.0,
+    elevation: Annotated[
+        float,
+        typer.Option("--elevation", help="Absolute degrees above the world XY plane toward +Z."),
+    ] = 30.0,
+    roll: Annotated[
+        float,
+        typer.Option("--roll", help="Signed right-hand-rule degrees around the forward axis."),
+    ] = 0.0,
+    margin: Annotated[
+        float,
+        typer.Option(
+            "--margin",
+            min=0.01,
+            help="Padding factor around the bounds; 1.0 is a tight fit, higher zooms out.",
+        ),
+    ] = 1.25,
+    projection_json: Annotated[
+        str | None,
+        typer.Option(
+            "--projection-json",
+            help="Perspective or orthographic projection; a standard 50mm perspective by default.",
+        ),
+    ] = None,
+    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+) -> None:
+    """Frame the camera tightly on one or more components.
+
+    Computes the target, distance, and projection that fit the selected components' world
+    bounds from an absolute azimuth/elevation, then persists that camera like view-orbit.
+    This is the auto-framing render-sheet applies internally, exposed as a one-shot camera
+    move so an isolated component actually fills a following render-image.
+    """
+
+    if projection_json is not None:
+        from pydantic import TypeAdapter
+
+        projection: Projection = TypeAdapter(Projection).validate_json(projection_json)
+    else:
+        projection = PerspectiveProjection()
+    _execute(
+        ctx,
+        ViewFrameCommand(
+            request_id=_request_id("view-frame"),
+            op="view.frame",
+            focus_component_ids=_component_ids(ctx, components),
+            azimuth_degrees=azimuth,
+            elevation_degrees=elevation,
+            roll_degrees=roll,
+            margin=margin,
+            projection=projection,
+            aspect_ratio=aspect_ratio,
+        ),
+    )
+
+
 @app.command("view-move")
 def view_move(
     ctx: typer.Context,
@@ -994,7 +1070,7 @@ def view_move(
     forward: Annotated[
         str | None, typer.Option("--forward", help="Camera-forward delta (mm, cm, or m).")
     ] = None,
-    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    focus: Annotated[list[str] | None, typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP)] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
     """Move the current camera by world- and camera-frame deltas.
@@ -1068,7 +1144,7 @@ def view_rotate(
             help="Right-handed orthonormal basis JSON with x, y, and z vectors.",
         ),
     ] = None,
-    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    focus: Annotated[list[str] | None, typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP)] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
     """Show the visual equivalent of rotating the model around a basis axis.

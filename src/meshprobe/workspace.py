@@ -48,6 +48,7 @@ STATE_OPERATIONS = frozenset(
     {
         "view.set",
         "view.orbit",
+        "view.frame",
         "view.move",
         "view.rotate",
         "illumination.set",
