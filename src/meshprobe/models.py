@@ -758,7 +758,7 @@ class ResolvedDepthOfField(ContractModel):
 
 
 class RenderManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     width: Annotated[int, Field(ge=64, le=16_384)]
@@ -862,7 +862,7 @@ class OcclusionEvidence(ContractModel):
 
 
 class ContactSheetManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()

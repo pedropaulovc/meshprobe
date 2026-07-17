@@ -10,6 +10,7 @@ from meshprobe.models import (
     AreaLight,
     Bounds,
     ComponentVisualState,
+    ContactSheetManifest,
     CustomIllumination,
     DepthOfField,
     EnvironmentMap,
@@ -528,6 +529,14 @@ def test_shaded_edges_style_rejects_duplicate_or_empty_edge_types() -> None:
         ShadedEdgesStyle(edge_types=())
     with pytest.raises(ValidationError, match="must be unique"):
         ShadedEdgesStyle(edge_types=("crease", "crease"))
+
+
+def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
+    render_schema = RenderManifest.model_json_schema()["properties"]["schema_version"]
+    sheet_schema = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
+
+    assert render_schema["const"] == 2
+    assert sheet_schema["const"] == 2
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:
