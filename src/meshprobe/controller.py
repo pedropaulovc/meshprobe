@@ -883,6 +883,9 @@ class BlenderController:
         initial = measure()
         before = float(initial["visible_fraction"])
         after = before
+        visible_pixels_before = int(initial["visible_pixels"])
+        visible_pixels_after = visible_pixels_before
+        isolated_pixels = int(initial["isolated_pixels"])
         steps: list[OccluderRemovalStep] = []
         sample_count = 0
         stop_reason: Literal[
@@ -921,6 +924,8 @@ class BlenderController:
                 )
                 measured = measure()
                 after = float(measured["visible_fraction"])
+                visible_pixels_after = int(measured["visible_pixels"])
+                isolated_pixels = int(measured["isolated_pixels"])
                 component = self._component(component_id)
                 steps.append(
                     OccluderRemovalStep(
@@ -928,6 +933,7 @@ class BlenderController:
                         display_name=component.display_name,
                         component_path=component.path,
                         ray_hit_count=int(blocker["blocked_rays"]),
+                        visible_pixel_count_after=visible_pixels_after,
                         visible_fraction_after=after,
                     )
                 )
@@ -938,6 +944,9 @@ class BlenderController:
             visibility_threshold=command.visibility_threshold,
             removal_budget=command.occluder_budget,
             sample_count=sample_count,
+            visible_pixel_count_before=visible_pixels_before,
+            visible_pixel_count_after=visible_pixels_after,
+            isolated_pixel_count=isolated_pixels,
             visible_fraction_before=before,
             visible_fraction_after=after,
             steps=tuple(steps),

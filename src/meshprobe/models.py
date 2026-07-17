@@ -844,15 +844,47 @@ class OccluderRemovalStep(ContractModel):
     display_name: Identifier
     component_path: Identifier
     ray_hit_count: Annotated[int, Field(ge=1)]
+    visible_pixel_count_after: Annotated[int, Field(ge=0)]
     visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
 
 class OcclusionEvidence(ContractModel):
     visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
     removal_budget: Annotated[int, Field(ge=0, le=32)]
-    sample_count: Annotated[int, Field(ge=0)]
-    visible_fraction_before: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    sample_count: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Mesh vertex and centroid rays used only to rank blocking components.",
+        ),
+    ]
+    visible_pixel_count_before: Annotated[int, Field(ge=0)]
+    visible_pixel_count_after: Annotated[int, Field(ge=0)]
+    isolated_pixel_count: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Focus-mask pixels rendered in isolation; the visibility denominator.",
+        ),
+    ]
+    visible_fraction_before: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Visible focus-mask pixels divided by isolated focus-mask pixels.",
+        ),
+    ]
+    visible_fraction_after: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Recomputed pixel visibility after all reported removal steps.",
+        ),
+    ]
     steps: tuple[OccluderRemovalStep, ...] = ()
     stop_reason: Literal[
         "threshold_met_initial",
@@ -862,9 +894,51 @@ class OcclusionEvidence(ContractModel):
         "focus_not_projected",
     ]
 
+    @model_validator(mode="after")
+    def validate_visibility_progression(self) -> Self:
+        denominator = self.isolated_pixel_count
+        if self.visible_pixel_count_before > denominator:
+            raise ValueError("visible pixels before removal cannot exceed isolated pixels")
+        if self.visible_pixel_count_after > denominator:
+            raise ValueError("visible pixels after removal cannot exceed isolated pixels")
+        expected_before = self.visible_pixel_count_before / denominator if denominator else 0.0
+        expected_after = self.visible_pixel_count_after / denominator if denominator else 0.0
+        if not math.isclose(self.visible_fraction_before, expected_before, abs_tol=1e-12):
+            raise ValueError("visible fraction before removal must match pixel counts")
+        if not math.isclose(self.visible_fraction_after, expected_after, abs_tol=1e-12):
+            raise ValueError("visible fraction after removal must match pixel counts")
+        if self.visible_pixel_count_after < self.visible_pixel_count_before:
+            raise ValueError("occluder removal cannot reduce visible focus pixels")
+
+        previous_count = self.visible_pixel_count_before
+        for step in self.steps:
+            if step.visible_pixel_count_after < previous_count:
+                raise ValueError("occluder removal steps must not reduce visible focus pixels")
+            if step.visible_pixel_count_after > denominator:
+                raise ValueError("step visible pixels cannot exceed isolated pixels")
+            expected_step = step.visible_pixel_count_after / denominator if denominator else 0.0
+            if not math.isclose(step.visible_fraction_after, expected_step, abs_tol=1e-12):
+                raise ValueError("step visible fraction must match pixel counts")
+            previous_count = step.visible_pixel_count_after
+        if self.steps:
+            last = self.steps[-1]
+            if last.visible_pixel_count_after != self.visible_pixel_count_after or not math.isclose(
+                last.visible_fraction_after,
+                self.visible_fraction_after,
+                abs_tol=1e-12,
+            ):
+                raise ValueError("last removal step must match final visibility")
+        elif self.visible_pixel_count_after != self.visible_pixel_count_before or not math.isclose(
+            self.visible_fraction_after,
+            self.visible_fraction_before,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("visibility cannot change without a removal step")
+        return self
+
 
 class ContactSheetManifest(ContractModel):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()

@@ -2609,3 +2609,48 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     assert visibility_before["visible_fraction"] < visibility_after["visible_fraction"]
     assert visibility_after["visible_fraction"] == pytest.approx(1)
     assert cleared["occluders"] == []
+
+
+def test_occlusion_evidence_steps_match_strict_blender_visibility_gain(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=30, artifact_cache_root=tmp_path / "cache"
+    ) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="evidence-view",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=8_000,
+                projection=OrthographicProjection(scale_mm=3_000),
+                focus_component_ids=(target.id,),
+                aspect_ratio=1,
+            )
+        )
+        evidence = controller._remove_occluders(
+            RenderContactSheetCommand(
+                request_id="evidence",
+                op="render.contact_sheet",
+                output_path=str(tmp_path / "unused.png"),
+                focus_component_ids=(target.id,),
+                panel_width=128,
+                panel_height=128,
+                samples=1,
+                visibility_threshold=0.9,
+                occluder_budget=1,
+                graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED,
+            ),
+            (target.id,),
+        )
+
+    assert evidence.visible_pixel_count_after > evidence.visible_pixel_count_before
+    assert evidence.visible_fraction_after > evidence.visible_fraction_before
+    assert evidence.steps
+    assert evidence.steps[-1].visible_pixel_count_after == evidence.visible_pixel_count_after
+    assert evidence.steps[-1].visible_fraction_after == evidence.visible_fraction_after

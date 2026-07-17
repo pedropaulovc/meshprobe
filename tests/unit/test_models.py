@@ -15,6 +15,8 @@ from meshprobe.models import (
     DepthOfField,
     EnvironmentMap,
     MarkMode,
+    OccluderRemovalStep,
+    OcclusionEvidence,
     OrthographicProjection,
     OrthonormalBasis,
     PerspectiveProjection,
@@ -30,13 +32,71 @@ from meshprobe.models import (
 )
 
 
-def test_contact_sheet_contract_uses_named_occluder_schema() -> None:
+def test_contact_sheet_contract_versions_pixel_visibility_schema() -> None:
     schema_version = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
 
-    assert schema_version["const"] == 3
-    assert schema_version["default"] == 3
-    with pytest.raises(ValidationError, match="Input should be 3"):
-        ContactSheetManifest.model_validate({"schema_version": 2})
+    assert schema_version["const"] == 4
+    assert schema_version["default"] == 4
+    with pytest.raises(ValidationError, match="Input should be 4"):
+        ContactSheetManifest.model_validate({"schema_version": 3})
+
+
+def test_occlusion_schema_distinguishes_ray_ranking_from_pixel_visibility() -> None:
+    properties = OcclusionEvidence.model_json_schema()["properties"]
+
+    assert "only to rank blocking components" in properties["sample_count"]["description"]
+    assert "visibility denominator" in properties["isolated_pixel_count"]["description"]
+    assert "divided by isolated" in properties["visible_fraction_before"]["description"]
+
+
+def occlusion_evidence(**updates: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "visibility_threshold": 0.9,
+        "removal_budget": 1,
+        "sample_count": 9,
+        "visible_pixel_count_before": 2,
+        "visible_pixel_count_after": 8,
+        "isolated_pixel_count": 10,
+        "visible_fraction_before": 0.2,
+        "visible_fraction_after": 0.8,
+        "steps": (
+            OccluderRemovalStep(
+                component_id="blocker",
+                display_name="blocker",
+                component_path="/blocker",
+                ray_hit_count=4,
+                visible_pixel_count_after=8,
+                visible_fraction_after=0.8,
+            ),
+        ),
+        "stop_reason": "budget_exhausted",
+    }
+    payload.update(updates)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"visible_fraction_before": 0.3}, "before removal must match"),
+        ({"visible_pixel_count_after": 11, "visible_fraction_after": 1.0}, "cannot exceed"),
+        ({"visible_pixel_count_after": 1, "visible_fraction_after": 0.1}, "cannot reduce"),
+        ({"visible_pixel_count_after": 7, "visible_fraction_after": 0.7}, "last removal step"),
+        (
+            {
+                "steps": (),
+                "visible_pixel_count_after": 8,
+                "visible_fraction_after": 0.8,
+            },
+            "without a removal step",
+        ),
+    ],
+)
+def test_occlusion_evidence_rejects_inconsistent_visibility(
+    updates: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        OcclusionEvidence.model_validate(occlusion_evidence(**updates))
 
 
 def render_session(state_sha256: str = "b" * 64) -> dict[str, object]:
@@ -545,7 +605,7 @@ def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
     sheet_schema = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
 
     assert render_schema["const"] == 2
-    assert sheet_schema["const"] == 3
+    assert sheet_schema["const"] == 4
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:
