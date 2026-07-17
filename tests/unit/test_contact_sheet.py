@@ -96,6 +96,52 @@ def test_compose_contact_sheet_wraps_long_single_line_caption(tmp_path: Path) ->
     assert Image.open(output).height > 324
 
 
+def test_compose_contact_sheet_preserves_default_occluder_removal_caption(
+    tmp_path: Path,
+) -> None:
+    default_budget = RenderContactSheetCommand.model_fields["occluder_budget"].default
+    callout = ContactSheetCallout(
+        number=1,
+        component_id="cmp_target",
+        label="target",
+        image_xy=(0.5, 0.5),
+    )
+
+    def occluder_caption(count: int) -> str:
+        names = tuple(f"blocker-{index}" for index in range(1, count + 1))
+        return "Occluders removed:\n" + "\n".join(
+            f"{index}. {name}" for index, name in enumerate(names, 1)
+        )
+
+    default_panel = RenderContactSheetCommand.model_fields["panel_width"].default
+
+    def build_sheet(name: str, count: int) -> Image.Image:
+        panels = []
+        for index in range(9):
+            path = tmp_path / f"{name}-panel-{index}.png"
+            Image.new("RGB", (8, 8), "black").save(path)
+            panels.append(
+                (
+                    path,
+                    occluder_caption(count) if index == 2 else "Panel",
+                    (callout,) if index == 2 else (),
+                )
+            )
+        output = tmp_path / f"{name}.png"
+        compose_contact_sheet(tuple(panels), output, default_panel, default_panel)
+        return Image.open(output)
+
+    # A legitimate default-sized "Occluders removed:" caption (header + one line
+    # per removed blocker, up to occluder_budget's default) must survive the
+    # per-band caption cap in full, uncapped by an unrelated callout legend
+    # sharing the same panel: rendering one fewer removed blocker must still
+    # shrink the composed sheet, proving the default budget's last line was not
+    # already being silently dropped by the cap.
+    at_default_budget = build_sheet("at-default", default_budget)
+    one_below_default_budget = build_sheet("below-default", default_budget - 1)
+    assert at_default_budget.height > one_below_default_budget.height
+
+
 def test_compose_contact_sheet_caps_caption_growth_at_default_panel_size(tmp_path: Path) -> None:
     long_label = "selected-component-" + "x" * 230
     callouts = tuple(

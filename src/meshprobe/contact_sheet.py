@@ -14,7 +14,8 @@ def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
 
 
-_MAX_CAPTION_LINES = 3
+_MAX_CAPTION_LINES = 4
+_MAX_LEGEND_LINES = 2
 
 
 def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
@@ -73,13 +74,20 @@ def compose_contact_sheet(
     for panel_index, (_path, caption, callouts) in enumerate(panels):
         numbered_caption = f"{panel_index + 1}. {caption}"
         caption_lines = _wrap_text(measuring_draw, numbered_caption, font, panel_width - 12)
-        lines = list(caption_lines)
+        # Cap the caption and the legend separately so a legitimate default-sized
+        # caption (e.g. the focused sheet's "Occluders removed:" header plus one
+        # line per removed blocker, up to occluder_budget's default of 3) is never
+        # truncated by an unrelated long callout legend; only each band's own
+        # pathological growth (a very long display name, a very long legend) gets
+        # truncated.
+        capped_caption_lines = _cap_lines(caption_lines, _MAX_CAPTION_LINES)
+        lines = list(capped_caption_lines)
         if callouts:
             legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
-            lines.extend(_wrap_text(measuring_draw, legend, font, panel_width - 12))
-        capped_lines = _cap_lines(tuple(lines), _MAX_CAPTION_LINES)
-        panel_caption_line_counts.append(min(len(caption_lines), len(capped_lines)))
-        panel_lines.append(capped_lines)
+            legend_lines = _wrap_text(measuring_draw, legend, font, panel_width - 12)
+            lines.extend(_cap_lines(legend_lines, _MAX_LEGEND_LINES))
+        panel_caption_line_counts.append(len(capped_caption_lines))
+        panel_lines.append(tuple(lines))
     row_caption_heights = tuple(
         max(
             minimum_caption_height,
