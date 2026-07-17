@@ -1495,6 +1495,16 @@ def test_global_and_subcommand_options_interleave_after_subcommand(
     assert isinstance(client.commands[-1], SceneOpenCommand)
 
 
+def test_eval_subcommand_version_is_not_hoisted_to_the_root_flag(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["eval", "generate", str(tmp_path), "--version", "cli-v1", "--seed-count", "1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["corpus_version"] == "cli-v1"
+
+
 def test_double_dash_keeps_a_global_flag_as_a_literal_pattern(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

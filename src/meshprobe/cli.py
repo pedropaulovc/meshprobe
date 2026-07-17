@@ -8,13 +8,19 @@ import subprocess
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 import yaml
 from pydantic import ValidationError
-from typer import _click
 from typer.core import TyperGroup
+
+if TYPE_CHECKING:
+    # Typer vendors its Click as ``typer._click``; used only to match the
+    # overridden ``TyperGroup.parse_args`` signature for the type checker. It is
+    # never imported at runtime, so Typer releases that predate the vendored
+    # module still import cleanly.
+    from typer import _click
 
 from meshprobe.client import MeshProbeClient
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
@@ -106,6 +112,12 @@ class GlobalOptionGroup(TyperGroup):
     ``--session``/``--workspace``/``--json``/``--yaml``/``--raw`` work in either
     position (issue #48). Argv is returned untouched when nothing moves, so
     existing before-subcommand usage is unaffected.
+
+    Only leaf subcommands are eligible: a nested group (``eval``) is left
+    untouched, since its trailing options belong to a leaf we do not enumerate
+    here and could share a name with a root global (e.g. ``eval generate
+    --version`` vs the root ``--version``); those subcommands do not consume the
+    global receipt/session options anyway.
     """
 
     def parse_args(self, ctx: _click.Context, args: list[str]) -> list[str]:
@@ -118,6 +130,8 @@ class GlobalOptionGroup(TyperGroup):
             return args
         command = args[command_index]
         subcommand = self.get_command(ctx, command)
+        if subcommand is None or hasattr(subcommand, "get_command"):
+            return args
         subcommand_names, subcommand_value_names = self._option_names(subcommand, ctx)
         hoisted, trailing = self._split_global_options(
             args[command_index + 1 :],
