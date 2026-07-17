@@ -1,25 +1,78 @@
-name: Publish to PyPI
+name: Release & Publish
 
 on:
-  release:
-    types: [published]
-
-permissions:
-  contents: read
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 jobs:
+  # Keep publishing and GitHub Release creation in one job. PyPI is the gating
+  # step, so a green run means the package is live and no GitHub Release exists
+  # for a version that failed to publish.
   publish:
     runs-on: ubuntu-latest
     environment: pypi
-
     permissions:
-      contents: read
+      contents: write
       id-token: write
-
     steps:
       - uses: actions/checkout@v7
+
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.12"
+
+      - run: uv sync --locked --all-groups
+
+      - run: uv run ruff format --check .
+
+      - run: uv run ruff check .
+
+      - run: uv run mypy src
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject.toml version matches tag
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_VERSION=$(uv version --short)
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "::error::pyproject.toml version ($PACKAGE_VERSION) does not match tag version ($VERSION)"
+            exit 1
+          fi
+          echo "pyproject.toml version matches tag"
+
+      - name: Extract changelog for version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHANGELOG=$(awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { flag=1; next }
+            /^## \[/ { flag=0 }
+            flag
+          ' CHANGELOG.md)
+          if [ -z "$CHANGELOG" ]; then
+            echo "::error::CHANGELOG.md does not contain an entry for version $VERSION"
+            echo "Add a '## [$VERSION] - YYYY-MM-DD' section to CHANGELOG.md"
+            exit 1
+          fi
+          echo "$CHANGELOG" > changelog_body.md
+
       - run: uv build
-      - run: uv publish --trusted-publishing always
+
+      - name: Publish to PyPI
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            --check-url https://pypi.org/simple
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body_path: changelog_body.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'a') || contains(steps.version.outputs.version, 'b') || contains(steps.version.outputs.version, 'rc') || contains(steps.version.outputs.version, '.dev') }}
