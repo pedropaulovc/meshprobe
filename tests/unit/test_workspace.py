@@ -129,7 +129,10 @@ def test_session_manager_writes_compact_queryable_state(
     assert changed.components[0].name == "retaining clip"
     assert changed.components[0].path == "assembly/cover/clip"
     assert state["components"]["default"] == {"display": "shown", "mark": "unmarked"}
-    assert state["components"]["overrides"]["c2"] == {"display": "hidden"}
+    assert state["components"]["overrides"]["c2"] == {
+        "name": "retaining clip",
+        "display": "hidden",
+    }
     expected_azimuth, expected_elevation = orbit_angles_from_orientation(
         tuple(state["camera"]["pose"]["orientation_xyzw"])
     )
