@@ -1146,6 +1146,50 @@ def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_pat
     assert after["components"][target] == before["components"][target]
 
 
+def test_worker_rejects_invalid_mark_without_mutation_and_still_renders(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "after-invalid-mark.png"
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        before_runtime = controller.request("session.runtime")
+
+        invalid_commands = (
+            {"component_ids": list(before["components"]), "mode": "unmarked", "color": "#ff00ff"},
+            {
+                "component_ids": list(before["components"]),
+                "mode": "highlighted",
+                "color": "magenta",
+            },
+            {
+                "component_ids": list(before["components"]),
+                "mode": "highlighted",
+                "color": [255, 0, 255],
+            },
+        )
+        for arguments in invalid_commands:
+            with pytest.raises(BlenderWorkerError, match="color"):
+                controller.request("component.mark", **arguments)
+            assert controller.request("session.snapshot")["session"] == before
+            assert controller.request("session.runtime") == before_runtime
+
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-after-invalid-mark",
+                op="render.image",
+                output_path=str(output),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.session.state_sha256 == before["state_sha256"]
+    assert output.is_file()
+
+
 def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     corrupt = tmp_path / "corrupt.glb"

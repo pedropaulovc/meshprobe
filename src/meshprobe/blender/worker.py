@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import struct
 import sys
@@ -31,6 +32,7 @@ MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
+MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MARK_COLORS = {
     "selected": (0.05, 0.8, 1.0, 1.0),
     "highlighted": (1.0, 0.2, 0.02, 1.0),
@@ -1121,11 +1123,16 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
     if mode not in MARK_MODES:
         raise ValueError(f"unknown mark mode: {mode}")
     color = command.get("color")
-    if color is not None:
-        color = color.lower()
+    if color is not None and mode == "unmarked":
+        raise ValueError("color requires a visible mark mode")
+    if color is not None and (
+        not isinstance(color, str) or MARK_COLOR_PATTERN.fullmatch(color) is None
+    ):
+        raise ValueError("color must use sRGB #RRGGBB form")
+    canonical_color = color.lower() if color is not None else None
     for component_id in selected:
         COMPONENT_STATES[component_id]["mark"] = mode
-        COMPONENT_STATES[component_id]["mark_color"] = color
+        COMPONENT_STATES[component_id]["mark_color"] = canonical_color
         refresh_component_appearance(component_id)
     return session_snapshot()
 
