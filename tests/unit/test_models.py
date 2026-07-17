@@ -16,10 +16,14 @@ from meshprobe.models import (
     MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
+    PointLight,
     Pose,
     RenderManifest,
     SceneManifest,
     SensorFit,
+    SpotLight,
+    SunLight,
+    VisibleBackgroundMode,
 )
 
 
@@ -134,6 +138,43 @@ def test_custom_illumination_requires_one_color_source() -> None:
         )
 
 
+def test_light_and_environment_intensities_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="greater than 0"):
+        AreaLight(
+            id="area",
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            power_w=0,
+            size_mm=50,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        PointLight(
+            id="point",
+            position_mm=(1, 2, 3),
+            power_w=0,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SpotLight(
+            id="spot",
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            power_w=0,
+            spot_size_degrees=45,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SunLight(
+            id="sun",
+            orientation_xyzw=(0, 0, 0, 1),
+            strength=0,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        EnvironmentMap(path="studio.exr", sha256="a" * 64, strength=0)
+
+
 def test_custom_illumination_rejects_duplicate_ids() -> None:
     light = AreaLight(
         id="key",
@@ -168,21 +209,45 @@ def test_custom_illumination_rejects_zero_effective_output() -> None:
         )
 
 
-def test_custom_illumination_accepts_effective_background() -> None:
-    black_light = AreaLight(
-        id="black",
-        position_mm=(1, 2, 3),
-        orientation_xyzw=(0, 0, 0, 1),
-        power_w=100,
-        size_mm=50,
-        linear_rgb=(0, 0, 0),
-    )
+def test_custom_illumination_rejects_camera_only_background() -> None:
+    with pytest.raises(ValidationError, match="non-zero light output"):
+        CustomIllumination(
+            background_rgb=(0.1, 0, 0),
+            background_strength=0.5,
+            ambient_rgb=(0, 0, 0),
+            ambient_strength=0,
+        )
+
+
+def test_custom_illumination_derives_omitted_split_fields() -> None:
     illumination = CustomIllumination(
-        background_rgb=(0.1, 0, 0),
-        ambient_strength=0.5,
-        lights=(black_light,),
+        background_rgb=(0.03, 0.03, 0.04),
+        ambient_strength=0.18,
     )
-    assert illumination.ambient_strength == 0.5
+
+    assert illumination.background_strength == 0.18
+    assert illumination.ambient_rgb == (0.03, 0.03, 0.04)
+    assert illumination.visible_background_mode is VisibleBackgroundMode.COLOR
+
+
+def test_custom_illumination_records_background_and_ambient_separately() -> None:
+    illumination = CustomIllumination(
+        background_rgb=(1, 1, 1),
+        background_strength=1,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        ambient_strength=0.15,
+    )
+
+    assert illumination.model_dump(mode="json") == {
+        "preset": "custom",
+        "background_rgb": [1.0, 1.0, 1.0],
+        "background_strength": 1.0,
+        "ambient_rgb": [0.1, 0.2, 0.3],
+        "ambient_strength": 0.15,
+        "lights": [],
+        "environment_map": None,
+        "visible_background_mode": "color",
+    }
 
 
 def test_custom_illumination_accepts_content_addressed_environment_only() -> None:
@@ -200,6 +265,28 @@ def test_custom_illumination_accepts_content_addressed_environment_only() -> Non
     assert illumination.lights == ()
     assert illumination.environment_map is not None
     assert illumination.environment_map.projection == "equirectangular"
+    assert illumination.visible_background_mode is VisibleBackgroundMode.ENVIRONMENT
+
+
+def test_custom_illumination_accepts_explicit_color_background_with_environment() -> None:
+    illumination = CustomIllumination(
+        background_rgb=(0.1, 0.2, 0.3),
+        background_strength=0.5,
+        ambient_strength=0,
+        environment_map=EnvironmentMap(path="studio.exr", sha256="a" * 64),
+        visible_background_mode=VisibleBackgroundMode.COLOR,
+    )
+
+    assert illumination.visible_background_mode is VisibleBackgroundMode.COLOR
+
+
+def test_custom_illumination_rejects_environment_background_without_map() -> None:
+    with pytest.raises(ValidationError, match="requires an environment map"):
+        CustomIllumination(
+            background_rgb=(0.1, 0.2, 0.3),
+            ambient_strength=0.5,
+            visible_background_mode=VisibleBackgroundMode.ENVIRONMENT,
+        )
 
 
 def test_custom_illumination_rejects_no_lights_background_or_environment() -> None:

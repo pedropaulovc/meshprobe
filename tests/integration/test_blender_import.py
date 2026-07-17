@@ -38,6 +38,7 @@ from meshprobe.models import (
     RenderEngine,
     RenderManifest,
     SessionSnapshot,
+    VisibleBackgroundMode,
 )
 from meshprobe.protocol import (
     ComponentDisplayCommand,
@@ -995,6 +996,30 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert isinstance(lit, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-rake"]
 
+        white_preset = controller.execute(
+            IlluminationSetCommand(
+                request_id="white-preset",
+                op="illumination.set",
+                illumination=PresetIllumination(
+                    preset=IlluminationPreset.NEUTRAL_STUDIO,
+                    background_rgb=(1, 1, 1),
+                ),
+            )
+        )
+        white_preset_runtime = controller.request("session.runtime")
+        assert isinstance(white_preset.illumination, PresetIllumination)
+        assert white_preset.illumination.background_rgb == (1, 1, 1)
+        assert white_preset.illumination.background_strength == 1
+        assert white_preset_runtime["lights"] == [
+            "MeshProbe-fill",
+            "MeshProbe-key",
+            "MeshProbe-rim",
+        ]
+        assert white_preset_runtime["world"]["background_rgb"] == pytest.approx([1, 1, 1])
+        assert white_preset_runtime["world"]["background_strength"] == pytest.approx(1)
+        assert white_preset_runtime["world"]["ambient_rgb"] == pytest.approx([0.03, 0.03, 0.03])
+        assert white_preset_runtime["world"]["ambient_strength"] == pytest.approx(0.15)
+
         custom = controller.execute(
             IlluminationSetCommand(
                 request_id="custom-light",
@@ -1016,7 +1041,55 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         assert isinstance(custom, SessionSnapshot)
-        assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
+        custom_runtime = controller.request("session.runtime")
+        assert isinstance(custom.illumination, CustomIllumination)
+        assert custom.illumination.background_strength == pytest.approx(0.1)
+        assert custom.illumination.ambient_rgb == pytest.approx((0.01, 0.02, 0.03))
+        assert custom_runtime["lights"] == ["MeshProbe-inspection"]
+        assert custom_runtime["world"]["background_rgb"] == pytest.approx([0.01, 0.02, 0.03])
+        assert custom_runtime["world"]["background_strength"] == pytest.approx(0.1)
+        assert custom_runtime["world"]["ambient_rgb"] == pytest.approx([0.01, 0.02, 0.03])
+        assert custom_runtime["world"]["ambient_strength"] == pytest.approx(0.1)
+
+        raw_custom = SessionSnapshot.model_validate(
+            controller.request(
+                "illumination.set",
+                illumination={
+                    "preset": "custom",
+                    "background_rgb": [0.07, 0.08, 0.09],
+                    "ambient_strength": 0.23,
+                },
+            )
+        )
+        raw_runtime = controller.request("session.runtime")["world"]
+        assert isinstance(raw_custom.illumination, CustomIllumination)
+        assert raw_custom.illumination.background_strength == pytest.approx(0.23)
+        assert raw_custom.illumination.ambient_rgb == pytest.approx((0.07, 0.08, 0.09))
+        assert raw_runtime["background_rgb"] == pytest.approx([0.07, 0.08, 0.09])
+        assert raw_runtime["background_strength"] == pytest.approx(0.23)
+        assert raw_runtime["ambient_rgb"] == pytest.approx([0.07, 0.08, 0.09])
+        assert raw_runtime["ambient_strength"] == pytest.approx(0.23)
+
+        separated = controller.execute(
+            IlluminationSetCommand(
+                request_id="separated-background",
+                op="illumination.set",
+                illumination=CustomIllumination(
+                    background_rgb=(1, 1, 1),
+                    background_strength=1,
+                    ambient_rgb=(0.1, 0.2, 0.3),
+                    ambient_strength=0.15,
+                ),
+            )
+        )
+        runtime_world = controller.request("session.runtime")["world"]
+        assert isinstance(separated.illumination, CustomIllumination)
+        assert separated.illumination.background_rgb == (1, 1, 1)
+        assert separated.illumination.ambient_rgb == (0.1, 0.2, 0.3)
+        assert runtime_world["background_rgb"] == pytest.approx([1, 1, 1])
+        assert runtime_world["background_strength"] == pytest.approx(1)
+        assert runtime_world["ambient_rgb"] == pytest.approx([0.1, 0.2, 0.3])
+        assert runtime_world["ambient_strength"] == pytest.approx(0.15)
 
         environment_lit = controller.execute(
             IlluminationSetCommand(
@@ -1036,12 +1109,157 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert isinstance(environment_lit, SessionSnapshot)
         assert isinstance(environment_lit.illumination, CustomIllumination)
+        assert (
+            environment_lit.illumination.visible_background_mode
+            is VisibleBackgroundMode.ENVIRONMENT
+        )
         cached_environment = environment_lit.illumination.environment_map
         assert cached_environment is not None
         assert cached_environment.path != str(environment_path)
         environment_runtime = controller.request("session.runtime")["environment_map"]
+        environment_world = controller.request("session.runtime")["world"]
         assert environment_runtime["path"] == cached_environment.path
         assert environment_runtime["projection"] == "EQUIRECTANGULAR"
+        assert environment_world["visible_background_mode"] == "environment"
+        assert environment_world["camera_background_source"] == "MeshProbeEnvironmentLighting"
+
+        raw_environment_spec = environment_lit.illumination.model_dump(mode="json")
+        raw_environment_spec.pop("visible_background_mode")
+        raw_environment = SessionSnapshot.model_validate(
+            controller.request("illumination.set", illumination=raw_environment_spec)
+        )
+        raw_environment_world = controller.request("session.runtime")["world"]
+        assert isinstance(raw_environment.illumination, CustomIllumination)
+        assert (
+            raw_environment.illumination.visible_background_mode
+            is VisibleBackgroundMode.ENVIRONMENT
+        )
+        assert raw_environment_world["visible_background_mode"] == "environment"
+        assert raw_environment_world["camera_background_source"] == "MeshProbeEnvironmentLighting"
+
+        raw_environment_spec.update(
+            {
+                "background_rgb": [0.2, 0.3, 0.4],
+                "background_strength": 0.6,
+                "visible_background_mode": "color",
+            }
+        )
+        color_backdrop = SessionSnapshot.model_validate(
+            controller.request("illumination.set", illumination=raw_environment_spec)
+        )
+        color_world = controller.request("session.runtime")["world"]
+        assert isinstance(color_backdrop.illumination, CustomIllumination)
+        assert color_backdrop.illumination.visible_background_mode is VisibleBackgroundMode.COLOR
+        assert color_world["visible_background_mode"] == "color"
+        assert color_world["camera_background_source"] == "MeshProbeVisibleBackground"
+
+        before_camera_only_session = controller.request("session.snapshot")["session"]
+        before_camera_only_runtime = controller.request("session.runtime")
+        with pytest.raises(BlenderWorkerError, match="non-zero light output"):
+            controller.request(
+                "illumination.set",
+                illumination={
+                    "preset": "custom",
+                    "background_rgb": [1, 1, 1],
+                    "background_strength": 1,
+                    "ambient_rgb": [0, 0, 0],
+                    "ambient_strength": 0,
+                    "visible_background_mode": "color",
+                    "lights": [],
+                    "environment_map": None,
+                },
+            )
+        assert controller.request("session.snapshot")["session"] == before_camera_only_session
+        assert controller.request("session.runtime") == before_camera_only_runtime
+
+        zero_strength_environment = cached_environment.model_dump(mode="json")
+        zero_strength_environment["strength"] = 0
+        zero_intensity_sources = (
+            {
+                "lights": [
+                    {
+                        "id": "zero-area",
+                        "type": "area",
+                        "position_mm": [1, 2, 3],
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "power_w": 0,
+                        "size_mm": 50,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-point",
+                        "type": "point",
+                        "position_mm": [1, 2, 3],
+                        "power_w": 0,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-spot",
+                        "type": "spot",
+                        "position_mm": [1, 2, 3],
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "power_w": 0,
+                        "spot_size_degrees": 45,
+                        "blend": 0.15,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-sun",
+                        "type": "sun",
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "strength": 0,
+                        "angle_degrees": 0.526,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {"lights": [], "environment_map": zero_strength_environment},
+        )
+        for zero_intensity_source in zero_intensity_sources:
+            with pytest.raises(BlenderWorkerError, match="non-zero light output"):
+                controller.request(
+                    "illumination.set",
+                    illumination={
+                        "preset": "custom",
+                        "background_rgb": [1, 1, 1],
+                        "background_strength": 1,
+                        "ambient_rgb": [0, 0, 0],
+                        "ambient_strength": 0,
+                        "visible_background_mode": "color",
+                        **zero_intensity_source,
+                    },
+                )
+            assert controller.request("session.snapshot")["session"] == before_camera_only_session
+            assert controller.request("session.runtime") == before_camera_only_runtime
+
+        with pytest.raises(BlenderWorkerError, match="requires an environment map"):
+            controller.request(
+                "illumination.set",
+                illumination={
+                    "preset": "custom",
+                    "background_rgb": [0.2, 0.3, 0.4],
+                    "ambient_strength": 0.1,
+                    "visible_background_mode": "environment",
+                    "lights": [],
+                    "environment_map": None,
+                },
+            )
         assert hashlib.sha256(environment_path.read_bytes()).hexdigest() == environment_hash
         original_path_spec = environment_lit.illumination.model_dump(mode="json")
         original_path_spec["environment_map"]["path"] = str(environment_path)

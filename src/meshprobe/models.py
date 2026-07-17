@@ -297,8 +297,17 @@ class IlluminationPreset(StrEnum):
     FLAT_DIAGNOSTIC = "flat_diagnostic"
 
 
+class VisibleBackgroundMode(StrEnum):
+    ENVIRONMENT = "environment"
+    COLOR = "color"
+
+
 class PresetIllumination(ContractModel):
     preset: IlluminationPreset
+    background_rgb: (
+        tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] | None
+    ) = None
+    background_strength: NonNegativeFiniteFloat | None = None
 
 
 class EnvironmentMap(ContractModel):
@@ -313,8 +322,21 @@ class CustomIllumination(ContractModel):
     preset: Literal["custom"] = "custom"
     background_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat]
     ambient_strength: NonNegativeFiniteFloat
+    background_strength: NonNegativeFiniteFloat = Field(
+        default_factory=lambda data: data["ambient_strength"]
+    )
+    ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
+        Field(default_factory=lambda data: data["background_rgb"])
+    )
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
+    visible_background_mode: VisibleBackgroundMode = Field(
+        default_factory=lambda data: (
+            VisibleBackgroundMode.ENVIRONMENT
+            if data["environment_map"] is not None
+            else VisibleBackgroundMode.COLOR
+        )
+    )
 
     @field_validator("lights")
     @classmethod
@@ -326,14 +348,30 @@ class CustomIllumination(ContractModel):
 
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
-        background_contributes = self.ambient_strength > 0 and any(self.background_rgb)
-        environment_contributes = self.environment_map is not None
+        if (
+            self.visible_background_mode is VisibleBackgroundMode.ENVIRONMENT
+            and self.environment_map is None
+        ):
+            raise ValueError("environment visible background requires an environment map")
+        ambient_contributes = self.ambient_strength > 0 and any(self.ambient_rgb)
+        environment_contributes = (
+            self.environment_map is not None and self.environment_map.strength > 0
+        )
         light_contributes = any(
-            light.color_temperature_k is not None
-            or (light.linear_rgb is not None and any(light.linear_rgb))
+            (light.strength if isinstance(light, SunLight) else light.power_w) > 0
+            and (
+                light.color_temperature_k is not None
+                or (light.linear_rgb is not None and any(light.linear_rgb))
+            )
             for light in self.lights
         )
-        if not background_contributes and not light_contributes and not environment_contributes:
+        if not any(
+            (
+                ambient_contributes,
+                light_contributes,
+                environment_contributes,
+            )
+        ):
             raise ValueError("custom illumination must have non-zero light output")
         return self
 
