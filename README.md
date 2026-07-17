@@ -202,14 +202,21 @@ report hash in `clean-install-report.json`.
 To migrate existing local datasets without regenerating geometry or task identities:
 
 ```bash
-uv run meshprobe eval migrate .corpora/procedural-v6 .corpora --version procedural-v7
-uv run meshprobe eval migrate .corpora/curated-tasks-v6 .corpora \
-  --version curated-tasks-v7
-uv run meshprobe eval migrate .corpora/qualification-v7 .corpora \
-  --version qualification-v8
-uv run meshprobe eval migrate .corpora/private-v8 .corpora \
-  --version private-v9 --opaque-family opaque_family_v9
+uv run meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v6
+uv run meshprobe eval migrate .corpora/curated-tasks-v5 .corpora \
+  --version curated-tasks-v6
+uv run meshprobe eval migrate .corpora/qualification-v6 .corpora \
+  --version qualification-v7
+uv run meshprobe eval migrate .corpora/private-v7 .corpora \
+  --version private-v8 --opaque-family opaque_family_v8
 ```
+
+`eval migrate` only accepts a schema-1 or schema-2 source (it upgrades the manifest
+shape itself); `qualification-v7` and its inputs are already schema-3, so migrating
+past them into the new `-v7`/`-v8` names above is not this command's job. To land on
+`procedural-v7`, `curated-tasks-v7`, or `qualification-v8` instead, regenerate a fresh
+corpus with `eval generate`/`eval curated-generate`/`eval merge`/`eval pin` (the
+release-corpus commands earlier in this section) rather than `eval migrate`.
 
 `eval audit-migration` verifies that model hashes, episode IDs, evaluator truth, and the
 full-investigation operation contract survived the migration. Schema-v1 corpora are rejected
