@@ -769,9 +769,13 @@ def view_orbit(
 ) -> None:
     """Set an absolute orbit in right-handed, Z-up MeshProbe world coordinates.
 
-    Angles are degrees, not relative deltas. Positive azimuth follows the right-hand rule
-    around +Z. GLTF is right-handed and Y-up; scene.open reports the exact source_to_world
-    mapping (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y).
+    Angles are degrees, not relative deltas. Unlike the cumulative view-move and
+    view-rotate, this command discards the current pose and replaces it wholesale, so
+    it does not compose with a prior view call. To continue an orbit, read the current
+    camera_orbit_angles (azimuth_degrees, elevation_degrees) from state.yml and pass
+    them back here. Positive azimuth follows the right-hand rule around +Z. GLTF is
+    right-handed and Y-up; scene.open reports the exact source_to_world mapping
+    (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y).
     """
 
     from pydantic import TypeAdapter
@@ -816,7 +820,11 @@ def view_move(
     focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
-    """Move the current camera by world- and camera-frame deltas."""
+    """Move the current camera by world- and camera-frame deltas.
+
+    Cumulative: deltas compose on top of the current pose, like view-rotate and unlike
+    the absolute view-orbit (which replaces the pose wholesale).
+    """
 
     _execute(
         ctx,
@@ -889,6 +897,9 @@ def view_rotate(
     The axis and target are read in the source model's own frame by default, so
     '--axis Y' spins a Y-up glTF in place. Pass '--frame world' to address
     MeshProbe's Z-up world axes instead.
+
+    Cumulative: each rotation composes on top of the current pose, like view-move and
+    unlike the absolute view-orbit (which replaces the pose wholesale).
     """
 
     if frame not in {CoordinateFrame.SOURCE, CoordinateFrame.WORLD}:

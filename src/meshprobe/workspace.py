@@ -13,14 +13,16 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.models import (
     Camera,
+    CameraOrbitAngles,
     DisplayMode,
     GraphicsPlatform,
     Illumination,
@@ -147,11 +149,26 @@ class DurableSessionState(BaseModel):
     schema_version: Literal[1] = 1
     state_sha256: str
     camera: Camera
+    # Derived from the camera orientation; optional on read so v1 state.yml files written
+    # before this field existed still validate, then backfilled from the camera below.
+    camera_orbit_angles: CameraOrbitAngles | None = None
     illumination: Illumination
     render_style: RenderStyleState = RenderStyleState()
     components: ComponentStateIndex
     results: str
     artifacts: str
+
+    @model_validator(mode="after")
+    def backfill_orbit_angles(self) -> Self:
+        if self.camera_orbit_angles is None:
+            azimuth_degrees, elevation_degrees = orbit_angles_from_orientation(
+                self.camera.pose.orientation_xyzw
+            )
+            self.camera_orbit_angles = CameraOrbitAngles(
+                azimuth_degrees=azimuth_degrees,
+                elevation_degrees=elevation_degrees,
+            )
+        return self
 
 
 class SessionEvent(BaseModel):
@@ -237,7 +254,8 @@ def durable_state_schema_summary() -> dict[str, object]:
             },
             "state.yml": {
                 "purpose": "current camera, lighting, and sparse visual overrides",
-                "fields": "schema_version state_sha256 camera illumination "
+                "fields": "schema_version state_sha256 camera "
+                "camera_orbit_angles.{azimuth_degrees,elevation_degrees} illumination "
                 "components.{default,overrides} results artifacts",
             },
             "checkpoint.json": {

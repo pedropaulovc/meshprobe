@@ -69,10 +69,13 @@ def test_schema_command_documents_durable_state_files() -> None:
     assert "components.yml" in schemas
     assert "state.yml" in schemas
     assert "camera" in schemas["state.yml"]["fields"]
+    assert "camera_orbit_angles" in schemas["state.yml"]["fields"]
 
     full = runner.invoke(app, ["schema", "--kind", "state", "--full"])
     assert full.exit_code == 0
-    assert json.loads(full.stdout)["files"]["state.yml"]["properties"]["camera"]
+    properties = json.loads(full.stdout)["files"]["state.yml"]["properties"]
+    assert properties["camera"]
+    assert properties["camera_orbit_angles"]
 
 
 def test_eval_commands_generate_and_validate_a_corpus(tmp_path: Path) -> None:
