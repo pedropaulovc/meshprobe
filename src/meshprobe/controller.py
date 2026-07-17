@@ -473,8 +473,11 @@ class BlenderController:
         aspect_ratio: float,
         margin: float,
     ) -> tuple[Projection, float]:
+        half_span = span / 2
         if isinstance(projection, OrthographicProjection):
-            distance = max(span, 1.0)
+            # Orthographic framing is set by scale_mm, not distance, so the distance only has
+            # to keep the camera outside the bounds and in front of its near plane (below).
+            framing_distance = span
             # scale_mm is the vertical extent; for portrait aspect ratios the horizontal
             # extent shrinks to scale_mm * aspect_ratio, so divide it back out to keep the
             # bounds framed (matches the contact-sheet orthographic panels).
@@ -486,7 +489,11 @@ class BlenderController:
                 projection.horizontal_fov_degrees(aspect_ratio),
                 projection.vertical_fov_degrees(aspect_ratio),
             )
-            distance = max((span / 2) / math.tan(math.radians(framing_fov / 2)) * margin, 1.0)
+            framing_distance = (half_span) / math.tan(math.radians(framing_fov / 2)) * margin
+        # A very wide FOV can drive framing_distance below the bounds radius, putting the camera
+        # inside/behind the target, and a caller-supplied near clip can sit in front of the
+        # bounds. Keep the camera a full span outside the bounds AND past its own near plane.
+        distance = max(framing_distance, span, projection.near_clip_mm + half_span, 1.0)
         required_far_clip_mm = distance + span
         if projection.far_clip_mm <= required_far_clip_mm:
             projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})

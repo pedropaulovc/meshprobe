@@ -682,6 +682,38 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
     assert portrait.scale_mm * 0.5 == pytest.approx(span * 1.2)
 
 
+def test_frame_camera_keeps_wide_fov_camera_outside_bounds() -> None:
+    span = 400.0
+    projection, distance = BlenderController._frame_camera(
+        PerspectiveProjection(focal_length_mm=1.0), span, aspect_ratio=1.0, margin=1.25
+    )
+    framing_fov = min(
+        projection.horizontal_fov_degrees(1.0),
+        projection.vertical_fov_degrees(1.0),
+    )
+    fov_distance = (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
+    # A ~1mm focal length yields an extreme FOV whose framing distance collapses well inside
+    # the bounds radius; the camera must still sit a full span outside the target.
+    assert fov_distance < span / 2
+    assert distance >= span
+    assert projection.far_clip_mm > distance + span / 2
+
+
+def test_frame_camera_pushes_past_a_large_near_clip() -> None:
+    span = 20.0
+    near_clip = 1_000.0
+    projection, distance = BlenderController._frame_camera(
+        PerspectiveProjection(near_clip_mm=near_clip, far_clip_mm=200_000.0),
+        span,
+        aspect_ratio=1.0,
+        margin=1.25,
+    )
+    # The whole bounds must stay behind the caller's near plane and before the far plane.
+    assert distance >= near_clip + span / 2
+    assert distance - span / 2 >= projection.near_clip_mm
+    assert projection.far_clip_mm >= distance + span / 2
+
+
 def test_occlusion_query_reports_current_camera_samples_and_named_blockers(
     scene_manifest: SceneManifest,
     monkeypatch: pytest.MonkeyPatch,

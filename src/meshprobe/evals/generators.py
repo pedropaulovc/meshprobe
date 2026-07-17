@@ -610,7 +610,8 @@ def _prompt(model: PublishedModel, task_family: TaskFamily, index: int) -> str:
             + qualification
         )
     return (
-        f"Perform a complete inspection of {target!r}. Exercise every MeshProbe operation, "
+        f"Perform a complete inspection of {target!r}. Exercise every evaluated MeshProbe "
+        "operation, "
         "identify its contacted shaft and clip side, read the stamped arrow, "
         "distinguish the nearer coaxial ring, measure the declared clearance, hide the cover, "
         "highlight the target, submit "
