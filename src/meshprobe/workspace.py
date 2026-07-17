@@ -453,8 +453,10 @@ class SessionManager:
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
             self._event(files, command, "accepted", result_path=result_path)
             artifacts = self._artifact_paths(command.op, response.result)
-            graphics = getattr(service, "graphics", None)
-            warnings = graphics.warnings if graphics is not None else ()
+            warnings: tuple[str, ...] = ()
+            if renderer_continuity is not RendererContinuity.PRESERVED:
+                graphics = getattr(service, "graphics", None)
+                warnings = graphics.warnings if graphics is not None else ()
             return self._receipt(
                 files,
                 command.op,
