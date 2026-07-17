@@ -599,8 +599,11 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("degrees must be finite")
     if not math.isfinite(degrees):
         raise ValueError("degrees must be finite")
-    axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
-    axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
+    basis = command.get(
+        "basis",
+        {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]},
+    )
+    axis = Vector(basis[command["axis"]])
     target_mm = command["target_mm"]
     if not isinstance(target_mm, (list, tuple)) or len(target_mm) != 3:
         raise ValueError("target_mm must contain three finite numbers")
@@ -614,7 +617,8 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
     axis.normalize()
-    rotation = Quaternion(axis, math.radians(degrees))
+    camera_orbit_degrees = -degrees
+    rotation = Quaternion(axis, math.radians(camera_orbit_degrees))
     previous_pose = deepcopy(CURRENT_CAMERA["pose"])
     position = Vector(previous_pose["position_mm"])
     x, y, z, w = previous_pose["orientation_xyzw"]
@@ -643,8 +647,10 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "frame": frame,
         "target_mm": command["target_mm"],
         "axis": command["axis"],
+        "basis": basis,
         "axis_world": list(axis),
-        "degrees": degrees,
+        "requested_visual_degrees": degrees,
+        "applied_camera_orbit_degrees": camera_orbit_degrees,
         "previous_pose": previous_pose,
         "resulting_pose": resulting_pose,
     }

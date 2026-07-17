@@ -587,6 +587,8 @@ def test_view_rotate_exposes_source_frame_semantics(
             "145",
             "--frame",
             "source",
+            "--basis-json",
+            '{"x":[0,1,0],"y":[-1,0,0],"z":[0,0,1]}',
         ],
     )
 
@@ -595,7 +597,15 @@ def test_view_rotate_exposes_source_frame_semantics(
     assert isinstance(command, ViewRotateCommand)
     assert command.frame == "source"
     assert command.axis == "y"
+    assert command.basis.x == (0, 1, 0)
     assert command.degrees == 145
+
+    help_result = runner.invoke(app, ["view-orbit", "--help"])
+    assert help_result.exit_code == 0
+    assert "right-handed" in help_result.stdout
+    assert "Absolute degrees from +X" in help_result.stdout
+    assert "toward +Y about world" in help_result.stdout
+    assert "not relative deltas" in help_result.stdout
 
 
 def test_close_and_kill_have_distinct_selected_and_all_semantics(

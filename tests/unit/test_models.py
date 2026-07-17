@@ -15,6 +15,7 @@ from meshprobe.models import (
     EnvironmentMap,
     MarkMode,
     OrthographicProjection,
+    OrthonormalBasis,
     PerspectiveProjection,
     PointLight,
     Pose,
@@ -114,6 +115,18 @@ def test_perspective_depth_of_field_requires_one_focus_source() -> None:
         DepthOfField(mode="enabled", aperture_fstop=3.8)
     with pytest.raises(ValidationError, match="cannot declare"):
         DepthOfField(mode="disabled", focus_distance_mm=100)
+
+
+def test_camera_basis_must_be_orthonormal_and_right_handed() -> None:
+    basis = OrthonormalBasis(x=(0, 1, 0), y=(-1, 0, 0), z=(0, 0, 1))
+    assert basis.x == (0, 1, 0)
+
+    with pytest.raises(ValidationError, match="unit length"):
+        OrthonormalBasis(x=(2, 0, 0))
+    with pytest.raises(ValidationError, match="perpendicular"):
+        OrthonormalBasis(x=(1, 0, 0), y=(1, 0, 0))
+    with pytest.raises(ValidationError, match="right-handed"):
+        OrthonormalBasis(z=(0, 0, -1))
 
 
 def test_perspective_respects_vertical_and_automatic_sensor_fit() -> None:
