@@ -1172,6 +1172,82 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert controller.request("session.snapshot")["session"] == before_camera_only_session
         assert controller.request("session.runtime") == before_camera_only_runtime
 
+        zero_strength_environment = cached_environment.model_dump(mode="json")
+        zero_strength_environment["strength"] = 0
+        zero_intensity_sources = (
+            {
+                "lights": [
+                    {
+                        "id": "zero-area",
+                        "type": "area",
+                        "position_mm": [1, 2, 3],
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "power_w": 0,
+                        "size_mm": 50,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-point",
+                        "type": "point",
+                        "position_mm": [1, 2, 3],
+                        "power_w": 0,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-spot",
+                        "type": "spot",
+                        "position_mm": [1, 2, 3],
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "power_w": 0,
+                        "spot_size_degrees": 45,
+                        "blend": 0.15,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {
+                "lights": [
+                    {
+                        "id": "zero-sun",
+                        "type": "sun",
+                        "orientation_xyzw": [0, 0, 0, 1],
+                        "strength": 0,
+                        "angle_degrees": 0.526,
+                        "linear_rgb": [1, 1, 1],
+                    }
+                ],
+                "environment_map": None,
+            },
+            {"lights": [], "environment_map": zero_strength_environment},
+        )
+        for zero_intensity_source in zero_intensity_sources:
+            with pytest.raises(BlenderWorkerError, match="non-zero light output"):
+                controller.request(
+                    "illumination.set",
+                    illumination={
+                        "preset": "custom",
+                        "background_rgb": [1, 1, 1],
+                        "background_strength": 1,
+                        "ambient_rgb": [0, 0, 0],
+                        "ambient_strength": 0,
+                        "visible_background_mode": "color",
+                        **zero_intensity_source,
+                    },
+                )
+            assert controller.request("session.snapshot")["session"] == before_camera_only_session
+            assert controller.request("session.runtime") == before_camera_only_runtime
+
         with pytest.raises(BlenderWorkerError, match="requires an environment map"):
             controller.request(
                 "illumination.set",

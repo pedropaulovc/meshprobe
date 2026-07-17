@@ -976,12 +976,17 @@ def create_light(spec: dict[str, Any]) -> None:
 def custom_illumination_has_effective_output(illumination: dict[str, Any]) -> bool:
     if illumination["ambient_strength"] > 0 and any(illumination["ambient_rgb"]):
         return True
-    if illumination.get("environment_map") is not None:
+    environment_map = illumination.get("environment_map")
+    if environment_map is not None and environment_map["strength"] > 0:
         return True
-    return any(
-        light.get("color_temperature_k") is not None or any(light.get("linear_rgb") or ())
-        for light in illumination["lights"]
-    )
+    for light in illumination["lights"]:
+        intensity = light["strength"] if light["type"] == "sun" else light["power_w"]
+        color_contributes = light.get("color_temperature_k") is not None or any(
+            light.get("linear_rgb") or ()
+        )
+        if intensity > 0 and color_contributes:
+            return True
+    return False
 
 
 def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:

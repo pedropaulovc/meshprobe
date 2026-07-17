@@ -16,10 +16,13 @@ from meshprobe.models import (
     MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
+    PointLight,
     Pose,
     RenderManifest,
     SceneManifest,
     SensorFit,
+    SpotLight,
+    SunLight,
     VisibleBackgroundMode,
 )
 
@@ -133,6 +136,43 @@ def test_custom_illumination_requires_one_color_source() -> None:
             power_w=100,
             size_mm=50,
         )
+
+
+def test_light_and_environment_intensities_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="greater than 0"):
+        AreaLight(
+            id="area",
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            power_w=0,
+            size_mm=50,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        PointLight(
+            id="point",
+            position_mm=(1, 2, 3),
+            power_w=0,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SpotLight(
+            id="spot",
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            power_w=0,
+            spot_size_degrees=45,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        SunLight(
+            id="sun",
+            orientation_xyzw=(0, 0, 0, 1),
+            strength=0,
+            color_temperature_k=5200,
+        )
+    with pytest.raises(ValidationError, match="greater than 0"):
+        EnvironmentMap(path="studio.exr", sha256="a" * 64, strength=0)
 
 
 def test_custom_illumination_rejects_duplicate_ids() -> None:

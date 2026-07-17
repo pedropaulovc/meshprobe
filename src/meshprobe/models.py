@@ -354,10 +354,15 @@ class CustomIllumination(ContractModel):
         ):
             raise ValueError("environment visible background requires an environment map")
         ambient_contributes = self.ambient_strength > 0 and any(self.ambient_rgb)
-        environment_contributes = self.environment_map is not None
+        environment_contributes = (
+            self.environment_map is not None and self.environment_map.strength > 0
+        )
         light_contributes = any(
-            light.color_temperature_k is not None
-            or (light.linear_rgb is not None and any(light.linear_rgb))
+            (light.strength if isinstance(light, SunLight) else light.power_w) > 0
+            and (
+                light.color_temperature_k is not None
+                or (light.linear_rgb is not None and any(light.linear_rgb))
+            )
             for light in self.lights
         )
         if not any(
