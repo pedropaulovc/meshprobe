@@ -520,6 +520,7 @@ def test_removed_occluder_caption_retains_every_full_blocker_name() -> None:
             display_name=name,
             component_path=f"/blocker-{index}",
             ray_hit_count=1,
+            visible_pixel_count_after=index,
             visible_fraction_after=index / 32,
         )
         for index, name in enumerate(names)
@@ -918,6 +919,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     ]
     calls: list[str] = []
     visibility_measurements = iter(visibility)
+    visibility_pixels = iter(round(fraction * 10) for fraction in visibility)
 
     def request(operation: str, **arguments: object) -> dict[str, Any]:
         calls.append(operation)
@@ -963,6 +965,8 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         if operation == "component.visibility":
             fraction = next(visibility_measurements)
             return {
+                "visible_pixels": next(visibility_pixels),
+                "isolated_pixels": 10,
                 "visible_fraction": fraction,
                 "projected": True,
             }
@@ -999,9 +1003,13 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert sheet.occlusion is not None
     assert sheet.occlusion.visible_fraction_before == visibility[0]
     assert sheet.occlusion.visible_fraction_after == visibility[-1]
+    assert sheet.occlusion.visible_pixel_count_before == round(visibility[0] * 10)
+    assert sheet.occlusion.visible_pixel_count_after == round(visibility[-1] * 10)
+    assert sheet.occlusion.isolated_pixel_count == 10
     assert sheet.occlusion.stop_reason == expected_stop
     if resolved_removed:
         assert sheet.occlusion.steps[0].ray_hit_count == 3
+        assert sheet.occlusion.steps[0].visible_pixel_count_after == round(visibility[-1] * 10)
         blocker = next(
             component for component in scene_manifest.components if component.id == blocker_id
         )
