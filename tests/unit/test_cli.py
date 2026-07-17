@@ -22,7 +22,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     ViewSetCommand,
 )
-from meshprobe.workspace import OperationReceipt
+from meshprobe.workspace import OperationReceipt, ResolvedComponentReference
 
 runner = CliRunner()
 
@@ -274,7 +274,11 @@ class FakeClient:
 
     def resolve_component(self, session: str, value: str) -> str:
         assert session == "review"
-        return {"c2": "component-id", "assembly/idler": "component-id"}[value]
+        return {
+            "c2": "component-id",
+            "assembly/idler": "component-id",
+            "crank-pinion-1": "component-id",
+        }[value]
 
     def read_result(self, receipt: OperationReceipt) -> object:
         return {"result": {"op": receipt.op}}
@@ -410,6 +414,45 @@ def test_component_commands_resolve_short_references(
     command = client.commands[-1]
     assert isinstance(command, ComponentDisplayCommand)
     assert command.component_ids == ("component-id",)
+
+    named = runner.invoke(
+        app,
+        ["--session", "review", "mark", "crank-pinion-1", "--mode", "highlighted"],
+    )
+    assert named.exit_code == 0
+    assert client.commands[-1].component_ids == ("component-id",)
+
+
+def test_compact_receipt_includes_readable_and_stable_component_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    component = ResolvedComponentReference(
+        ref="c2",
+        id="cmp_stable",
+        name="crank-pinion-1",
+        path="harmonic-analyzer/drive-train/crank-pinion-1",
+    )
+    monkeypatch.setattr(
+        client,
+        "execute",
+        lambda session, command: OperationReceipt(
+            session=session,
+            op=command.op,
+            components=(component,),
+        ),
+    )
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "display", "crank-pinion-1", "--mode", "isolated"],
+    )
+
+    assert result.exit_code == 0
+    assert "c2 crank-pinion-1" in result.stdout
+    assert "harmonic-analyzer/drive-train/crank-pinion-1" in result.stdout
+    assert "id=cmp_stable" in result.stdout
 
 
 def test_view_set_applies_depth_of_field_controls(monkeypatch: pytest.MonkeyPatch) -> None:

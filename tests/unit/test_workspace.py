@@ -89,6 +89,7 @@ def test_session_manager_writes_compact_queryable_state(
     assert [component["ref"] for component in components["components"]] == ["c1", "c2", "c3"]
 
     component_id = manager.resolve_component("review", "c2")
+    assert manager.resolve_component("review", "retaining clip") == component_id
     changed = manager.execute(
         "review",
         ComponentDisplayCommand(
@@ -100,6 +101,10 @@ def test_session_manager_writes_compact_queryable_state(
     )
     state = yaml.safe_load((session_root / "state.yml").read_text(encoding="utf-8"))
     assert changed.state_sha256 == state["state_sha256"]
+    assert len(changed.components) == 1
+    assert changed.components[0].id == component_id
+    assert changed.components[0].name == "retaining clip"
+    assert changed.components[0].path == "assembly/cover/clip"
     assert state["components"]["default"] == {"display": "shown", "mark": "unmarked"}
     assert state["components"]["overrides"]["c2"] == {"display": "hidden"}
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
@@ -369,6 +374,30 @@ def test_component_resolution_prefers_short_refs_over_paths(
     files.components.write_text(yaml.safe_dump(payload), encoding="utf-8")
 
     assert manager.resolve_component("review", "c2") == ref_target["id"]
+
+
+def test_ambiguous_component_name_reports_matching_paths(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+    payload["components"][1]["name"] = "duplicate"
+    payload["components"][2]["name"] = "duplicate"
+    files.components.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ambiguous component display name") as error:
+        manager.resolve_component("review", "duplicate")
+
+    assert "assembly/cover/clip" in str(error.value)
+    assert "assembly/drive/idler" in str(error.value)
+    assert "exact path or stable ID" in str(error.value)
 
 
 def test_reset_clears_replay_and_artifact_detection_is_render_only(

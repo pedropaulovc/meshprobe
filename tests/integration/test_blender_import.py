@@ -647,6 +647,36 @@ def test_open_cli_emits_valid_manifest(tmp_path: Path) -> None:
     assert len(payload["components"]) == 3
 
 
+def test_cli_resolves_exact_component_name_and_emits_readable_identity(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    workspace = tmp_path / "workspace"
+    opened = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "--session", "review", "open", str(source)],
+    )
+    displayed = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace),
+            "--session",
+            "review",
+            "display",
+            "retaining-clip",
+            "--mode",
+            "isolated",
+        ],
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert opened.exit_code == 0
+    assert displayed.exit_code == 0
+    assert stopped.exit_code == 0
+    assert "component: c" in displayed.stdout
+    assert "retaining-clip" in displayed.stdout
+    assert "id=cmp_" in displayed.stdout
+
+
 def test_open_cli_reports_source_bundle_errors(tmp_path: Path) -> None:
     source = tmp_path / "invalid.gltf"
     source.write_text("{not-json", encoding="utf-8")

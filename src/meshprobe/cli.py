@@ -511,6 +511,10 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     for warning in receipt.warnings:
         typer.echo(f"warning: {warning}", err=True)
+    for component in receipt.components:
+        typer.echo(
+            f"component: {component.ref} {component.name} ({component.path}) id={component.id}"
+        )
 
 
 def _emit_receipts(
@@ -648,7 +652,7 @@ def _find_selector_kind(kind: FindKind, pattern: str) -> SelectorKind:
 
 @app.command("inspect")
 def inspect_component(ctx: typer.Context, component: Annotated[str, typer.Argument()]) -> None:
-    """Inspect one component by ref, stable ID, or exact path."""
+    """Inspect one component by ref, stable ID, exact display name, or exact path."""
 
     component_id = _component_ids(ctx, [component])[0]
     _execute(
@@ -665,7 +669,10 @@ def inspect_component(ctx: typer.Context, component: Annotated[str, typer.Argume
 def view_set(
     ctx: typer.Context,
     camera_json: Annotated[str, typer.Option("--camera-json")],
-    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    focus: Annotated[
+        list[str] | None,
+        typer.Option("--focus", help="Component ref, stable ID, exact name, or exact path."),
+    ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
     aperture_fstop: Annotated[float | None, typer.Option("--aperture-fstop", min=0.000001)] = None,
     focus_distance: Annotated[
@@ -711,7 +718,10 @@ def view_orbit(
     distance: Annotated[float, typer.Option("--distance", min=0.000001)],
     projection_json: Annotated[str, typer.Option("--projection-json")],
     roll: Annotated[float, typer.Option("--roll")] = 0.0,
-    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    focus: Annotated[
+        list[str] | None,
+        typer.Option("--focus", help="Component ref, stable ID, exact name, or exact path."),
+    ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
     """Orbit the camera around a target point."""
@@ -761,7 +771,7 @@ def display_components(
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[DisplayMode, typer.Option("--mode")],
 ) -> None:
-    """Change component visibility using short refs, IDs, or exact paths."""
+    """Change visibility using refs, stable IDs, exact display names, or exact paths."""
 
     _execute(
         ctx,
@@ -780,7 +790,7 @@ def mark_components(
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[MarkMode, typer.Option("--mode")],
 ) -> None:
-    """Mark components using short refs, IDs, or exact paths."""
+    """Mark components using refs, stable IDs, exact display names, or exact paths."""
 
     _execute(
         ctx,
@@ -833,7 +843,10 @@ def render_image(
 @app.command("render-sheet")
 def render_sheet(
     ctx: typer.Context,
-    focus: Annotated[list[str], typer.Argument()],
+    focus: Annotated[
+        list[str],
+        typer.Argument(help="Component refs, stable IDs, exact names, or exact paths."),
+    ],
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
     panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 768,
     panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 768,
