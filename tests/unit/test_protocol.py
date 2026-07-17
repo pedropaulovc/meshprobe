@@ -38,7 +38,8 @@ def test_unknown_operation_fails() -> None:
 
 
 def test_schema_contains_all_public_operations() -> None:
-    encoded = json.dumps(command_json_schema())
+    schema = command_json_schema()
+    encoded = json.dumps(schema)
     for operation in (
         "scene.open",
         "session.snapshot",
@@ -56,6 +57,53 @@ def test_schema_contains_all_public_operations() -> None:
         "session.reset",
     ):
         assert operation in encoded
+    assert schema["$defs"]["CameraPoseFrame"]["enum"] == ["source", "world"]
+    assert schema["$defs"]["Pose"]["properties"]["frame"]["$ref"] == ("#/$defs/CameraPoseFrame")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "request_id": "invalid-view-set-frame",
+            "op": "view.set",
+            "camera": {
+                "pose": {
+                    "position_mm": [0, 0, 100],
+                    "orientation_xyzw": [0, 0, 0, 1],
+                    "frame": "camera",
+                },
+                "projection": {"mode": "perspective"},
+            },
+        },
+        {
+            "request_id": "invalid-contact-sheet-frame",
+            "op": "render.contact_sheet",
+            "output_path": "sheet.png",
+            "recipe": "custom_3x3",
+            "focus_component_ids": ["cmp_target"],
+            "panels": [
+                {
+                    "caption": "invalid camera frame",
+                    "camera": {
+                        "pose": {
+                            "position_mm": [0, 0, 100],
+                            "orientation_xyzw": [0, 0, 0, 1],
+                            "frame": "component",
+                        },
+                        "projection": {"mode": "perspective"},
+                    },
+                }
+            ]
+            * 9,
+        },
+    ],
+)
+def test_command_cameras_only_accept_source_or_world_frames(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match=r"source.*world"):
+        COMMAND_ADAPTER.validate_python(payload)
 
 
 @pytest.mark.parametrize("field", ["azimuth_degrees", "elevation_degrees", "roll_degrees"])

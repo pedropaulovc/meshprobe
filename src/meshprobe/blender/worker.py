@@ -424,6 +424,7 @@ def apply_camera(
     target_mm: list[float] | tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
+    validate_camera_projection_focus(camera["projection"])
     obj = camera_object()
     pose = camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
@@ -612,6 +613,7 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "pose": resulting_pose,
         "projection": command.get("projection") or CURRENT_CAMERA["projection"],
     }
+    validate_camera_projection_focus(camera["projection"])
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "rotate",
@@ -640,6 +642,18 @@ def validate_camera_diagnostics_inputs(
         raise ValueError(f"unknown focus component ids: {sorted(unknown)}")
     if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
         raise ValueError("aspect_ratio must be between 0.01 and 100")
+
+
+def validate_camera_projection_focus(projection: dict[str, Any]) -> None:
+    if projection.get("mode") != "perspective":
+        return
+    depth_of_field = projection.get("depth_of_field", {"mode": "disabled"})
+    focus = depth_of_field.get("focus")
+    if focus is None:
+        return
+    component_id = focus["component_id"]
+    if component_id not in COMPONENT_OBJECTS:
+        raise ValueError(f"unknown depth-of-field component id: {component_id}")
 
 
 def camera_diagnostics(
@@ -2221,7 +2235,7 @@ def build_manifest(
             "preserved" if components_with_materials == len(components) else "partial"
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha256": source_sha256,
         "source_format": source_format,
         "units": "millimeter",

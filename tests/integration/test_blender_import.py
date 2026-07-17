@@ -38,6 +38,7 @@ from meshprobe.models import (
     PresetIllumination,
     RenderEngine,
     RenderManifest,
+    SceneManifest,
     SessionSnapshot,
     VisibleBackgroundMode,
 )
@@ -458,6 +459,9 @@ def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         result = controller.request("scene.open", source_path=str(source))
 
+    manifest = SceneManifest.model_validate(result)
+    assert manifest.schema_version == 2
+    assert result["schema_version"] == 2
     assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
@@ -663,6 +667,51 @@ def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
                 degrees=30,
                 frame="world",
                 focus_component_ids=["missing-component"],
+            )
+
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_rejected_rotation_depth_of_field_preserves_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+            frame="world",
+        )
+        before = controller.request("session.snapshot")["session"]
+        projection = manifest.imported_camera.projection.model_dump(mode="json")
+        projection["depth_of_field"] = {
+            "mode": "enabled",
+            "aperture_fstop": 2.8,
+            "focus_distance_mm": None,
+            "focus": {"component_id": "missing-component"},
+        }
+
+        with pytest.raises(BlenderWorkerError, match="unknown depth-of-field component id"):
+            controller.request(
+                "view.rotate",
+                target_mm=target,
+                axis="z",
+                degrees=30,
+                frame="world",
+                projection=projection,
             )
 
         after = controller.request("session.snapshot")["session"]

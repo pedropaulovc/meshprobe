@@ -75,6 +75,11 @@ class CoordinateFrame(StrEnum):
     COMPONENT = "component"
 
 
+class CameraPoseFrame(StrEnum):
+    SOURCE = "source"
+    WORLD = "world"
+
+
 class Handedness(StrEnum):
     RIGHT = "right"
 
@@ -118,7 +123,7 @@ class Bounds(ContractModel):
 class Pose(ContractModel):
     position_mm: Vec3
     orientation_xyzw: UnitQuaternion
-    frame: CoordinateFrame = CoordinateFrame.WORLD
+    frame: CameraPoseFrame = CameraPoseFrame.WORLD
 
 
 class SensorFit(StrEnum):
@@ -519,7 +524,7 @@ class NormalizedGeometryArtifact(ContractModel):
 
 
 class SceneManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     source_format: Literal["glb", "gltf", "obj", "stl"]
     units: Literal["millimeter"]
