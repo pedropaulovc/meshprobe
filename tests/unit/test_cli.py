@@ -376,6 +376,7 @@ class FakeClient:
         self.commands: list[Command] = []
         self.closed: list[str] = []
         self.killed: list[str] = []
+        self.match_count: int | None = None
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
         self.commands.append(command)
@@ -385,6 +386,7 @@ class FakeClient:
             state_sha256="a" * 64,
             result_path=f".meshprobe/sessions/{session}/results/result.json",
             state_path=f".meshprobe/sessions/{session}/state.yml",
+            match_count=self.match_count if isinstance(command, ComponentFindCommand) else None,
         )
 
     def resolve_component(self, session: str, value: str) -> str:
@@ -1183,6 +1185,42 @@ def test_find_rejects_conflicting_selector_options() -> None:
     assert "provide either PATTERN or --name" in unstyle(both.output)
     assert missing.exit_code == 2
     assert "provide PATTERN or --name" in unstyle(missing.output)
+
+
+def test_find_receipt_distinguishes_zero_matches_from_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    client.match_count = 3
+    hit = runner.invoke(app, ["find", "*idler*", "--kind", "glob"])
+    client.match_count = 0
+    miss = runner.invoke(app, ["find", "nonexistent-widget-xyz"])
+
+    assert hit.exit_code == 0
+    assert "matches=3" in hit.stdout
+    assert "no components matched" not in hit.output
+
+    assert miss.exit_code == 0
+    assert "matches=0" in miss.stdout
+    assert "warning: no components matched" in miss.stderr
+    assert unstyle(miss.stdout) != unstyle(hit.stdout)
+
+
+def test_find_zero_matches_machine_readable_modes_expose_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    client.match_count = 0
+
+    payload = json.loads(runner.invoke(app, ["--json", "find", "ghost"]).stdout)
+    assert payload["ok"] is True
+    assert payload["match_count"] == 0
+
+    document = yaml.safe_load(runner.invoke(app, ["--yaml", "find", "ghost"]).stdout)
+    assert document["match_count"] == 0
 
 
 def test_list_and_delete_data_have_text_and_json_output(

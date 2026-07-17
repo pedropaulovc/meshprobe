@@ -543,6 +543,8 @@ def _emit_receipt(
         _emit(result)
         return
     fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
+    if receipt.match_count is not None:
+        fields.append(f"matches={receipt.match_count}")
     if receipt.result_path:
         fields.append(f"result={receipt.result_path}")
     if receipt.state_path:
@@ -550,6 +552,8 @@ def _emit_receipt(
     if receipt.artifact_paths:
         fields.append(f"artifacts={','.join(receipt.artifact_paths)}")
     typer.echo(" ".join(fields))
+    if receipt.match_count == 0:
+        typer.echo("warning: no components matched", err=True)
     for warning in receipt.warnings:
         typer.echo(f"warning: {warning}", err=True)
     for component in receipt.components:

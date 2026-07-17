@@ -21,6 +21,7 @@ from meshprobe.models import (
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
+    ComponentFindCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -28,6 +29,7 @@ from meshprobe.protocol import (
     SessionResetCommand,
     SessionSnapshotCommand,
 )
+from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
 from meshprobe.session import InspectionSession
 from meshprobe.workspace import (
@@ -67,6 +69,12 @@ class FakeSessionService:
             result = self.session.display(command.component_ids, command.mode).model_dump(
                 mode="json"
             )
+        elif isinstance(command, ComponentFindCommand):
+            assert self.session is not None
+            result = [
+                component.model_dump(mode="json")
+                for component in ComponentIndex(self.manifest).find(command.selector)
+            ]
         elif isinstance(command, SessionResetCommand):
             assert self.session is not None
             result = self.session.reset().model_dump(mode="json")
@@ -182,6 +190,41 @@ def test_session_manager_writes_compact_queryable_state(
     }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_find_receipt_reports_match_count(tmp_path: Path, scene_manifest: SceneManifest) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+
+    hit = manager.execute(
+        "review",
+        ComponentFindCommand(
+            request_id="hit",
+            op="component.find",
+            selector=ComponentSelector(kind=SelectorKind.EXACT_NAME, pattern="idler"),
+        ),
+    )
+    miss = manager.execute(
+        "review",
+        ComponentFindCommand(
+            request_id="miss",
+            op="component.find",
+            selector=ComponentSelector(kind=SelectorKind.EXACT_NAME, pattern="nonexistent-widget"),
+        ),
+    )
+    snapshot = manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="snap", op="session.snapshot"),
+    )
+
+    assert hit.match_count == 1
+    assert miss.match_count == 0
+    assert snapshot.match_count is None
 
 
 def test_contact_sheet_records_worker_default_render_style(
