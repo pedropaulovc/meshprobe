@@ -23,6 +23,7 @@ from statistics import median
 from typing import Any
 
 import bpy  # type: ignore[import-not-found]
+import gpu  # type: ignore[import-not-found]
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
@@ -64,6 +65,7 @@ CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
 OVERRIDE_MATERIALS: dict[str, bpy.types.Material] = {}
 EMISSION_MATERIALS: dict[str, bpy.types.Material] = {}
+GPU_PLATFORM: dict[str, Any] | None = None
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -1132,8 +1134,64 @@ def configure_render(command: dict[str, Any]) -> str:
     if engine == "cycles":
         configure_cycles_gpu(command["samples"])
         return "cuda"
+    platform = graphics_platform()
+    if command["graphics_policy"] == "hardware_required" and platform["device_class"] != "hardware":
+        raise RuntimeError(
+            "hardware graphics required, but Blender initialized "
+            f"{platform['renderer']} as {platform['device_class']}"
+        )
     configure_eevee_samples(command["samples"])
-    return "graphics"
+    return f"graphics_{platform['device_class']}"
+
+
+def graphics_platform() -> dict[str, Any]:
+    if GPU_PLATFORM is None:
+        raise RuntimeError("graphics platform is not initialized")
+    return GPU_PLATFORM
+
+
+def initialize_graphics_platform() -> dict[str, Any]:
+    gpu.init()
+    vendor = str(gpu.platform.vendor_get())
+    renderer = str(gpu.platform.renderer_get())
+    version = str(gpu.platform.version_get())
+    backend = str(gpu.platform.backend_type_get())
+    blender_device_type = str(gpu.platform.device_type_get())
+    renderer_folded = renderer.casefold()
+    software_markers = (
+        "llvmpipe",
+        "softpipe",
+        "swiftshader",
+        "software rasterizer",
+        "microsoft basic render driver",
+        "warp",
+    )
+    reported_software = blender_device_type.casefold() == "software"
+    if any(marker in renderer_folded for marker in software_markers) or (
+        reported_software and "d3d12" not in renderer_folded
+    ):
+        device_class = "software"
+    elif blender_device_type.casefold() == "unknown":
+        device_class = "unknown"
+    else:
+        device_class = "hardware"
+    warnings: list[str] = []
+    if device_class == "software":
+        warnings.append(f"Blender is using software graphics: {vendor} {renderer} ({backend}).")
+    elif blender_device_type.casefold() == "software":
+        warnings.append(
+            "Blender labels this adapter SOFTWARE, but its renderer identifies a "
+            f"hardware-backed D3D12 adapter: {renderer}."
+        )
+    return {
+        "vendor": vendor,
+        "renderer": renderer,
+        "version": version,
+        "backend": backend,
+        "blender_device_type": blender_device_type,
+        "device_class": device_class,
+        "warnings": warnings,
+    }
 
 
 def eevee_engine() -> str:
@@ -1489,6 +1547,8 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "samples": command["samples"],
         "engine": command["engine"],
         "device": device,
+        "graphics_policy": command["graphics_policy"],
+        "graphics": graphics_platform(),
         "blender_version": bpy.app.version_string,
         "session": session,
         "color": artifact(output, "image/png"),
@@ -2009,12 +2069,15 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
+    global GPU_PLATFORM
+    GPU_PLATFORM = initialize_graphics_platform()
     emit(
         {
             "event": "ready",
             "protocol_version": PROTOCOL_VERSION,
             "blender_version": bpy.app.version_string,
             "pid": os.getpid(),
+            "graphics": GPU_PLATFORM,
         }
     )
     for line in sys.stdin:

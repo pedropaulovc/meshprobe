@@ -60,6 +60,15 @@ print(json.dumps({
     "protocol_version": __PROTOCOL_VERSION__,
     "blender_version": "test",
     "pid": os.getpid(),
+    "graphics": {
+        "vendor": "Test",
+        "renderer": "Test GPU",
+        "version": "1.0",
+        "backend": "OPENGL",
+        "blender_device_type": "NVIDIA",
+        "device_class": "hardware",
+        "warnings": [],
+    },
 }), flush=True)
 for line in sys.stdin:
     command = json.loads(line)
@@ -593,7 +602,16 @@ def render_manifest_for(
             "height": 128,
             "samples": 1,
             "engine": "eevee",
-            "device": "graphics",
+            "device": "graphics_hardware",
+            "graphics_policy": "software_allowed",
+            "graphics": {
+                "vendor": "Test",
+                "renderer": "Test GPU",
+                "version": "1.0",
+                "backend": "OPENGL",
+                "blender_device_type": "NVIDIA",
+                "device_class": "hardware",
+            },
             "blender_version": "5.2.0",
             "session": session,
             "color": {

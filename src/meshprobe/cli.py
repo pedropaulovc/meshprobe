@@ -28,7 +28,14 @@ from meshprobe.evals.harness.adapters import (
 from meshprobe.evals.harness.suite import run_tier
 from meshprobe.evals.migration import audit_migration, migrate_corpus_v2
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
-from meshprobe.models import DisplayMode, IlluminationPreset, MarkMode, Projection, RenderEngine
+from meshprobe.models import (
+    DisplayMode,
+    GraphicsPolicy,
+    IlluminationPreset,
+    MarkMode,
+    Projection,
+    RenderEngine,
+)
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -437,6 +444,8 @@ def _emit_receipt(
     if receipt.artifact_paths:
         fields.append(f"artifacts={','.join(receipt.artifact_paths)}")
     typer.echo(" ".join(fields))
+    for warning in receipt.warnings:
+        typer.echo(f"warning: {warning}", err=True)
 
 
 def _emit_receipts(
@@ -710,6 +719,9 @@ def render_image(
     height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 1024,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
+    graphics_policy: Annotated[
+        GraphicsPolicy, typer.Option("--graphics-policy")
+    ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
     """Render the selected session to an image artifact."""
 
@@ -731,6 +743,7 @@ def render_image(
             height=height,
             samples=samples,
             engine=engine,
+            graphics_policy=graphics_policy,
         ),
     )
 
@@ -744,6 +757,9 @@ def render_sheet(
     panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 768,
     samples: Annotated[int, typer.Option("--samples", min=1)] = 32,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
+    graphics_policy: Annotated[
+        GraphicsPolicy, typer.Option("--graphics-policy")
+    ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
     """Render the focused 3x3 diagnostic sheet."""
 
@@ -766,6 +782,7 @@ def render_sheet(
             panel_height=panel_height,
             samples=samples,
             engine=engine,
+            graphics_policy=graphics_policy,
         ),
     )
 
@@ -792,7 +809,15 @@ def list_sessions(ctx: typer.Context) -> None:
         _emit_yaml(payload) if output == "yaml" else _emit(payload)
         return
     for session in sessions:
-        typer.echo(f"{session['name']}\t{session['status']}\t{session['source_path']}")
+        graphics = session.get("graphics")
+        renderer = "graphics=unknown"
+        if isinstance(graphics, dict):
+            renderer = (
+                f"graphics={graphics.get('device_class', 'unknown')}/"
+                f"{graphics.get('backend', 'unknown')} "
+                f"renderer={graphics.get('renderer', 'unknown')}"
+            )
+        typer.echo(f"{session['name']}\t{session['status']}\t{renderer}\t{session['source_path']}")
 
 
 @app.command("close")

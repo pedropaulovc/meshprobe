@@ -471,6 +471,27 @@ class RenderEngine(StrEnum):
     CYCLES = "cycles"
 
 
+class GraphicsPolicy(StrEnum):
+    HARDWARE_REQUIRED = "hardware_required"
+    SOFTWARE_ALLOWED = "software_allowed"
+
+
+class GraphicsDeviceClass(StrEnum):
+    HARDWARE = "hardware"
+    SOFTWARE = "software"
+    UNKNOWN = "unknown"
+
+
+class GraphicsPlatform(ContractModel):
+    vendor: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    renderer: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+    version: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+    backend: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    blender_device_type: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    device_class: GraphicsDeviceClass
+    warnings: tuple[Annotated[str, StringConstraints(min_length=1, max_length=1_024)], ...] = ()
+
+
 class ImageArtifact(ContractModel):
     path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
     media_type: Literal["image/png", "image/x-exr"]
@@ -518,7 +539,9 @@ class RenderManifest(ContractModel):
     height: Annotated[int, Field(ge=64, le=16_384)]
     samples: Annotated[int, Field(ge=1, le=4_096)]
     engine: RenderEngine
-    device: Literal["graphics", "cuda"]
+    device: Literal["graphics_hardware", "graphics_software", "cuda"]
+    graphics_policy: GraphicsPolicy
+    graphics: GraphicsPlatform
     blender_version: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     session: SessionSnapshot
     color: ImageArtifact

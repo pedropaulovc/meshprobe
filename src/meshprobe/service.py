@@ -7,6 +7,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
+from meshprobe.models import GraphicsPlatform
 from meshprobe.protocol import (
     Command,
     RenderContactSheetCommand,
@@ -98,6 +99,10 @@ class MeshProbeService:
     @property
     def worker_pid(self) -> int | None:
         return self._controller.worker_pid
+
+    @property
+    def graphics(self) -> GraphicsPlatform | None:
+        return self._controller.graphics
 
     def kill(self) -> None:
         self._controller.kill()

@@ -26,6 +26,7 @@ from meshprobe.models import (
     ContactSheetPanelSpec,
     CustomIllumination,
     EnvironmentMap,
+    GraphicsPlatform,
     Illumination,
     IlluminationPreset,
     NormalizedGeometryArtifact,
@@ -115,6 +116,7 @@ class BlenderController:
         self._logs: list[str] = []
         self._worker_path = Path(__file__).with_name("blender") / "worker.py"
         self.ready_event: dict[str, Any] | None = None
+        self.graphics: GraphicsPlatform | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
         self._manifest: SceneManifest | None = None
@@ -149,6 +151,7 @@ class BlenderController:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=self._worker_environment(),
         )
         process = self._process
         thread = threading.Thread(
@@ -169,8 +172,29 @@ class BlenderController:
             raise BlenderWorkerError(
                 f"unsupported worker protocol: {event.get('protocol_version')}"
             )
+        try:
+            self.graphics = GraphicsPlatform.model_validate(event.get("graphics"))
+        except ValueError as error:
+            self.close()
+            raise BlenderWorkerError(
+                f"worker reported invalid graphics platform: {error}"
+            ) from error
         self.ready_event = event
         return event
+
+    @staticmethod
+    def _worker_environment() -> dict[str, str]:
+        environment = os.environ.copy()
+        try:
+            kernel_release = Path("/proc/sys/kernel/osrelease").read_text(encoding="utf-8")
+        except OSError:
+            return environment
+        if "microsoft" not in kernel_release.casefold() or not Path("/dev/dxg").exists():
+            return environment
+        environment.setdefault("GALLIUM_DRIVER", "d3d12")
+        if shutil.which("nvidia-smi") is not None:
+            environment.setdefault("MESA_D3D12_DEFAULT_ADAPTER_NAME", "NVIDIA")
+        return environment
 
     def request(self, operation: str, **arguments: object) -> dict[str, Any]:
         process = self._require_process()
@@ -837,6 +861,7 @@ class BlenderController:
             height=command.panel_height,
             samples=command.samples,
             engine=command.engine.value,
+            graphics_policy=command.graphics_policy.value,
             evaluator_output_dir=evaluator_dir,
         )
         render = RenderManifest.model_validate(result)
@@ -991,6 +1016,7 @@ class BlenderController:
         process = self._process
         self._process = None
         self.ready_event = None
+        self.graphics = None
         if process is None:
             return
         if process.poll() is None and process.stdin is not None:
