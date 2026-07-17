@@ -489,7 +489,11 @@ class BlenderController:
                 projection.horizontal_fov_degrees(aspect_ratio),
                 projection.vertical_fov_degrees(aspect_ratio),
             )
-            framing_distance = (half_span) / math.tan(math.radians(framing_fov / 2)) * margin
+            # half_span is the bounding sphere radius (half the AABB diagonal), so fit it with
+            # sin, not tan: tan assumes the whole span sits flat on the target plane and
+            # under-shoots the distance needed to keep an off-axis box's near corner (which
+            # projects larger, closer to the camera) inside the frustum.
+            framing_distance = half_span / math.sin(math.radians(framing_fov / 2)) * margin
         # A very wide FOV can drive framing_distance below the bounds radius, putting the camera
         # inside/behind the target, and a caller-supplied near clip can sit in front of the
         # bounds. Keep the camera a full span outside the bounds AND past its own near plane.

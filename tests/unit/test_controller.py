@@ -619,7 +619,7 @@ def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypat
         projection.horizontal_fov_degrees(1.0),
         projection.vertical_fov_degrees(1.0),
     )
-    expected_distance = (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
+    expected_distance = (span / 2) / math.sin(math.radians(framing_fov / 2)) * 1.25
     assert cast(float, arguments["distance_mm"]) == pytest.approx(expected_distance)
     assert result == {
         "camera": snapshot.camera.model_dump(mode="json"),
@@ -655,7 +655,7 @@ def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
         perspective.horizontal_fov_degrees(1.0),
         perspective.vertical_fov_degrees(1.0),
     )
-    assert distance == pytest.approx((span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25)
+    assert distance == pytest.approx((span / 2) / math.sin(math.radians(framing_fov / 2)) * 1.25)
 
     orthographic, ortho_distance = BlenderController._frame_camera(
         OrthographicProjection(scale_mm=1.0), span, aspect_ratio=1.0, margin=1.5
