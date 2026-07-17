@@ -10,11 +10,13 @@ from meshprobe.models import (
     AreaLight,
     Bounds,
     ComponentVisualState,
+    ContactSheetManifest,
     CustomIllumination,
     DepthOfField,
     EnvironmentMap,
     MarkMode,
     OrthographicProjection,
+    OrthonormalBasis,
     PerspectiveProjection,
     PointLight,
     Pose,
@@ -114,6 +116,18 @@ def test_perspective_depth_of_field_requires_one_focus_source() -> None:
         DepthOfField(mode="enabled", aperture_fstop=3.8)
     with pytest.raises(ValidationError, match="cannot declare"):
         DepthOfField(mode="disabled", focus_distance_mm=100)
+
+
+def test_camera_basis_must_be_orthonormal_and_right_handed() -> None:
+    basis = OrthonormalBasis(x=(0, 1, 0), y=(-1, 0, 0), z=(0, 0, 1))
+    assert basis.x == (0, 1, 0)
+
+    with pytest.raises(ValidationError, match="unit length"):
+        OrthonormalBasis(x=(2, 0, 0))
+    with pytest.raises(ValidationError, match="perpendicular"):
+        OrthonormalBasis(x=(1, 0, 0), y=(1, 0, 0))
+    with pytest.raises(ValidationError, match="right-handed"):
+        OrthonormalBasis(z=(0, 0, -1))
 
 
 def test_perspective_respects_vertical_and_automatic_sensor_fit() -> None:
@@ -515,6 +529,14 @@ def test_shaded_edges_style_rejects_duplicate_or_empty_edge_types() -> None:
         ShadedEdgesStyle(edge_types=())
     with pytest.raises(ValidationError, match="must be unique"):
         ShadedEdgesStyle(edge_types=("crease", "crease"))
+
+
+def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
+    render_schema = RenderManifest.model_json_schema()["properties"]["schema_version"]
+    sheet_schema = ContactSheetManifest.model_json_schema()["properties"]["schema_version"]
+
+    assert render_schema["const"] == 2
+    assert sheet_schema["const"] == 2
 
 
 def test_evaluator_component_colors_must_be_unique() -> None:

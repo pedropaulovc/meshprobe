@@ -585,6 +585,52 @@ def transform_from_source(
     return matrix @ vector if point else matrix.to_3x3() @ vector
 
 
+def validate_rotation_basis(value: Any) -> dict[str, list[float]]:
+    defaults = {
+        "x": [1.0, 0.0, 0.0],
+        "y": [0.0, 1.0, 0.0],
+        "z": [0.0, 0.0, 1.0],
+    }
+    if not isinstance(value, dict) or set(value) - defaults.keys():
+        raise ValueError("basis must contain only x, y, and z axes")
+
+    basis: dict[str, list[float]] = {}
+    for name, default in defaults.items():
+        axis = value.get(name, default)
+        if not isinstance(axis, (list, tuple)) or len(axis) != 3:
+            raise ValueError("basis axes must contain three finite numbers")
+        if any(
+            isinstance(component, bool)
+            or not isinstance(component, (int, float))
+            or not math.isfinite(component)
+            for component in axis
+        ):
+            raise ValueError("basis axes must contain three finite numbers")
+        basis[name] = [float(component) for component in axis]
+
+    axes = (basis["x"], basis["y"], basis["z"])
+    lengths = [math.sqrt(sum(component * component for component in axis)) for axis in axes]
+    if any(not math.isclose(length, 1.0, abs_tol=1e-6) for length in lengths):
+        raise ValueError("basis axes must have unit length")
+    dot_products = [
+        sum(left * right for left, right in zip(axes[first], axes[second], strict=True))
+        for first, second in ((0, 1), (0, 2), (1, 2))
+    ]
+    if any(not math.isclose(dot, 0.0, abs_tol=1e-6) for dot in dot_products):
+        raise ValueError("basis axes must be mutually perpendicular")
+    cross_xy = (
+        basis["x"][1] * basis["y"][2] - basis["x"][2] * basis["y"][1],
+        basis["x"][2] * basis["y"][0] - basis["x"][0] * basis["y"][2],
+        basis["x"][0] * basis["y"][1] - basis["x"][1] * basis["y"][0],
+    )
+    if any(
+        not math.isclose(actual, expected, abs_tol=1e-6)
+        for actual, expected in zip(cross_xy, basis["z"], strict=True)
+    ):
+        raise ValueError("basis must be right-handed (x cross y must equal z)")
+    return basis
+
+
 def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
@@ -599,8 +645,13 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("degrees must be finite")
     if not math.isfinite(degrees):
         raise ValueError("degrees must be finite")
-    axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
-    axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
+    basis = validate_rotation_basis(
+        command.get(
+            "basis",
+            {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]},
+        )
+    )
+    axis = Vector(basis[command["axis"]])
     target_mm = command["target_mm"]
     if not isinstance(target_mm, (list, tuple)) or len(target_mm) != 3:
         raise ValueError("target_mm must contain three finite numbers")
@@ -614,7 +665,8 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
     axis.normalize()
-    rotation = Quaternion(axis, math.radians(degrees))
+    camera_orbit_degrees = -degrees
+    rotation = Quaternion(axis, math.radians(camera_orbit_degrees))
     previous_pose = deepcopy(CURRENT_CAMERA["pose"])
     position = Vector(previous_pose["position_mm"])
     x, y, z, w = previous_pose["orientation_xyzw"]
@@ -643,8 +695,10 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "frame": frame,
         "target_mm": command["target_mm"],
         "axis": command["axis"],
+        "basis": basis,
         "axis_world": list(axis),
-        "degrees": degrees,
+        "requested_visual_degrees": degrees,
+        "applied_camera_orbit_degrees": camera_orbit_degrees,
         "previous_pose": previous_pose,
         "resulting_pose": resulting_pose,
     }
@@ -2055,7 +2109,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             evaluator = render_evaluator_passes(evaluator_dir, output.stem)
         session = session_snapshot()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha256": manifest["source_sha256"],
         "state_sha256": session["state_sha256"],
         "width": command["width"],

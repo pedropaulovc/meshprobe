@@ -270,13 +270,45 @@ class CameraTranslationReceipt(ContractModel):
     resulting_pose: Pose
 
 
+class OrthonormalBasis(ContractModel):
+    x: Vec3 = (1.0, 0.0, 0.0)
+    y: Vec3 = (0.0, 1.0, 0.0)
+    z: Vec3 = (0.0, 0.0, 1.0)
+
+    @model_validator(mode="after")
+    def validate_orthonormal(self) -> Self:
+        axes = (self.x, self.y, self.z)
+        lengths = [math.sqrt(sum(value * value for value in axis)) for axis in axes]
+        if any(not math.isclose(length, 1.0, abs_tol=1e-6) for length in lengths):
+            raise ValueError("basis axes must have unit length")
+        dot_products = [
+            sum(left * right for left, right in zip(axes[first], axes[second], strict=True))
+            for first, second in ((0, 1), (0, 2), (1, 2))
+        ]
+        if any(not math.isclose(value, 0.0, abs_tol=1e-6) for value in dot_products):
+            raise ValueError("basis axes must be mutually perpendicular")
+        cross_xy = (
+            self.x[1] * self.y[2] - self.x[2] * self.y[1],
+            self.x[2] * self.y[0] - self.x[0] * self.y[2],
+            self.x[0] * self.y[1] - self.x[1] * self.y[0],
+        )
+        if any(
+            not math.isclose(actual, expected, abs_tol=1e-6)
+            for actual, expected in zip(cross_xy, self.z, strict=True)
+        ):
+            raise ValueError("basis must be right-handed (x cross y must equal z)")
+        return self
+
+
 class CameraRotationReceipt(ContractModel):
     operation: Literal["rotate"] = "rotate"
     frame: CoordinateFrame
     target_mm: Vec3
     axis: Literal["x", "y", "z"]
+    basis: OrthonormalBasis
     axis_world: Vec3
-    degrees: FiniteFloat
+    requested_visual_degrees: FiniteFloat
+    applied_camera_orbit_degrees: FiniteFloat
     previous_pose: Pose
     resulting_pose: Pose
 
@@ -726,7 +758,7 @@ class ResolvedDepthOfField(ContractModel):
 
 
 class RenderManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     width: Annotated[int, Field(ge=64, le=16_384)]
@@ -830,7 +862,7 @@ class OcclusionEvidence(ContractModel):
 
 
 class ContactSheetManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()

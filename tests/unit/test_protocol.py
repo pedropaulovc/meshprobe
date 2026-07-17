@@ -149,12 +149,14 @@ def test_rotate_accepts_source_axis_and_preserves_projection_by_default() -> Non
             "axis": "y",
             "degrees": 145,
             "frame": "source",
+            "basis": {"x": [0, 1, 0], "y": [-1, 0, 0], "z": [0, 0, 1]},
         }
     )
 
     assert isinstance(command, ViewRotateCommand)
     assert command.frame == "source"
     assert command.axis == "y"
+    assert command.basis.x == (0, 1, 0)
     assert command.projection is None
 
 

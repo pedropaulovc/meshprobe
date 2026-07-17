@@ -15,6 +15,7 @@ from meshprobe.models import (
     GraphicsPolicy,
     Illumination,
     MarkMode,
+    OrthonormalBasis,
     Projection,
     RenderEngine,
     RenderStyle,
@@ -89,6 +90,7 @@ class ViewRotateCommand(CommandModel):
     axis: Literal["x", "y", "z"]
     degrees: FiniteFloat
     frame: Literal[CoordinateFrame.SOURCE, CoordinateFrame.WORLD] = CoordinateFrame.WORLD
+    basis: OrthonormalBasis = OrthonormalBasis()
     projection: Projection | None = None
     focus_component_ids: tuple[str, ...] = ()
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0

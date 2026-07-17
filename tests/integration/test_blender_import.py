@@ -182,6 +182,58 @@ camera.location = (0, -9, 7)
 direction = Vector((0, 0, 0.4)) - camera.location
 camera.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
 camera_data.lens = 55
+
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_rotation_control_glb(tmp_path: Path, *, name: str, model_rotation_degrees: float) -> Path:
+    output = tmp_path / f"{name}.glb"
+    script = tmp_path / f"build_{name}.py"
+    script.write_text(
+        f"""
+import bpy
+import math
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+assembly = bpy.data.objects.new('asymmetric-assembly', None)
+bpy.context.scene.collection.objects.link(assembly)
+
+def part(name, location, scale):
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    obj = bpy.context.object
+    obj.name = name
+    obj.parent = assembly
+    obj.location = location
+    obj.scale = scale
+
+part('long-arm', (1.4, 0.3, 0.2), (1.7, 0.22, 0.31))
+part('offset-block', (-0.35, 1.1, -0.4), (0.28, 0.55, 0.73))
+assembly.rotation_euler[2] = math.radians({model_rotation_degrees})
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (5, 4, 3)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+camera_data.lens = 50
 bpy.context.scene.camera = camera
 
 bpy.ops.export_scene.gltf(
@@ -708,10 +760,12 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     assert manifest.root_bounds.frame == "world"
     assert all(component.local_bounds.frame == "component" for component in manifest.components)
     assert isinstance(rotated, SessionSnapshot)
-    assert rotated.camera.pose.position_mm == pytest.approx((-4_000, 5_000, 3_000))
+    assert rotated.camera.pose.position_mm == pytest.approx((4_000, -5_000, 3_000))
     assert rotated.camera_operation is not None
     assert rotated.camera_operation.frame == "source"
     assert rotated.camera_operation.axis_world == pytest.approx((0, 0, 1))
+    assert rotated.camera_operation.requested_visual_degrees == 90
+    assert rotated.camera_operation.applied_camera_orbit_degrees == -90
     assert rotated.camera_operation.resulting_pose == rotated.camera.pose
     assert isinstance(source_pose, SessionSnapshot)
     assert source_pose.camera.pose.frame == "world"
@@ -841,6 +895,11 @@ def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
         ("degrees", math.inf, "degrees must be finite"),
         ("target_mm", (math.nan, 0, 0), "target_mm must contain three finite numbers"),
         ("target_mm", (0, math.inf, 0), "target_mm must contain three finite numbers"),
+        (
+            "basis",
+            {"x": [2, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]},
+            "basis axes must have unit length",
+        ),
     ],
 )
 def test_rejected_raw_rotation_contract_preserves_camera_state(
@@ -1003,6 +1062,13 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     rotated = SessionSnapshot.model_validate(rotated_envelope["result"])
     manager.close("review")
 
+    checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
+    legacy_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert legacy_checkpoint["schema_version"] == 2
+    legacy_checkpoint["schema_version"] = 1
+    legacy_checkpoint["accepted_commands"][0]["degrees"] = -command.degrees
+    checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
+
     recovered_manager = SessionManager(root, blender="blender", timeout_seconds=30)
     recovered_receipt = recovered_manager.execute(
         "review",
@@ -1018,9 +1084,8 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     )
     assert recovered.camera.projection == rotated.camera.projection
     assert recovered.state_sha256 == rotated.state_sha256
-    checkpoint = json.loads(
-        (root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
-    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["schema_version"] == 2
     assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
 
     recovered_manager.execute(
@@ -1038,6 +1103,84 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     assert reapplied.camera == rotated.camera
     assert reapplied.state_sha256 == rotated.state_sha256
     recovered_manager.shutdown()
+
+
+def test_positive_source_y_visual_rotation_matches_rotated_model(
+    tmp_path: Path,
+) -> None:
+    degrees = 145.0
+    source = build_rotation_control_glb(
+        tmp_path,
+        name="unrotated",
+        model_rotation_degrees=0,
+    )
+    positive_control = build_rotation_control_glb(
+        tmp_path,
+        name="model-rotated-positive-145",
+        model_rotation_degrees=degrees,
+    )
+
+    def highlighted_render(path: Path, *, rotate_view: bool) -> tuple[Image.Image, SessionSnapshot]:
+        output = tmp_path / f"{path.stem}.png"
+        evaluator = tmp_path / f"{path.stem}-evaluator"
+        with BlenderController(timeout_seconds=30) as controller:
+            manifest = controller.open_scene(path)
+            controller.execute(
+                ComponentMarkCommand(
+                    request_id="highlight-all",
+                    op="component.mark",
+                    component_ids=tuple(component.id for component in manifest.components),
+                    mode=MarkMode.HIGHLIGHTED,
+                )
+            )
+            if rotate_view:
+                snapshot = controller.execute(
+                    ViewRotateCommand(
+                        request_id="visual-positive-source-y-145",
+                        op="view.rotate",
+                        target_mm=(0, 0, 0),
+                        axis="y",
+                        degrees=degrees,
+                        frame="source",
+                    )
+                )
+            else:
+                snapshot = controller.execute(
+                    SessionResetCommand(request_id="positive-control", op="session.reset")
+                )
+                controller.execute(
+                    ComponentMarkCommand(
+                        request_id="highlight-control",
+                        op="component.mark",
+                        component_ids=tuple(component.id for component in manifest.components),
+                        mode=MarkMode.HIGHLIGHTED,
+                    )
+                )
+            assert isinstance(snapshot, SessionSnapshot)
+            rendered = controller.render_image(
+                RenderImageCommand(
+                    request_id="render-control",
+                    op="render.image",
+                    output_path=str(output),
+                    width=256,
+                    height=256,
+                    samples=1,
+                ),
+                evaluator_output_dir=evaluator,
+            )
+        assert rendered.evaluator is not None
+        image = Image.open(rendered.evaluator.highlighted.path).convert("RGB")
+        image.load()
+        return image, snapshot
+
+    actual, rotated_snapshot = highlighted_render(source, rotate_view=True)
+    expected, _ = highlighted_render(positive_control, rotate_view=False)
+
+    assert rotated_snapshot.camera_operation is not None
+    assert rotated_snapshot.camera_operation.requested_visual_degrees == degrees
+    assert rotated_snapshot.camera_operation.applied_camera_orbit_degrees == -degrees
+    difference = ImageChops.difference(actual, expected)
+    assert difference.getbbox() is None
 
 
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:

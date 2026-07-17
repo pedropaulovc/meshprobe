@@ -77,12 +77,29 @@ class SessionMetadata(BaseModel):
 class SessionCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 2
     source_path: str
     source_sha256: str
     blender: str | None
     state_sha256: str
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _upgrade_checkpoint(checkpoint: SessionCheckpoint) -> tuple[SessionCheckpoint, bool]:
+    """Translate persisted commands whose meaning changed between checkpoint schemas."""
+    if checkpoint.schema_version == 2:
+        return checkpoint, False
+
+    accepted_commands: list[dict[str, Any]] = []
+    for raw in checkpoint.accepted_commands:
+        command = dict(raw)
+        if command.get("op") == "view.rotate":
+            command["degrees"] = -float(command["degrees"])
+        accepted_commands.append(command)
+    return (
+        checkpoint.model_copy(update={"schema_version": 2, "accepted_commands": accepted_commands}),
+        True,
+    )
 
 
 class ComponentIndexEntry(BaseModel):
@@ -573,8 +590,8 @@ class SessionManager:
         current = self._services.get(name)
         if current is not None:
             return current
-        checkpoint = SessionCheckpoint.model_validate_json(
-            files.checkpoint.read_text(encoding="utf-8")
+        checkpoint, upgraded = _upgrade_checkpoint(
+            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         service = self._new_service(checkpoint.blender)
         try:
@@ -592,6 +609,8 @@ class SessionManager:
 
             for raw in checkpoint.accepted_commands:
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
+            if upgraded:
+                atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
         except Exception:
             service.kill()
             raise
@@ -746,8 +765,8 @@ class SessionManager:
         command: Command,
         snapshot: SessionSnapshot,
     ) -> None:
-        checkpoint = SessionCheckpoint.model_validate_json(
-            files.checkpoint.read_text(encoding="utf-8")
+        checkpoint, _ = _upgrade_checkpoint(
+            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         if isinstance(command, SessionResetCommand):
             checkpoint.accepted_commands.clear()

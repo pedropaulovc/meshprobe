@@ -718,19 +718,42 @@ def view_set(
 @app.command("view-orbit")
 def view_orbit(
     ctx: typer.Context,
-    target: Annotated[tuple[float, float, float], typer.Option("--target")],
-    azimuth: Annotated[float, typer.Option("--azimuth")],
-    elevation: Annotated[float, typer.Option("--elevation")],
-    distance: Annotated[float, typer.Option("--distance", min=0.000001)],
-    projection_json: Annotated[str, typer.Option("--projection-json")],
-    roll: Annotated[float, typer.Option("--roll")] = 0.0,
+    target: Annotated[
+        tuple[float, float, float],
+        typer.Option("--target", help="Absolute world-space X Y Z target in millimeters."),
+    ],
+    azimuth: Annotated[
+        float,
+        typer.Option("--azimuth", help="Absolute degrees from +X toward +Y about world +Z."),
+    ],
+    elevation: Annotated[
+        float,
+        typer.Option("--elevation", help="Absolute degrees above the world XY plane toward +Z."),
+    ],
+    distance: Annotated[
+        float,
+        typer.Option("--distance", min=0.000001, help="Absolute target distance in millimeters."),
+    ],
+    projection_json: Annotated[
+        str,
+        typer.Option("--projection-json", help="Complete perspective or orthographic projection."),
+    ],
+    roll: Annotated[
+        float,
+        typer.Option("--roll", help="Signed right-hand-rule degrees around the forward axis."),
+    ] = 0.0,
     focus: Annotated[
         list[str] | None,
         typer.Option("--focus", help="Component ref, stable ID, exact name, or exact path."),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
-    """Orbit the camera around a target point."""
+    """Set an absolute orbit in right-handed, Z-up MeshProbe world coordinates.
+
+    Angles are degrees, not relative deltas. Positive azimuth follows the right-hand rule
+    around +Z. GLTF is right-handed and Y-up; scene.open reports the exact source_to_world
+    mapping (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y).
+    """
 
     from pydantic import TypeAdapter
 
@@ -810,7 +833,10 @@ def view_rotate(
     ],
     degrees: Annotated[
         float,
-        typer.Option("--degrees", help="Signed right-hand-rule rotation in degrees."),
+        typer.Option(
+            "--degrees",
+            help="Signed right-hand-rule visual/model rotation; camera orbit is the inverse.",
+        ),
     ],
     frame: Annotated[
         CoordinateFrame,
@@ -822,10 +848,17 @@ def view_rotate(
             "--projection-json", help="Optional replacement projection; current by default."
         ),
     ] = None,
+    basis_json: Annotated[
+        str | None,
+        typer.Option(
+            "--basis-json",
+            help="Right-handed orthonormal basis JSON with x, y, and z vectors.",
+        ),
+    ] = None,
     focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
-    """Rotate the current camera about a source- or world-frame axis."""
+    """Show the visual equivalent of rotating the model around a basis axis."""
 
     if frame not in {CoordinateFrame.SOURCE, CoordinateFrame.WORLD}:
         raise typer.BadParameter("--frame must be source or world")
@@ -837,6 +870,13 @@ def view_rotate(
         from pydantic import TypeAdapter
 
         projection = TypeAdapter(Projection).validate_json(projection_json)
+    from meshprobe.models import OrthonormalBasis
+
+    basis = (
+        OrthonormalBasis.model_validate_json(basis_json)
+        if basis_json is not None
+        else OrthonormalBasis()
+    )
     _execute(
         ctx,
         ViewRotateCommand(
@@ -846,6 +886,7 @@ def view_rotate(
             axis=normalized_axis,  # type: ignore[arg-type]
             degrees=degrees,
             frame=frame,  # type: ignore[arg-type]
+            basis=basis,
             projection=projection,
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,

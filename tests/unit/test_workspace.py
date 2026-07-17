@@ -513,6 +513,45 @@ def test_closed_and_killed_sessions_recover_checkpoint_with_default_render_style
     assert services[-1].closed
 
 
+def test_failed_checkpoint_upgrade_kills_untracked_recovery_worker(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("review", source)
+    manager.close("review")
+    checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["schema_version"] = 1
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    recovered = SessionManager(root, service_factory=factory)
+
+    def fail_checkpoint_write(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("meshprobe.workspace.atomic_json", fail_checkpoint_write)
+    with pytest.raises(OSError, match="disk full"):
+        recovered.execute(
+            "review",
+            SessionSnapshotCommand(request_id="recover", op="session.snapshot"),
+        )
+
+    assert services[-1].killed
+    assert recovered._services == {}
+
+
 def test_manager_lists_resolves_and_stops_all_sessions(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
