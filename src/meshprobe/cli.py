@@ -13,6 +13,8 @@ from typing import Annotated
 import typer
 import yaml
 from pydantic import ValidationError
+from typer import _click
+from typer.core import TyperGroup
 
 from meshprobe.client import MeshProbeClient
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
@@ -79,7 +81,112 @@ from meshprobe.workspace import (
     workspace_root,
 )
 
-app = typer.Typer(help="Read-only 3D model inspection for AI agents.", no_args_is_help=True)
+
+def _is_option(token: str) -> bool:
+    return token.startswith("-") and token != "-"
+
+
+def _matches_option(token: str, names: set[str]) -> bool:
+    if token.split("=", 1)[0] in names:
+        return True
+    return not token.startswith("--") and token[:2] in names
+
+
+def _consumes_separate_value(token: str, value_names: set[str]) -> bool:
+    return "=" not in token and token in value_names
+
+
+class GlobalOptionGroup(TyperGroup):
+    """Root group that also accepts its global options after the subcommand.
+
+    Click only parses group-level options that precede the subcommand token, so
+    ``meshprobe find foo --json`` would otherwise fail with "No such option"
+    while ``meshprobe --json find foo`` works. This hoists any root global
+    option (and its value) that trails the subcommand back in front of it, so
+    ``--session``/``--workspace``/``--json``/``--yaml``/``--raw`` work in either
+    position (issue #48). Argv is returned untouched when nothing moves, so
+    existing before-subcommand usage is unaffected.
+    """
+
+    def parse_args(self, ctx: _click.Context, args: list[str]) -> list[str]:
+        return super().parse_args(ctx, self._hoist_global_options(ctx, args))
+
+    def _hoist_global_options(self, ctx: _click.Context, args: list[str]) -> list[str]:
+        global_names, global_value_names = self._option_names(self, ctx)
+        command_index = self._command_index(args, global_value_names)
+        if command_index is None:
+            return args
+        command = args[command_index]
+        subcommand = self.get_command(ctx, command)
+        subcommand_names, subcommand_value_names = self._option_names(subcommand, ctx)
+        hoisted, trailing = self._split_global_options(
+            args[command_index + 1 :],
+            global_names - subcommand_names,
+            global_value_names | subcommand_value_names,
+        )
+        if not hoisted:
+            return args
+        return [*args[:command_index], *hoisted, command, *trailing]
+
+    @staticmethod
+    def _option_names(
+        command: _click.Command | None, ctx: _click.Context
+    ) -> tuple[set[str], set[str]]:
+        names: set[str] = set()
+        value_names: set[str] = set()
+        if command is None:
+            return names, value_names
+        for param in command.get_params(ctx):
+            if param.param_type_name != "option":
+                continue
+            option_names = (*param.opts, *param.secondary_opts)
+            names.update(option_names)
+            if not getattr(param, "is_flag", False) and not getattr(param, "count", False):
+                value_names.update(option_names)
+        return names, value_names
+
+    @staticmethod
+    def _command_index(args: list[str], value_names: set[str]) -> int | None:
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                return None
+            if not _is_option(token):
+                return index
+            index += 1 + _consumes_separate_value(token, value_names)
+        return None
+
+    @staticmethod
+    def _split_global_options(
+        trailing: list[str], global_names: set[str], value_names: set[str]
+    ) -> tuple[list[str], list[str]]:
+        hoisted: list[str] = []
+        remaining: list[str] = []
+        index = 0
+        while index < len(trailing):
+            token = trailing[index]
+            if token == "--":
+                remaining.extend(trailing[index:])
+                break
+            if not _is_option(token):
+                remaining.append(token)
+                index += 1
+                continue
+            target = hoisted if _matches_option(token, global_names) else remaining
+            target.append(token)
+            index += 1
+            if _consumes_separate_value(token, value_names) and index < len(trailing):
+                target.append(trailing[index])
+                index += 1
+        return hoisted, remaining
+
+
+app = typer.Typer(
+    help="Read-only 3D model inspection for AI agents.",
+    no_args_is_help=True,
+    cls=GlobalOptionGroup,
+)
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
 DEFAULT_WORKSPACE = Path.cwd()

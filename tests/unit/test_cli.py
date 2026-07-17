@@ -1442,6 +1442,80 @@ def test_global_output_modes_are_mutually_exclusive() -> None:
     assert "mutually exclusive" in result.output
 
 
+@pytest.mark.parametrize("flag", ["--json", "--yaml", "--raw"])
+def test_output_flags_work_after_subcommand(flag: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    before = runner.invoke(app, [flag, "snapshot"])
+    after = runner.invoke(app, ["snapshot", flag])
+
+    assert before.exit_code == 0
+    assert after.exit_code == 0
+    assert after.stdout == before.stdout
+
+
+def test_session_and_workspace_work_after_subcommand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / ".meshprobe"
+    root.mkdir()
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    before = runner.invoke(
+        app,
+        ["--workspace", str(root), "--session", "review", "display", "c2", "--mode", "isolated"],
+    )
+    after = runner.invoke(
+        app,
+        ["display", "c2", "--mode", "isolated", "--workspace", str(root), "--session", "review"],
+    )
+
+    assert before.exit_code == 0
+    assert after.exit_code == 0
+    assert after.stdout == before.stdout
+    assert isinstance(client.commands[-1], ComponentDisplayCommand)
+
+
+def test_global_and_subcommand_options_interleave_after_subcommand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app, ["open", str(source), "--json", "--blender", "pinned", "--session", "review"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["session"] == "review"
+    assert isinstance(client.commands[-1], SceneOpenCommand)
+
+
+def test_double_dash_keeps_a_global_flag_as_a_literal_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "find", "--", "--json"])
+
+    assert result.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, ComponentFindCommand)
+    assert command.selector.pattern == "--json"
+
+
+def test_subcommand_help_is_not_shadowed_by_global_hoisting() -> None:
+    result = runner.invoke(app, ["view-orbit", "--help"])
+
+    assert result.exit_code == 0
+    assert "absolute orbit" in unstyle(result.stdout).lower()
+
+
 @pytest.mark.parametrize(
     ("target", "arguments"),
     (
