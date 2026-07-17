@@ -692,6 +692,22 @@ def test_yaml_output_is_machine_readable(monkeypatch: pytest.MonkeyPatch) -> Non
     assert yaml.safe_load(result.stdout)["result_path"].endswith("result.json")
 
 
+def test_version_flag_prints_installed_version_and_exits() -> None:
+    from meshprobe import __version__
+
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == f"meshprobe {__version__}"
+
+
+def test_version_flag_takes_precedence_over_a_subcommand() -> None:
+    result = runner.invoke(app, ["--version", "schema"])
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("meshprobe ")
+
+
 def test_flat_operation_commands_build_typed_protocol_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

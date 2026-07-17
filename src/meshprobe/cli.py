@@ -86,6 +86,15 @@ class CliOptions:
         self.output = output
 
 
+def _print_version(value: bool) -> None:
+    if not value:
+        return
+    from meshprobe import __version__
+
+    typer.echo(f"meshprobe {__version__}")
+    raise typer.Exit()
+
+
 @app.callback()
 def global_options(
     ctx: typer.Context,
@@ -99,6 +108,15 @@ def global_options(
     ] = False,
     raw: Annotated[
         bool, typer.Option("--raw", help="Emit the full operation result as JSON.")
+    ] = False,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            help="Print the installed meshprobe version and exit.",
+            callback=_print_version,
+            is_eager=True,
+        ),
     ] = False,
 ) -> None:
     """Select a durable named session and receipt output format."""
