@@ -294,6 +294,99 @@ def imported_camera(
     )
 
 
+# Fraction of the frame's limiting axis the model fills once the default camera
+# auto-frames the scene (see meshprobe.camera.DEFAULT_FRAME_FILL, kept in sync;
+# the worker runs inside Blender and cannot import the package).
+DEFAULT_FRAME_FILL = 0.9
+
+
+def framed_default_camera(
+    camera: dict[str, Any],
+    root_bounds: dict[str, list[float]],
+    frame_fill: float = DEFAULT_FRAME_FILL,
+) -> dict[str, Any]:
+    """Re-frame an imported camera so the whole scene fills the default view.
+
+    Keeps the source camera's viewing direction and lens but dollies it in (or
+    out) along its own axis and re-centres it on ``root_bounds`` so the model
+    occupies ``frame_fill`` of the frame instead of whatever margin the source
+    happened to author. The faithful source camera is left untouched in the
+    manifest; only the applied session view is tightened.
+    """
+
+    framed = deepcopy(camera)
+    projection = normalize_camera_projection(camera["projection"])
+    pose = camera["pose"]
+    x, y, z, w = pose["orientation_xyzw"]
+    rotation = Quaternion((w, x, y, z)).normalized()
+    forward = rotation @ Vector((0.0, 0.0, -1.0))
+    right = rotation @ Vector((1.0, 0.0, 0.0))
+    up = rotation @ Vector((0.0, 1.0, 0.0))
+    minimum = root_bounds["minimum_mm"]
+    maximum = root_bounds["maximum_mm"]
+    center = Vector((low + high) / 2 for low, high in zip(minimum, maximum, strict=True))
+    corners = [
+        Vector((corner_x, corner_y, corner_z))
+        for corner_x in (minimum[0], maximum[0])
+        for corner_y in (minimum[1], maximum[1])
+        for corner_z in (minimum[2], maximum[2])
+    ]
+    half_extent = max((high - low) / 2 for low, high in zip(minimum, maximum, strict=True))
+
+    if projection["mode"] == "orthographic":
+        half_width = max(abs((corner - center) @ right) for corner in corners)
+        half_height = max(abs((corner - center) @ up) for corner in corners)
+        framed_projection = deepcopy(projection)
+        framed_projection["scale_mm"] = 2.0 * max(half_width, half_height, 1.0) / frame_fill
+        standoff = max(
+            (abs((corner - center) @ forward) for corner in corners), default=half_extent
+        )
+        standoff = max(standoff, half_extent, 1.0)
+        position = center - forward * standoff
+        framed_projection["near_clip_mm"] = max(0.1, standoff - half_extent * 2.0 - 1.0)
+        framed_projection["far_clip_mm"] = (standoff + half_extent * 2.0 + 1.0) * 2.0
+    else:
+        horizontal_half_tan, vertical_half_tan = _perspective_half_tangents(projection, 1.0)
+        distance = 0.0
+        for corner in corners:
+            offset = corner - center
+            depth = offset @ forward
+            horizontal = abs(offset @ right) / (horizontal_half_tan * frame_fill)
+            vertical = abs(offset @ up) / (vertical_half_tan * frame_fill)
+            distance = max(distance, horizontal - depth, vertical - depth)
+        distance = max(distance, half_extent + 1.0)
+        position = center - forward * distance
+        depths = [(corner - position) @ forward for corner in corners]
+        framed_projection = deepcopy(projection)
+        framed_projection["near_clip_mm"] = max(0.1, min(depths) * 0.5)
+        framed_projection["far_clip_mm"] = max(depths) * 1.5
+
+    framed["pose"] = {
+        "position_mm": list(position),
+        "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+        "frame": "world",
+    }
+    framed["projection"] = framed_projection
+    return framed
+
+
+def _perspective_half_tangents(
+    projection: dict[str, Any],
+    aspect_ratio: float,
+) -> tuple[float, float]:
+    sensor_width = projection["sensor_width_mm"]
+    sensor_height = projection.get("sensor_height_mm", 24.0)
+    sensor_fit = projection["sensor_fit"]
+    if sensor_fit == "auto":
+        sensor_fit = "horizontal" if aspect_ratio >= 1 else "vertical"
+    if sensor_fit == "vertical":
+        sensor_width = sensor_height * aspect_ratio
+    else:
+        sensor_height = sensor_width / aspect_ratio
+    focal_length = projection["focal_length_mm"]
+    return sensor_width / (2 * focal_length), sensor_height / (2 * focal_length)
+
+
 def light_color(data: bpy.types.Light) -> dict[str, list[float]]:
     return {"linear_rgb": [float(channel) for channel in data.color]}
 
@@ -1574,7 +1667,7 @@ def reset_session() -> dict[str, Any]:
             "mark": "unmarked",
             "mark_color": None,
         }
-    apply_camera(deepcopy(IMPORTED_CAMERA))
+    apply_camera(framed_default_camera(IMPORTED_CAMERA, require_session()["root_bounds"]))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
     configure_render_style({})
     return session_snapshot()
@@ -3124,14 +3217,14 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
         for component_id, obj in COMPONENT_OBJECTS.items()
     }
     IMPORTED_CAMERA = deepcopy(manifest["imported_camera"])
-    CURRENT_CAMERA = deepcopy(IMPORTED_CAMERA)
+    CURRENT_CAMERA = framed_default_camera(IMPORTED_CAMERA, manifest["root_bounds"])
     CURRENT_CAMERA_OPERATION = None
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
     MARK_OBJECTS = {}
     OVERRIDE_MATERIALS = {}
     EMISSION_MATERIALS = {}
-    apply_camera(deepcopy(IMPORTED_CAMERA))
+    apply_camera(deepcopy(CURRENT_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 
 

@@ -82,6 +82,25 @@ def rgb_pixel(image: Image.Image, xy: tuple[int, int]) -> tuple[int, ...]:
     return pixel
 
 
+def _pin_source_camera(controller: BlenderController, manifest: SceneManifest) -> None:
+    """Apply the faithful source camera as the live view.
+
+    The default applied view now auto-frames the whole scene (issue #56), which is
+    geometry-dependent. Tests that assert camera-specific results (occlusion ray
+    counts, absolute rotated poses) pin the source camera explicitly so they keep
+    testing their real invariant against a known camera rather than an incidental
+    default pose that is designed to change.
+    """
+
+    controller.execute(
+        ViewSetCommand(
+            request_id="pin-source-camera",
+            op="view.set",
+            camera=manifest.imported_camera,
+        )
+    )
+
+
 def build_obj_axes(tmp_path: Path) -> Path:
     output = tmp_path / "axes.obj"
     output.write_text(
@@ -144,6 +163,57 @@ bpy.ops.export_scene.gltf(
     export_format='GLB',
     export_cameras=True,
     export_lights=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_far_camera_tall_glb(tmp_path: Path) -> Path:
+    """A tall, thin assembly whose source camera is parked far away.
+
+    Mirrors the shape of issue #56: rendering the untouched source camera leaves
+    the model filling a small fraction of the frame.
+    """
+
+    output = tmp_path / "far-camera-tall.glb"
+    script = tmp_path / "build_far_camera_tall.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+def part(name, location, scale):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)
+    obj = bpy.context.object
+    obj.name = name
+    obj.scale = scale
+
+part('column', (0, 0, 0), (0.15, 0.15, 0.6))
+part('foot', (0.12, 0, -0.55), (0.1, 0.1, 0.05))
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (5, -5, 1.5)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+camera_data.lens = 50
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
 )
 """,
         encoding="utf-8",
@@ -1088,6 +1158,7 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         rotated = controller.execute(
             ViewRotateCommand(
                 request_id="rotate-source-y",
@@ -1556,6 +1627,18 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
         evaluator = tmp_path / f"{path.stem}-evaluator"
         with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
             manifest = controller.open_scene(path)
+            # The default applied view now auto-frames the whole scene (issue #56),
+            # which is geometry-dependent. Pin the (geometry-independent) source
+            # camera explicitly so this test isolates view-vs-model rotation from
+            # framing, exactly as it did when the default view was the raw source
+            # camera.
+            controller.execute(
+                ViewSetCommand(
+                    request_id="pin-source-camera",
+                    op="view.set",
+                    camera=manifest.imported_camera,
+                )
+            )
             controller.execute(
                 ComponentMarkCommand(
                     request_id="highlight-all",
@@ -1573,18 +1656,6 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                         axis="y",
                         degrees=degrees,
                         frame=CoordinateFrame.SOURCE,
-                    )
-                )
-            else:
-                controller.execute(
-                    SessionResetCommand(request_id="positive-control", op="session.reset")
-                )
-                controller.execute(
-                    ComponentMarkCommand(
-                        request_id="highlight-control",
-                        op="component.mark",
-                        component_ids=tuple(component.id for component in manifest.components),
-                        mode=MarkMode.HIGHLIGHTED,
                     )
                 )
             snapshot = SessionSnapshot.model_validate(
@@ -1843,6 +1914,83 @@ def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
     assert camera["pose"]["position_mm"] == pytest.approx((8_000, 9_000, 10_000))
     assert camera["projection"]["sensor_fit"] == "auto"
     assert result["warning"] is None
+
+
+def _mask_frame_coverage(components_png: Path) -> dict[str, float]:
+    image = Image.open(components_png).convert("L")
+    width, height = image.size
+    mask = image.point(lambda value: 255 if value > 8 else 0)
+    bbox = mask.getbbox()
+    assert bbox is not None, "component mask is empty; nothing was rendered"
+    left, upper, right, lower = bbox
+    return {
+        "width_fraction": (right - left) / width,
+        "height_fraction": (lower - upper) / height,
+        "area_fraction": mask.histogram()[255] / (width * height),
+        "min_x": left / width,
+        "max_x": right / width,
+        "min_y": upper / height,
+        "max_y": lower / height,
+    }
+
+
+def test_default_view_frames_full_scene_tightly(tmp_path: Path) -> None:
+    source = build_far_camera_tall_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+
+        framed_dir = tmp_path / "framed"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="framed",
+                op="render.image",
+                output_path=str(tmp_path / "framed.png"),
+                width=512,
+                height=512,
+                samples=1,
+            ),
+            evaluator_output_dir=str(framed_dir),
+        )
+        framed = _mask_frame_coverage(framed_dir / "framed.components.png")
+
+        # Render the untouched source camera for a before/after comparison.
+        controller.execute(
+            ViewSetCommand(
+                request_id="source-camera",
+                op="view.set",
+                camera=manifest.imported_camera,
+            )
+        )
+        source_dir = tmp_path / "source"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="source",
+                op="render.image",
+                output_path=str(tmp_path / "source.png"),
+                width=512,
+                height=512,
+                samples=1,
+            ),
+            evaluator_output_dir=str(source_dir),
+        )
+        source_view = _mask_frame_coverage(source_dir / "source.components.png")
+
+    # The imported camera is recorded faithfully; only the applied view is reframed.
+    assert manifest.imported_camera.pose.position_mm == pytest.approx((5_000, -5_000, 1_500))
+
+    # The default view fills the limiting axis tightly without clipping the model.
+    limiting_fill = max(framed["width_fraction"], framed["height_fraction"])
+    assert limiting_fill >= 0.8
+    assert framed["min_x"] >= 0.005
+    assert framed["max_x"] <= 0.995
+    assert framed["min_y"] >= 0.005
+    assert framed["max_y"] <= 0.995
+
+    # And it is dramatically tighter than the source camera it replaced.
+    assert framed["area_fraction"] > source_view["area_fraction"] * 4
 
 
 def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:
@@ -3637,6 +3785,7 @@ def test_occlusion_surface_scan_is_budgeted_and_ignores_in_frame_object_origin(
     source = build_dense_off_frame_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         target = next(
             component
             for component in manifest.components
@@ -3808,6 +3957,7 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         visibility_before = controller.request(
             "component.visibility",
@@ -3838,6 +3988,7 @@ def test_worker_traces_through_ghosted_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="ghosted")
 
@@ -3852,6 +4003,7 @@ def test_worker_traces_through_alpha_blended_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4276,6 +4428,7 @@ def test_worker_respects_gltf_alpha_mask_cutoff(
     )
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4292,6 +4445,7 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     source = build_label_occlusion_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
         label_source = by_name["WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]
@@ -4310,6 +4464,7 @@ def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> No
     source = build_multi_surface_occlusion_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         blocker = by_name["multi-surface-blocker"]
         controller.request("component.display", component_ids=[blocker], mode="ghosted")
@@ -4326,6 +4481,7 @@ def test_worker_respects_backface_culling(tmp_path: Path, back_facing: bool) -> 
     source = build_backface_culling_glb(tmp_path, back_facing=back_facing)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4343,6 +4499,7 @@ def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
     source = build_backface_culling_glb(tmp_path, back_facing=True)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
         culled = by_name["single-sided-blocker"]
@@ -4414,6 +4571,7 @@ def test_worker_counts_ghosted_focus_hits(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["target"]], mode="ghosted")
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")

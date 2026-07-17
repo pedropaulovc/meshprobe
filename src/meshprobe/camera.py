@@ -19,6 +19,65 @@ from meshprobe.models import (
 
 _EPSILON = 1e-12
 
+# Fraction of the frame's limiting axis the model should occupy when the default
+# camera auto-frames the scene on open. 0.9 leaves a ~5% margin on every side —
+# comfortably clear of the edge, yet far tighter than an untouched source camera.
+DEFAULT_FRAME_FILL = 0.9
+
+
+def bounds_fit_distance_mm(
+    *,
+    minimum_mm: Vec3,
+    maximum_mm: Vec3,
+    forward: Vec3,
+    right: Vec3,
+    up: Vec3,
+    horizontal_half_tan: float,
+    vertical_half_tan: float,
+    frame_fill: float = DEFAULT_FRAME_FILL,
+) -> float:
+    """Smallest pinhole-camera distance that frames an axis-aligned box tightly.
+
+    Returns the distance, in millimetres, to place the camera along ``-forward``
+    from the box centre so every one of the box's eight corners stays within
+    ``frame_fill`` of the frame's limiting axis. ``forward``/``right``/``up`` are
+    the camera basis (unit) vectors; the half-tangents are ``tan(fov/2)`` for the
+    horizontal and vertical fields of view. A larger ``frame_fill`` frames the box
+    more tightly; the limiting axis reaches exactly ``frame_fill`` and the other
+    axis stays inside it, so the box never clips.
+    """
+
+    if not 0.0 < frame_fill <= 1.0:
+        raise ValueError("frame_fill must be within (0, 1]")
+    if horizontal_half_tan <= 0.0 or vertical_half_tan <= 0.0:
+        raise ValueError("half-angle tangents must be positive")
+    center = cast(
+        Vec3, tuple((low + high) / 2 for low, high in zip(minimum_mm, maximum_mm, strict=True))
+    )
+    distance = 0.0
+    for corner in _box_corners(minimum_mm, maximum_mm):
+        offset = cast(
+            Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))
+        )
+        depth = _dot(offset, forward)
+        horizontal = abs(_dot(offset, right)) / (horizontal_half_tan * frame_fill)
+        vertical = abs(_dot(offset, up)) / (vertical_half_tan * frame_fill)
+        distance = max(distance, horizontal - depth, vertical - depth)
+    return distance
+
+
+def _box_corners(minimum_mm: Vec3, maximum_mm: Vec3) -> list[Vec3]:
+    return [
+        (x, y, z)
+        for x in (minimum_mm[0], maximum_mm[0])
+        for y in (minimum_mm[1], maximum_mm[1])
+        for z in (minimum_mm[2], maximum_mm[2])
+    ]
+
+
+def _dot(left: Vec3, right: Vec3) -> float:
+    return sum(a * b for a, b in zip(left, right, strict=True))
+
 
 def orbit_camera(
     *,
