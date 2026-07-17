@@ -609,11 +609,11 @@ class SessionManager:
 
             for raw in checkpoint.accepted_commands:
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
+            if upgraded:
+                atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
         except Exception:
             service.kill()
             raise
-        if upgraded:
-            atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
         self._services[name] = service
         return service
 
