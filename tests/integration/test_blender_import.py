@@ -1135,10 +1135,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             is VisibleBackgroundMode.ENVIRONMENT
         )
         assert raw_environment_world["visible_background_mode"] == "environment"
-        assert (
-            raw_environment_world["camera_background_source"]
-            == "MeshProbeEnvironmentLighting"
-        )
+        assert raw_environment_world["camera_background_source"] == "MeshProbeEnvironmentLighting"
 
         raw_environment_spec.update(
             {

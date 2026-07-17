@@ -979,8 +979,7 @@ def custom_illumination_has_effective_output(illumination: dict[str, Any]) -> bo
     if illumination.get("environment_map") is not None:
         return True
     return any(
-        light.get("color_temperature_k") is not None
-        or any(light.get("linear_rgb") or ())
+        light.get("color_temperature_k") is not None or any(light.get("linear_rgb") or ())
         for light in illumination["lights"]
     )
 
