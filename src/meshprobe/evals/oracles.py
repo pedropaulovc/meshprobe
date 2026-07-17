@@ -634,6 +634,14 @@ def _coverage_gate(inputs: OracleInputs) -> GateResult:
             if event.operation is Operation.COMPONENT_INSPECT
         ):
             failures.append("component.inspect did not address the intended target")
+        if Operation.COMPONENT_OCCLUSION in inputs.truth.required_operations and not any(
+            isinstance(event.arguments, dict)
+            and isinstance(component_ids := event.arguments.get("component_ids"), list)
+            and target_id in component_ids
+            for event in accepted
+            if event.operation is Operation.COMPONENT_OCCLUSION
+        ):
+            failures.append("component.occlusion did not address the intended target")
     if failures:
         return _fail(
             "coverage", "required operations were missing, no-op, or misdirected", failures=failures

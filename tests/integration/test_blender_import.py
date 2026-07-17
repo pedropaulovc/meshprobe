@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import shutil
+import struct
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -35,6 +36,7 @@ from meshprobe.models import (
     GraphicsPolicy,
     IlluminationPreset,
     MarkMode,
+    OcclusionQueryResult,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
@@ -50,6 +52,7 @@ from meshprobe.models import (
 from meshprobe.protocol import (
     ComponentDisplayCommand,
     ComponentMarkCommand,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -468,7 +471,15 @@ bpy.ops.export_scene.gltf(
     return output
 
 
-def build_occluded_glb(tmp_path: Path) -> Path:
+def build_occluded_glb(
+    tmp_path: Path,
+    *,
+    blocker_alpha: float = 1.0,
+    mixed_blocker_materials: bool = False,
+    linked_blocker_alpha: bool = False,
+    blocker_alpha_mode: str = "BLEND",
+    blocker_alpha_cutoff: float | None = None,
+) -> Path:
     output = tmp_path / "occluded.glb"
     script = tmp_path / "build_occluded.py"
     script.write_text(
@@ -480,10 +491,331 @@ bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
 bpy.context.object.name = 'target'
 bpy.ops.mesh.primitive_cube_add(size=2.0, location=(2, 0, 0))
 bpy.context.object.name = 'blocker'
+if {blocker_alpha!r} < 1 or {linked_blocker_alpha!r}:
+    transparent = bpy.data.materials.new('clear-shell')
+    transparent.diffuse_color = (0.2, 0.5, 0.8, {blocker_alpha!r})
+    transparent.use_nodes = True
+    principled = transparent.node_tree.nodes.get('Principled BSDF')
+    principled.inputs['Base Color'].default_value = (0.2, 0.5, 0.8, 1.0)
+    if {linked_blocker_alpha!r}:
+        image = bpy.data.images.new('opaque-alpha', width=1, height=1, alpha=True)
+        image.pixels = [1.0, 1.0, 1.0, 1.0]
+        image.pack()
+        texture = transparent.node_tree.nodes.new('ShaderNodeTexImage')
+        texture.image = image
+        transparent.node_tree.links.new(texture.outputs['Alpha'], principled.inputs['Alpha'])
+        if hasattr(transparent, 'surface_render_method'):
+            transparent.surface_render_method = 'DITHERED'
+    else:
+        principled.inputs['Alpha'].default_value = {blocker_alpha!r}
+    if {mixed_blocker_materials!r}:
+        opaque = bpy.data.materials.new('opaque-frame')
+        bpy.context.object.data.materials.append(opaque)
+        bpy.context.object.data.materials.append(transparent)
+        for polygon in bpy.context.object.data.polygons:
+            polygon.material_index = 0 if polygon.normal.x > 0.5 else 1
+    else:
+        bpy.context.object.data.materials.append(transparent)
 data = bpy.data.cameras.new('inspection-camera')
 camera = bpy.data.objects.new('inspection-camera', data)
 bpy.context.scene.collection.objects.link(camera)
 camera.location = (6, 0, 0)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if blocker_alpha_mode != "BLEND":
+        rewrite_glb_alpha_mode(
+            output,
+            mode=blocker_alpha_mode,
+            cutoff=blocker_alpha_cutoff,
+        )
+    return output
+
+
+def rewrite_glb_alpha_mode(path: Path, *, mode: str, cutoff: float | None) -> None:
+    payload = path.read_bytes()
+    offset = 12
+    chunks: list[tuple[int, bytes]] = []
+    while offset < len(payload):
+        chunk_length, chunk_type = struct.unpack_from("<II", payload, offset)
+        offset += 8
+        chunks.append((chunk_type, payload[offset : offset + chunk_length]))
+        offset += chunk_length
+    document = json.loads(chunks[0][1].rstrip(b"\x00 \t\r\n").decode("utf-8"))
+    material = document["materials"][0]
+    material["alphaMode"] = mode
+    if cutoff is not None:
+        material["alphaCutoff"] = cutoff
+    encoded = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    encoded += b" " * (-len(encoded) % 4)
+    rebuilt = bytearray(b"glTF" + struct.pack("<I", 2) + b"\x00\x00\x00\x00")
+    rebuilt += struct.pack("<II", len(encoded), 0x4E4F534A) + encoded
+    for chunk_type, chunk in chunks[1:]:
+        rebuilt += struct.pack("<II", len(chunk), chunk_type) + chunk
+    struct.pack_into("<I", rebuilt, 8, len(rebuilt))
+    path.write_bytes(rebuilt)
+
+
+def build_frustum_crossing_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "frustum-crossing.glb"
+    script = tmp_path / "build_frustum_crossing.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+mesh = bpy.data.meshes.new('crossing-panel')
+mesh.from_pydata(
+    [(-11, -10, 0), (12, -10, 0), (12, 10, 0), (-11, 10, 0)],
+    [],
+    [(0, 1, 2, 3)],
+)
+panel = bpy.data.objects.new('crossing-panel', mesh)
+panel.location = (-9, 0, 0)
+bpy.context.scene.collection.objects.link(panel)
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (0, 0, 6)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_label_occlusion_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "label-occlusion.glb"
+    script = tmp_path / "build_label_occlusion.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+bpy.context.object.name = 'target'
+bpy.ops.mesh.primitive_cube_add(size=0.1, location=(2, 1, -0.19))
+bpy.context.object.name = 'WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW'
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = (
+    (Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')
+).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_multi_surface_occlusion_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "multi-surface-occlusion.glb"
+    script = tmp_path / "build_multi_surface_occlusion.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+bpy.context.object.name = 'target'
+blockers = []
+for x in (1.5, 2.5, 3.5):
+    bpy.ops.mesh.primitive_cube_add(size=0.4, location=(x, 0, 0))
+    blockers.append(bpy.context.object)
+bpy.ops.object.select_all(action='DESELECT')
+for blocker in blockers:
+    blocker.select_set(True)
+bpy.context.view_layer.objects.active = blockers[0]
+bpy.ops.object.join()
+bpy.context.object.name = 'multi-surface-blocker'
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = (
+    (Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')
+).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_backface_culling_glb(tmp_path: Path, *, back_facing: bool) -> Path:
+    output = tmp_path / f"backface-culling-{back_facing}.glb"
+    script = tmp_path / f"build_backface_culling_{back_facing}.py"
+    face = (0, 3, 2, 1) if back_facing else (0, 1, 2, 3)
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+bpy.context.object.name = 'target'
+mesh = bpy.data.meshes.new('single-sided-blocker')
+mesh.from_pydata(
+    [(2, -1, -1), (2, 1, -1), (2, 1, 1), (2, -1, 1)],
+    [],
+    [{face!r}],
+)
+blocker = bpy.data.objects.new('single-sided-blocker', mesh)
+bpy.context.scene.collection.objects.link(blocker)
+material = bpy.data.materials.new('single-sided')
+material.use_backface_culling = True
+mesh.materials.append(material)
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = (
+    (Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')
+).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_mixed_culling_focus_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "mixed-culling-focus.glb"
+    script = tmp_path / "build_mixed_culling_focus.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+mesh = bpy.data.meshes.new('mixed-culling-focus')
+mesh.from_pydata(
+    [
+        (2, -1, -1), (2, 0, -1), (2, 0, 1), (2, -1, 1),
+        (2, 0, -1), (2, 1, -1), (2, 1, 1), (2, 0, 1),
+    ],
+    [],
+    [(0, 3, 2, 1), (4, 5, 6, 7)],
+)
+focus = bpy.data.objects.new('mixed-culling-focus', mesh)
+bpy.context.scene.collection.objects.link(focus)
+material = bpy.data.materials.new('single-sided')
+material.use_backface_culling = True
+mesh.materials.append(material)
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = (
+    (Vector((2, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')
+).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_dense_off_frame_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "dense-off-frame.glb"
+    script = tmp_path / "build_dense_off_frame.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+mesh = bpy.data.meshes.new('off-frame-grid')
+vertices = []
+faces = []
+for row in range(20):
+    for column in range(20):
+        base = len(vertices)
+        x = 100 + column
+        y = row - 10
+        vertices.extend(((x, y, 0), (x + 0.8, y, 0), (x, y + 0.8, 0)))
+        faces.append((base, base + 1, base + 2))
+mesh.from_pydata(vertices, [], faces)
+panel = bpy.data.objects.new('off-frame-grid', mesh)
+bpy.context.scene.collection.objects.link(panel)
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (0, 0, 6)
 camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
 bpy.context.scene.camera = camera
 bpy.ops.export_scene.gltf(
@@ -2436,6 +2768,409 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert restored == initial
 
 
+def test_occlusion_query_uses_current_camera_and_leaves_no_artifact(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=30,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        blocker = next(
+            component for component in manifest.components if component.display_name == "blocker"
+        )
+        target_center = tuple(
+            (low + high) / 2
+            for low, high in zip(
+                target.world_bounds.minimum_mm,
+                target.world_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        comparisons = []
+        projections = (
+            PerspectiveProjection(focal_length_mm=50),
+            OrthographicProjection(scale_mm=3_000),
+        )
+        for index, projection in enumerate(projections):
+            controller.execute(
+                ViewOrbitCommand(
+                    request_id=f"occlusion-view-{index}",
+                    op="view.orbit",
+                    target_mm=cast(tuple[float, float, float], target_center),
+                    azimuth_degrees=40,
+                    elevation_degrees=0,
+                    distance_mm=8_000,
+                    projection=projection,
+                    focus_component_ids=(blocker.id,),
+                    aspect_ratio=1,
+                )
+            )
+            before = controller.request("session.snapshot")["session"]
+            files_before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+            result = controller.execute(
+                ComponentOcclusionCommand(
+                    request_id=f"occlusion-{index}",
+                    op="component.occlusion",
+                    component_ids=(target.id,),
+                    max_samples_per_component=128,
+                )
+            )
+            visibility = controller.request(
+                "component.visibility",
+                component_ids=[target.id],
+                width=256,
+                height=256,
+                graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
+            )
+            after = controller.request("session.snapshot")["session"]
+            files_after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+            comparisons.append((projection, before, result, visibility, after))
+            assert files_after == files_before
+
+    for projection, before, result, visibility, after in comparisons:
+        assert isinstance(result, OcclusionQueryResult)
+        assert result.camera_source == "current_session"
+        assert result.camera == Camera.model_validate(before["camera"])
+        assert set(result.camera_diagnostics.projected_bounds) == {target.id}
+        before_diagnostics = CameraDiagnostics.model_validate(before["camera_diagnostics"])
+        assert set(before_diagnostics.projected_bounds) == {blocker.id}
+        assert result.aspect_ratio == 1
+        assert result.camera.projection == projection
+        assert result.state_sha256 == before["state_sha256"]
+        assert after == before
+        assert result.projection_status == "projected"
+        assert result.sample_count <= 128
+        assert result.visible_sample_count > 0
+        assert result.occluded_sample_count > 0
+        assert visibility["visible_pixels"] > 0
+        assert visibility["visible_pixels"] < visibility["isolated_pixels"]
+        assert result.visible_fraction == pytest.approx(visibility["visible_fraction"], abs=0.35)
+        assert (
+            result.visible_sample_count
+            + result.occluded_sample_count
+            + result.unresolved_sample_count
+            == result.sample_count
+        )
+        blocker_result = next(item for item in result.blockers if item.component_id == blocker.id)
+        assert blocker_result.display_name == blocker.display_name
+        assert blocker_result.component_path == blocker.path
+
+
+def test_occlusion_query_uses_recorded_aspect_for_off_frame_filtering(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=30, artifact_cache_root=tmp_path / "cache"
+    ) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        results = []
+        for index, aspect_ratio in enumerate((4.0, 0.25)):
+            controller.execute(
+                ViewOrbitCommand(
+                    request_id=f"aspect-view-{index}",
+                    op="view.orbit",
+                    target_mm=(0, 1_000, 0),
+                    azimuth_degrees=0,
+                    elevation_degrees=0,
+                    distance_mm=8_000,
+                    projection=OrthographicProjection(scale_mm=3_000),
+                    focus_component_ids=(target.id,),
+                    aspect_ratio=aspect_ratio,
+                )
+            )
+            results.append(
+                controller.execute(
+                    ComponentOcclusionCommand(
+                        request_id=f"aspect-query-{index}",
+                        op="component.occlusion",
+                        component_ids=(target.id,),
+                    )
+                )
+            )
+
+    landscape, portrait = results
+    assert landscape.aspect_ratio == landscape.camera_diagnostics.aspect_ratio == 4
+    assert landscape.projection_status == "projected"
+    assert landscape.sample_count > 0
+    assert portrait.aspect_ratio == portrait.camera_diagnostics.aspect_ratio == 0.25
+    assert portrait.projection_status == "not_projected"
+    assert portrait.sample_count == 0
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        PerspectiveProjection(near_clip_mm=9_000, far_clip_mm=10_000),
+        PerspectiveProjection(near_clip_mm=1, far_clip_mm=7_000),
+    ],
+)
+def test_occlusion_query_rejects_focus_outside_camera_clip_range(
+    tmp_path: Path,
+    projection: PerspectiveProjection,
+) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="clipped-view",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=8_000,
+                projection=projection,
+                focus_component_ids=(target.id,),
+                aspect_ratio=1,
+            )
+        )
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="clipped-query",
+                op="component.occlusion",
+                component_ids=(target.id,),
+            )
+        )
+
+    assert result.projection_status == "not_projected"
+    assert result.sample_count == 0
+    assert result.visible_sample_count == 0
+    assert result.occluded_sample_count == 0
+
+
+def test_occlusion_query_ignores_blockers_before_near_clip(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        controller.execute(
+            ViewSetCommand(
+                request_id="near-clipped-view",
+                op="view.set",
+                camera=Camera(
+                    pose=manifest.imported_camera.pose,
+                    projection=PerspectiveProjection(
+                        focal_length_mm=50,
+                        near_clip_mm=5_250,
+                        far_clip_mm=10_000,
+                    ),
+                ),
+                focus_component_ids=(target.id,),
+                aspect_ratio=1,
+            )
+        )
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="near-clipped-query",
+                op="component.occlusion",
+                component_ids=(target.id,),
+            )
+        )
+        visibility = controller.request(
+            "component.visibility",
+            component_ids=[target.id],
+            width=128,
+            height=128,
+            graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
+        )
+
+    assert result.projection_status == "projected"
+    assert result.visible_sample_count > 0
+    assert result.occluded_sample_count == 0
+    assert result.blockers == ()
+    assert visibility["visible_pixels"] == visibility["isolated_pixels"]
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        PerspectiveProjection(
+            focal_length_mm=50,
+            near_clip_mm=5_500,
+            far_clip_mm=10_000,
+        ),
+        OrthographicProjection(
+            scale_mm=3_000,
+            near_clip_mm=5_500,
+            far_clip_mm=10_000,
+        ),
+    ],
+)
+def test_occlusion_query_excludes_zero_distance_near_plane_samples(
+    tmp_path: Path,
+    projection: PerspectiveProjection | OrthographicProjection,
+) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        controller.execute(
+            ViewSetCommand(
+                request_id="near-plane-view",
+                op="view.set",
+                camera=Camera(
+                    pose=manifest.imported_camera.pose,
+                    projection=projection,
+                ),
+                focus_component_ids=(target.id,),
+                aspect_ratio=1,
+            )
+        )
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="near-plane-query",
+                op="component.occlusion",
+                component_ids=(target.id,),
+            )
+        )
+
+    assert result.projection_status == "projected"
+    assert result.sample_count > 0
+    assert (
+        result.visible_sample_count + result.occluded_sample_count + result.unresolved_sample_count
+        == result.sample_count
+    )
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        PerspectiveProjection(
+            focal_length_mm=50,
+            near_clip_mm=1,
+            far_clip_mm=5_500,
+        ),
+        OrthographicProjection(
+            scale_mm=3_000,
+            near_clip_mm=1,
+            far_clip_mm=5_500,
+        ),
+    ],
+)
+def test_occlusion_query_excludes_focus_on_far_clip_plane(
+    tmp_path: Path,
+    projection: PerspectiveProjection | OrthographicProjection,
+) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+        controller.execute(
+            ViewSetCommand(
+                request_id="far-plane-view",
+                op="view.set",
+                camera=Camera(
+                    pose=manifest.imported_camera.pose,
+                    projection=projection,
+                ),
+                focus_component_ids=(by_name["target"],),
+                aspect_ratio=1,
+            )
+        )
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="far-plane-query",
+                op="component.occlusion",
+                component_ids=(by_name["target"],),
+            )
+        )
+
+    assert result.projection_status == "not_projected"
+    assert result.sample_count == 0
+
+
+def test_occlusion_query_samples_focus_surface_crossing_frustum(tmp_path: Path) -> None:
+    source = build_frustum_crossing_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component
+            for component in manifest.components
+            if component.display_name == "crossing-panel"
+        )
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="crossing-query",
+                op="component.occlusion",
+                component_ids=(target.id,),
+            )
+        )
+        visibility = controller.request(
+            "component.visibility",
+            component_ids=[target.id],
+            width=128,
+            height=128,
+            graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
+        )
+
+    assert visibility["visible_pixels"] > 0
+    assert result.projection_status == "projected"
+    assert result.sample_count > 0
+    assert result.visible_sample_count > 0
+
+
+def test_occlusion_query_does_not_sample_hidden_focus(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component for component in manifest.components if component.display_name == "target"
+        )
+        controller.request("component.display", component_ids=[target.id], mode="hidden")
+
+        result = controller.execute(
+            ComponentOcclusionCommand(
+                request_id="hidden-focus-query",
+                op="component.occlusion",
+                component_ids=(target.id,),
+            )
+        )
+
+    assert result.projection_status == "not_projected"
+    assert result.sample_count == 0
+    assert result.blockers == ()
+
+
+def test_occlusion_surface_scan_is_budgeted_and_ignores_in_frame_object_origin(
+    tmp_path: Path,
+) -> None:
+    source = build_dense_off_frame_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = next(
+            component
+            for component in manifest.components
+            if component.display_name == "off-frame-grid"
+        )
+
+        ranking = controller.request(
+            "component.occluders",
+            component_ids=[target.id],
+            max_samples_per_component=1,
+        )
+
+    assert ranking["sample_count"] == 0
+    assert ranking["surface_triangles_scanned"] <= 8
+
+
 def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     tmp_path: Path,
 ) -> None:
@@ -2613,6 +3348,263 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     assert visibility_before["visible_fraction"] < visibility_after["visible_fraction"]
     assert visibility_after["visible_fraction"] == pytest.approx(1)
     assert cleared["occluders"] == []
+    assert cleared["visible_rays"] == cleared["sample_count"]
+    assert cleared["unresolved_rays"] == 0
+
+
+def test_worker_traces_through_ghosted_occluders(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.request("component.display", component_ids=[by_name["blocker"]], mode="ghosted")
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_traces_through_alpha_blended_occluders(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_counts_alpha_blended_focus_hits(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["blocker"]])
+
+    assert ranking["visible_rays"] > 0
+    assert ranking["occluded_rays"] == 0
+    assert ranking["visible_rays"] + ranking["unresolved_rays"] == ranking["sample_count"]
+
+
+def test_worker_excludes_fully_transparent_focus_until_marked(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        blocker = by_name["blocker"]
+
+        transparent = controller.request("component.occluders", component_ids=[blocker])
+        controller.request("component.mark", component_ids=[blocker], mode="highlighted")
+        marked = controller.request("component.occluders", component_ids=[blocker])
+
+    assert transparent["sample_count"] == 0
+    assert marked["sample_count"] > 0
+    assert marked["visible_rays"] > 0
+
+
+def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
+    source = build_occluded_glb(
+        tmp_path,
+        blocker_alpha=0.2,
+        mixed_blocker_materials=True,
+    )
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
+    assert ranking["occluded_rays"] > 0
+
+
+def test_worker_treats_linked_alpha_as_opaque_without_a_hit_sample(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path, linked_blocker_alpha=True)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
+    assert ranking["occluded_rays"] > 0
+
+
+def test_worker_respects_opaque_gltf_alpha_mode(tmp_path: Path) -> None:
+    source = build_occluded_glb(
+        tmp_path,
+        blocker_alpha=0.2,
+        blocker_alpha_mode="OPAQUE",
+    )
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
+    assert ranking["occluded_rays"] > 0
+
+
+@pytest.mark.parametrize(
+    ("alpha", "opaque"),
+    [
+        (0.2, False),
+        (0.5, True),
+        (0.8, True),
+    ],
+)
+def test_worker_respects_gltf_alpha_mask_cutoff(
+    tmp_path: Path,
+    alpha: float,
+    opaque: bool,
+) -> None:
+    source = build_occluded_glb(
+        tmp_path,
+        blocker_alpha=alpha,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    if opaque:
+        assert ranking["occluders"][0]["component_id"] == by_name["blocker"]
+        assert ranking["occluded_rays"] > 0
+        return
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+
+
+def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
+    source = build_label_occlusion_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        target = by_name["target"]
+        label_source = by_name["WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]
+        baseline = controller.request("component.occluders", component_ids=[target])
+        controller.request("component.mark", component_ids=[label_source], mode="labeled")
+
+        ranking = controller.request("component.occluders", component_ids=[target])
+
+    assert ranking["occluders"] == []
+    assert baseline["visible_rays"] == baseline["sample_count"]
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:
+    source = build_multi_surface_occlusion_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        blocker = by_name["multi-surface-blocker"]
+        controller.request("component.display", component_ids=[blocker], mode="ghosted")
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+@pytest.mark.parametrize("back_facing", [False, True])
+def test_worker_respects_backface_culling(tmp_path: Path, back_facing: bool) -> None:
+    source = build_backface_culling_glb(tmp_path, back_facing=back_facing)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    if not back_facing:
+        assert ranking["occluders"][0]["component_id"] == by_name["single-sided-blocker"]
+        assert ranking["occluded_rays"] > 0
+        return
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
+    source = build_backface_culling_glb(tmp_path, back_facing=True)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        target = by_name["target"]
+        culled = by_name["single-sided-blocker"]
+
+        rendered_only = controller.request("component.occluders", component_ids=[target])
+        culled_only = controller.request("component.occluders", component_ids=[culled])
+        mixed = controller.request("component.occluders", component_ids=[target, culled])
+
+    assert culled_only["sample_count"] == 0
+    assert culled_only["visible_rays"] == 0
+    assert culled_only["occluded_rays"] == 0
+    assert culled_only["unresolved_rays"] == 0
+    assert mixed["sample_count"] == rendered_only["sample_count"]
+    assert mixed["visible_rays"] == rendered_only["visible_rays"]
+    assert mixed["unresolved_rays"] == 0
+
+
+def test_worker_budgets_only_rendered_focus_candidates(tmp_path: Path) -> None:
+    source = build_mixed_culling_focus_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        focus = manifest.components[0].id
+
+        ranking = controller.request(
+            "component.occluders",
+            component_ids=[focus],
+            max_samples_per_component=1,
+        )
+
+    assert ranking["sample_count"] == 1
+    assert ranking["visible_rays"] == 1
+    assert ranking["occluded_rays"] == 0
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_counts_ghosted_focus_hits(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.request("component.display", component_ids=[by_name["target"]], mode="ghosted")
+        controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
+
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert ranking["occluders"] == []
+    assert ranking["visible_rays"] == ranking["sample_count"]
+    assert ranking["unresolved_rays"] == 0
+
+
+def test_worker_counts_marked_ghosted_occluders(tmp_path: Path) -> None:
+    source = build_occluded_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        blocker = by_name["blocker"]
+        controller.request("component.display", component_ids=[blocker], mode="ghosted")
+        controller.request("component.mark", component_ids=[blocker], mode="highlighted")
+
+        runtime = controller.request("session.runtime")["components"][blocker]
+        ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
+
+    assert runtime["materials"] == ["MeshProbeMark-highlighted"]
+    assert ranking["occluders"][0]["component_id"] == blocker
+    assert ranking["occluded_rays"] > 0
 
 
 @pytest.mark.parametrize(("width", "height"), [(256, 8), (8, 256)])

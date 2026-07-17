@@ -43,7 +43,7 @@ from meshprobe.evals.generators import (
     build_model,
     publish_model,
 )
-from meshprobe.evals.schemas import Operation
+from meshprobe.evals.schemas import EVALUATED_OPERATIONS
 from meshprobe.identity import stable_component_id
 from meshprobe.models import SceneManifest
 from meshprobe.sources import sha256_file
@@ -333,7 +333,7 @@ def test_curated_tasks_resolve_private_roles_and_force_full_operation_use(
     episodes = generate_curated_episodes(truth)
 
     assert len(episodes) == 3
-    assert set(episodes[-1].spec.required_operations) == set(Operation)
+    assert set(episodes[-1].spec.required_operations) == set(EVALUATED_OPERATIONS)
     assert episodes[-1].spec.model_source == "curated"
     assert episodes[-1].ground_truth.state_requirements[-1].predicate == "reset_to_imported"
     assert all(

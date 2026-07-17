@@ -20,6 +20,7 @@ from meshprobe.evals.generators import (
 )
 from meshprobe.evals.leakage import validate_public_directory, validate_public_episode
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     CorpusManifest,
     CorpusTier,
     EpisodeClass,
@@ -140,9 +141,9 @@ def validate_corpus(root: Path) -> CorpusBuild:
     public = root / "public"
     private = root / "private"
     raw_manifest = json.loads((public / "manifest.json").read_text(encoding="utf-8"))
-    if raw_manifest.get("schema_version") != 2:
+    if raw_manifest.get("schema_version") != 3:
         raise ValueError(
-            "unsupported evaluation schema version; migrate the corpus to schema version 2"
+            "unsupported evaluation schema version; migrate the corpus to schema version 3"
         )
     manifest = CorpusManifest.model_validate_json(
         (public / "manifest.json").read_text(encoding="utf-8")
@@ -382,7 +383,9 @@ def _recipe_sha256(
 
 
 def _validate_operation_class_coverage(episode_paths: list[Path]) -> None:
-    coverage: dict[Operation, set[EpisodeClass]] = {operation: set() for operation in Operation}
+    coverage: dict[Operation, set[EpisodeClass]] = {
+        operation: set() for operation in EVALUATED_OPERATIONS
+    }
     for path in episode_paths:
         spec = EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
         for operation in spec.required_operations:

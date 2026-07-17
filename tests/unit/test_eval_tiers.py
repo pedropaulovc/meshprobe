@@ -14,6 +14,7 @@ from meshprobe.evals.schemas import (
     EpisodeSpec,
     ModelSource,
     RuntimePin,
+    TierManifest,
 )
 from meshprobe.evals.tiers import (
     _package_sha256,
@@ -57,6 +58,17 @@ def add_opaque_family(corpus_root: Path) -> None:
         update={"generator_families": (*manifest.generator_families, "opaque_family_v2")}
     )
     manifest_path.write_text(updated.model_dump_json(indent=2), encoding="utf-8")
+
+
+def test_shipped_tier_manifests_use_current_schema() -> None:
+    manifest_root = Path(__file__).parents[2] / "evals" / "manifests"
+    manifest_paths = tuple(sorted(manifest_root.rglob("*.json")))
+
+    assert manifest_paths
+    assert all(
+        TierManifest.model_validate_json(path.read_text(encoding="utf-8")).schema_version == 3
+        for path in manifest_paths
+    )
 
 
 def test_private_family_claim_must_be_backed_by_episode_truth(tmp_path: Path) -> None:

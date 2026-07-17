@@ -17,6 +17,7 @@ from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -42,6 +43,22 @@ def test_render_sheet_help_advertises_occlusion_analysis() -> None:
 
     assert result.exit_code == 0
     assert "automatic occlusion analysis" in unstyle(result.stdout)
+
+
+def test_occlusion_command_uses_current_camera_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "occlusion", "c2", "--max-samples", "512"],
+    )
+
+    assert result.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, ComponentOcclusionCommand)
+    assert command.component_ids == ("component-id",)
+    assert command.max_samples_per_component == 512
 
 
 def test_schema_command_documents_durable_state_files() -> None:
@@ -214,7 +231,7 @@ def test_eval_migration_and_ergonomics_commands_emit_reports(
         seeds=(0,),
     )
     audit = SimpleNamespace(source_version="v1", destination_version="v2")
-    monkeypatch.setattr("meshprobe.cli.migrate_corpus_v2", lambda *args, **kwargs: (corpus, audit))
+    monkeypatch.setattr("meshprobe.cli.migrate_corpus_v3", lambda *args, **kwargs: (corpus, audit))
     monkeypatch.setattr("meshprobe.cli.audit_migration", lambda *args, **kwargs: audit)
     ergonomics = SimpleNamespace(
         root=tmp_path / "ergonomics",
@@ -1042,7 +1059,7 @@ def test_global_output_modes_are_mutually_exclusive() -> None:
         ("build_corpus", ["eval", "generate", "{root}"]),
         ("validate_corpus", ["eval", "validate", "{root}"]),
         (
-            "migrate_corpus_v2",
+            "migrate_corpus_v3",
             ["eval", "migrate", "{root}", "{output}", "--version", "v2"],
         ),
         ("audit_migration", ["eval", "audit-migration", "{root}", "{root}"]),

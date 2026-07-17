@@ -955,6 +955,66 @@ class OcclusionEvidence(ContractModel):
         return self
 
 
+class OcclusionBlocker(ContractModel):
+    component_id: Identifier
+    display_name: Identifier
+    component_path: Identifier
+    ray_hit_count: Annotated[int, Field(ge=1)]
+
+
+class OcclusionQueryResult(ContractModel):
+    focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    camera: Camera
+    camera_diagnostics: CameraDiagnostics
+    aspect_ratio: PositiveFiniteFloat
+    camera_source: Literal["current_session"] = "current_session"
+    projection_status: Literal["projected", "not_projected"]
+    sample_count: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Projected mesh vertex and centroid rays evaluated from the camera.",
+        ),
+    ]
+    visible_sample_count: Annotated[int, Field(ge=0)]
+    occluded_sample_count: Annotated[int, Field(ge=0)]
+    unresolved_sample_count: Annotated[int, Field(ge=0)]
+    visible_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Visible focus rays divided by all projected focus rays.",
+        ),
+    ]
+    blockers: tuple[OcclusionBlocker, ...] = ()
+    state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+    @model_validator(mode="after")
+    def validate_samples(self) -> Self:
+        if not math.isclose(
+            self.aspect_ratio,
+            self.camera_diagnostics.aspect_ratio,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("evaluated aspect ratio must match camera diagnostics")
+        classified = (
+            self.visible_sample_count + self.occluded_sample_count + self.unresolved_sample_count
+        )
+        if classified != self.sample_count:
+            raise ValueError("classified sample counts must equal sample count")
+        expected_fraction = (
+            self.visible_sample_count / self.sample_count if self.sample_count else 0.0
+        )
+        if not math.isclose(self.visible_fraction, expected_fraction, abs_tol=1e-12):
+            raise ValueError("visible fraction must match sample counts")
+        expected_status = "projected" if self.sample_count else "not_projected"
+        if self.projection_status != expected_status:
+            raise ValueError("projection status must match sample count")
+        return self
+
+
 class ContactSheetManifest(ContractModel):
     schema_version: Literal[5] = 5
     recipe: Literal["focused_3x3", "custom_3x3"]

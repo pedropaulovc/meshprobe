@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     ComponentFindCommand,
+    ComponentOcclusionCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewMoveCommand,
@@ -45,6 +46,7 @@ def test_schema_contains_all_public_operations() -> None:
         "session.snapshot",
         "component.find",
         "component.inspect",
+        "component.occlusion",
         "view.set",
         "view.orbit",
         "view.move",
@@ -104,6 +106,29 @@ def test_command_cameras_only_accept_source_or_world_frames(
 ) -> None:
     with pytest.raises(ValidationError, match=r"source.*world"):
         COMMAND_ADAPTER.validate_python(payload)
+
+
+def test_occlusion_command_validates_sampling_dimensions() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "occlusion",
+            "op": "component.occlusion",
+            "component_ids": ["target"],
+            "max_samples_per_component": 512,
+        }
+    )
+
+    assert isinstance(command, ComponentOcclusionCommand)
+    assert command.max_samples_per_component == 512
+    with pytest.raises(ValidationError):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "occlusion",
+                "op": "component.occlusion",
+                "component_ids": ["target"],
+                "max_samples_per_component": 0,
+            }
+        )
 
 
 @pytest.mark.parametrize("field", ["azimuth_degrees", "elevation_degrees", "roll_degrees"])

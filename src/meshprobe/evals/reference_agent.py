@@ -411,11 +411,13 @@ def _run_curated(
         for role, component in roles.items()
         for suffix, key in (("component_id", "id"), ("path", "path"))
     }
+    target = roles["target"]
+    if "component.occlusion" in required:
+        client.call("component.occlusion", component_ids=[target["id"]])
     evidence: list[str] = []
     if "render.image" not in required:
         return values, evidence
 
-    target = roles["target"]
     target_center = _center(target)
     extent = max(_bounds_size(target, "world_bounds"))
     if "view.set" in required:
@@ -489,6 +491,8 @@ def _run_procedural(
     if "component.inspect" in required:
         for match in target_matches:
             client.call("component.inspect", component_id=match["id"])
+    if "component.occlusion" in required:
+        client.call("component.occlusion", component_ids=[target["id"]])
 
     fields = set(episode["answer_schema"]["properties"]["values"]["properties"])
     values: JsonObject = {

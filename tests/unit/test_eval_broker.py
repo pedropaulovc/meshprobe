@@ -12,6 +12,7 @@ from meshprobe.evals.harness.sandbox import visible_artifact_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceStatus
 from meshprobe.protocol import (
     Command,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -50,6 +51,12 @@ class FakeEvaluationService:
             result = {"session": {"state_sha256": "1" * 64}}
         elif operation in {"illumination.set", "view.rotate"}:
             result = {"state_sha256": "2" * 64}
+        elif operation == "component.occlusion":
+            result = {
+                "camera_source": "current_session",
+                "visible_fraction": 0.5,
+                "state_sha256": "1" * 64,
+            }
         elif operation == "render.image":
             assert isinstance(command, RenderImageCommand)
             output_path = command.output_path
@@ -144,6 +151,28 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     trace = (tmp_path / "evaluator" / "trace.jsonl").read_text(encoding="utf-8")
     assert len(trace.splitlines()) == 4
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
+
+
+def test_broker_records_occlusion_queries(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+    active.execute(
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path=active.visible_model_path,
+        )
+    )
+
+    result = active.execute(
+        ComponentOcclusionCommand(
+            request_id="occlusion",
+            op="component.occlusion",
+            component_ids=("target",),
+        )
+    )
+
+    assert result.ok
+    assert active.events[-1].operation.value == "component.occlusion"
 
 
 def test_broker_omits_normalized_geometry_cache_metadata(tmp_path: Path) -> None:
