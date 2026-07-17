@@ -638,7 +638,7 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     focus_component_ids = command.get("focus_component_ids", ())
     aspect_ratio = command.get("aspect_ratio", 1.0)
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
-    frame = command.get("frame", "world")
+    frame = command.get("frame", "source")
     if frame not in {"source", "world"}:
         raise ValueError("camera rotation frame must be source or world")
     degrees = command["degrees"]

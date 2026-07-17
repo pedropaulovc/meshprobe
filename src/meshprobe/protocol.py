@@ -95,7 +95,7 @@ class ViewRotateCommand(CommandModel):
     target_mm: Vec3
     axis: Literal["x", "y", "z"]
     degrees: FiniteFloat
-    frame: Literal[CoordinateFrame.SOURCE, CoordinateFrame.WORLD] = CoordinateFrame.WORLD
+    frame: Literal[CoordinateFrame.SOURCE, CoordinateFrame.WORLD] = CoordinateFrame.SOURCE
     basis: OrthonormalBasis = OrthonormalBasis()
     projection: Projection | None = None
     focus_component_ids: tuple[str, ...] = ()

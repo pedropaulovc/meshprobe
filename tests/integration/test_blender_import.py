@@ -1207,7 +1207,7 @@ def test_rejected_raw_view_set_preserves_camera_operation(tmp_path: Path) -> Non
     assert after["state_sha256"] == before["state_sha256"]
 
 
-def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
+def test_raw_rotation_uses_source_frame_by_default(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
@@ -1227,7 +1227,7 @@ def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
             projection={"mode": "perspective"},
         )
 
-    assert rotated["camera_operation"]["frame"] == "world"
+    assert rotated["camera_operation"]["frame"] == "source"
     assert rotated["camera_operation"]["target_mm"] == list(target)
     assert rotated["camera"]["projection"] == PerspectiveProjection().model_dump(mode="json")
 
