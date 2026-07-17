@@ -438,6 +438,11 @@ class BlenderController:
         if manifest.source_sha256 != self._source_sha256:
             raise BlenderWorkerError("render manifest source hash does not match the open scene")
         self._verify_render_artifacts(manifest)
+        self.request(
+            "render.style",
+            style=manifest.style.value,
+            shaded_edges=manifest.shaded_edges.model_dump(mode="json"),
+        )
         return manifest
 
     @staticmethod

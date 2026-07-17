@@ -1954,7 +1954,10 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
     assert snapshot_source(source) == before
 
 
-def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: Path) -> None:
+def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = build_edge_style_glb(tmp_path)
     plain_output = tmp_path / "plain.png"
     edge_output = tmp_path / "shaded-edges.png"
@@ -1996,6 +1999,30 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: P
             )
         rejected_runtime = controller.request("session.runtime")
         assert rejected_runtime["render"]["use_freestyle"] is False
+
+        def reject_render_artifacts(_manifest: RenderManifest) -> None:
+            raise BlenderWorkerError("render artifact rejected")
+
+        with monkeypatch.context() as artifact_rejection:
+            artifact_rejection.setattr(
+                BlenderController,
+                "_verify_render_artifacts",
+                staticmethod(reject_render_artifacts),
+            )
+            with pytest.raises(BlenderWorkerError, match="render artifact rejected"):
+                controller.render_image(
+                    RenderImageCommand(
+                        request_id="render-edges-controller-rejected",
+                        op="render.image",
+                        output_path=str(tmp_path / "controller-rejected-edges.png"),
+                        width=320,
+                        height=240,
+                        samples=1,
+                        style=RenderStyle.SHADED_EDGES,
+                    )
+                )
+        controller_rejected_runtime = controller.request("session.runtime")
+        assert controller_rejected_runtime["render"]["use_freestyle"] is False
 
         edged = controller.render_image(
             RenderImageCommand(

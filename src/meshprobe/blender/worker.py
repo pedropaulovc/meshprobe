@@ -1569,7 +1569,7 @@ def configure_render(command: dict[str, Any]) -> str:
 
 
 @contextmanager
-def restore_render_style_on_error() -> Iterator[None]:
+def temporary_render_style() -> Iterator[None]:
     scene = bpy.context.scene
     freestyle = bpy.context.view_layer.freestyle_settings
     line_set = freestyle.linesets[0]
@@ -1596,7 +1596,7 @@ def restore_render_style_on_error() -> Iterator[None]:
     original_thickness = original_line_style.thickness if original_line_style is not None else None
     try:
         yield
-    except Exception:
+    finally:
         scene.render.use_freestyle = original_use_freestyle
         freestyle.crease_angle = original_crease_angle
         freestyle.use_material_boundaries = original_material_boundaries
@@ -1611,7 +1611,6 @@ def restore_render_style_on_error() -> Iterator[None]:
         if original_line_style is not None:
             original_line_style.color = original_color
             original_line_style.thickness = original_thickness
-        raise
 
 
 def configure_render_style(command: dict[str, Any]) -> None:
@@ -2044,7 +2043,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
-    with restore_render_style_on_error():
+    with temporary_render_style():
         device = configure_render(command)
         configure_render_style(command)
         render_still(output)
@@ -2675,6 +2674,10 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.image":
         require_session()
         return render_image(command)
+    if operation == "render.style":
+        require_session()
+        configure_render_style(command)
+        return {"style": command.get("style", "shaded")}
     if operation == "scene.export_normalized":
         return export_normalized(command)
     if operation == "component.visibility":

@@ -800,6 +800,8 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
                 source_snapshot.sha256,
                 session.snapshot(),
             ).model_dump(mode="json")
+        if operation == "render.style":
+            return {}
         raise AssertionError(f"unexpected operation: {operation}")
 
     monkeypatch.setattr(controller, "request", request)
