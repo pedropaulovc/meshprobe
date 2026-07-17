@@ -795,18 +795,84 @@ def view_move(
 @app.command("illumination-set")
 def illumination_set(
     ctx: typer.Context,
-    preset: Annotated[IlluminationPreset, typer.Argument()],
+    preset: Annotated[str, typer.Argument(help="A named preset, or 'custom'.")],
+    illumination_json: Annotated[
+        Path | None,
+        typer.Option("--illumination-json", exists=True, dir_okay=False, readable=True),
+    ] = None,
+    background_rgb: Annotated[
+        tuple[float, float, float] | None,
+        typer.Option("--background-rgb", help="Override the visible linear-RGB background."),
+    ] = None,
+    background_strength: Annotated[
+        float | None,
+        typer.Option("--background-strength", min=0),
+    ] = None,
 ) -> None:
-    """Apply a named illumination preset."""
+    """Apply a named preset or a complete custom illumination JSON object."""
 
-    from meshprobe.models import PresetIllumination
+    from pydantic import TypeAdapter
+
+    from meshprobe.models import (
+        CustomIllumination,
+        EnvironmentMap,
+        Illumination,
+        PresetIllumination,
+    )
+
+    illumination: Illumination
+    if preset == "custom":
+        if illumination_json is None:
+            raise typer.BadParameter("custom requires --illumination-json")
+        try:
+            illumination = TypeAdapter(Illumination).validate_json(
+                illumination_json.read_text(encoding="utf-8")
+            )
+        except KeyError as error:
+            raise typer.BadParameter(f"missing required field: {error.args[0]}") from error
+        except (OSError, ValidationError) as error:
+            raise typer.BadParameter(str(error)) from error
+        if not isinstance(illumination, CustomIllumination):
+            raise typer.BadParameter("--illumination-json must declare preset 'custom'")
+        if background_rgb is not None or background_strength is not None:
+            raise typer.BadParameter(
+                "background overrides cannot be combined with --illumination-json"
+            )
+        environment: EnvironmentMap | None = illumination.environment_map
+        if environment is not None:
+            environment_path = Path(environment.path).expanduser()
+            if not environment_path.is_absolute():
+                environment_path = (illumination_json.parent / environment_path).resolve()
+                illumination = illumination.model_copy(
+                    update={
+                        "environment_map": environment.model_copy(
+                            update={"path": str(environment_path)}
+                        )
+                    }
+                )
+    else:
+        if illumination_json is not None:
+            raise typer.BadParameter("--illumination-json requires the custom preset")
+        try:
+            named_preset = IlluminationPreset(preset)
+        except ValueError as error:
+            choices = ", ".join(item.value for item in IlluminationPreset)
+            raise typer.BadParameter(f"preset must be one of: {choices}, custom") from error
+        try:
+            illumination = PresetIllumination(
+                preset=named_preset,
+                background_rgb=background_rgb,
+                background_strength=background_strength,
+            )
+        except ValidationError as error:
+            raise typer.BadParameter(str(error)) from error
 
     _execute(
         ctx,
         IlluminationSetCommand(
             request_id=_request_id("illumination"),
             op="illumination.set",
-            illumination=PresetIllumination(preset=preset),
+            illumination=illumination,
         ),
     )
 
