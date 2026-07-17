@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import sys
@@ -21,6 +22,7 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
+    Bounds,
     CameraRotationReceipt,
     CameraTranslationReceipt,
     CustomIllumination,
@@ -529,6 +531,51 @@ def test_removed_occluder_caption_retains_every_full_blocker_name() -> None:
     assert all(name in caption for name in names)
 
 
+@pytest.mark.parametrize(
+    ("stop_reason", "expected"),
+    [
+        ("threshold_met_initial", "visibility threshold already met"),
+        ("threshold_met", "visibility threshold met"),
+        ("budget_exhausted", "no occluders removed within budget"),
+        ("no_blockers", "no blocking components ranked"),
+        ("focus_not_projected", "focus not projected"),
+    ],
+)
+def test_empty_occlusion_caption_reports_stop_reason(
+    stop_reason: str,
+    expected: str,
+) -> None:
+    caption = BlenderController._empty_occlusion_caption(stop_reason)  # type: ignore[arg-type]
+
+    assert expected in caption
+    assert "no occluders found" not in caption
+
+
+def test_focused_context_camera_stays_outside_scene_and_preserves_framing() -> None:
+    bounds = Bounds(
+        minimum_mm=(-1_000.0, -1_000.0, -1_000.0),
+        maximum_mm=(1_000.0, 1_000.0, 1_000.0),
+    )
+    focus_center = (0.0, 0.0, 0.0)
+    projection, distance = BlenderController._focused_context_camera(
+        bounds,
+        focus_center,
+        focus_span=1.0,
+        aspect_ratio=1.0,
+    )
+    context_radius = math.sqrt(3 * 1_000.0**2)
+    framing_fov = min(
+        projection.horizontal_fov_degrees(1.0),
+        projection.vertical_fov_degrees(1.0),
+    )
+    framed_distance = (4.0 / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
+
+    assert distance > context_radius
+    assert framed_distance == pytest.approx(distance)
+    assert projection.focal_length_mm > 50
+    assert projection.far_clip_mm > distance + context_radius
+
+
 def test_execute_routes_scene_open_through_checked_import(
     tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -838,7 +885,7 @@ def test_render_validates_worker_artifact_digests(
     ("visibility", "expected_removed", "expected_stop", "third_caption"),
     [
         ((0.2, 0.8), ("blocker",), "threshold_met", "Occluders removed:"),
-        ((0.8,), (), "threshold_met_initial", "Alternate context"),
+        ((0.8,), (), "threshold_met_initial", "Alternate focused context"),
     ],
 )
 def test_contact_sheet_orchestrates_evidence_and_restores_state(
@@ -960,6 +1007,11 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
         assert sheet.occlusion.steps[0].display_name == blocker.display_name
         assert sheet.occlusion.steps[0].component_path == blocker.path
     assert sheet.panels[2].caption.startswith(third_caption)
+    if resolved_removed:
+        assert sheet.panels[1].render.session.camera == sheet.panels[2].render.session.camera
+    else:
+        assert sheet.panels[1].render.session.camera != sheet.panels[2].render.session.camera
+    assert sheet.panels[0].render.session.camera != sheet.panels[1].render.session.camera
     assert len({panel.render.state_sha256 for panel in sheet.panels}) == 9
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
@@ -973,6 +1025,34 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert session.snapshot() == expected_restored
     assert calls.count("render.image") == 9
     assert calls[-2:] == ["session.reset", "component.mark"]
+
+
+@pytest.mark.parametrize("aspect_ratio", [1.0, 32.0, 1 / 32])
+def test_focused_orbit_extends_far_clip_past_large_target(
+    monkeypatch: pytest.MonkeyPatch,
+    aspect_ratio: float,
+) -> None:
+    controller = BlenderController()
+    request: dict[str, object] = {}
+    monkeypatch.setattr(
+        controller,
+        "request",
+        lambda operation, **arguments: request.update(operation=operation, **arguments),
+    )
+
+    controller._set_orbit(
+        (0, 0, 0),
+        80_000,
+        45,
+        30,
+        PerspectiveProjection(),
+        aspect_ratio,
+        minimum_distance_mm=1,
+    )
+
+    projection = PerspectiveProjection.model_validate(request["projection"])
+    distance = cast(float, request["distance_mm"])
+    assert projection.far_clip_mm > distance + 80_000
 
 
 def test_contact_sheet_validates_scene_focus_and_output(

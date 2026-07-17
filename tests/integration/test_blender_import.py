@@ -2400,7 +2400,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert isinstance(sheet, ContactSheetManifest)
     assert len(sheet.panels) == 9
     assert [panel.index for panel in sheet.panels] == list(range(1, 10))
-    assert len({panel.render.state_sha256 for panel in sheet.panels}) >= 8
+    assert len({panel.render.state_sha256 for panel in sheet.panels}) == 9
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
@@ -2408,6 +2408,23 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert all(panel.render.style is RenderStyle.SHADED for panel in sheet.panels)
     assert render_runtime["use_freestyle"] is False
     assert all(panel.callouts[0].component_id == target for panel in sheet.panels)
+    focused_bounds = sheet.panels[1].render.session.camera_diagnostics.projected_bounds[target]
+    deoccluded_bounds = sheet.panels[2].render.session.camera_diagnostics.projected_bounds[target]
+    if sheet.removed_occluder_ids:
+        assert focused_bounds == deoccluded_bounds
+    else:
+        assert focused_bounds != deoccluded_bounds
+    assert focused_bounds.minimum_image_xy is not None
+    assert focused_bounds.maximum_image_xy is not None
+    focused_size = tuple(
+        high - low
+        for low, high in zip(
+            focused_bounds.minimum_image_xy,
+            focused_bounds.maximum_image_xy,
+            strict=True,
+        )
+    )
+    assert 0.1 <= max(focused_size) <= 0.3
     assert sheet.occlusion.visible_fraction_after >= sheet.occlusion.visible_fraction_before
     sheet_width, sheet_height = Image.open(sheet.sheet.path).size
     assert sheet_width == 384
