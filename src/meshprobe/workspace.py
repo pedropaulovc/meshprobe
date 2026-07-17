@@ -134,6 +134,15 @@ class SessionEvent(BaseModel):
     error: str | None = None
 
 
+class ResolvedComponentReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ref: str
+    id: str
+    name: str
+    path: str
+
+
 class OperationReceipt(BaseModel):
     """Small stdout contract pointing to queryable durable output."""
 
@@ -147,6 +156,7 @@ class OperationReceipt(BaseModel):
     state_path: str | None = None
     artifact_paths: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    components: tuple[ResolvedComponentReference, ...] = ()
 
 
 def durable_state_json_schema() -> dict[str, object]:
@@ -406,6 +416,7 @@ class SessionManager:
                 result_path,
                 artifacts,
                 warnings=warnings,
+                components=self._component_references(files, command),
             )
 
     def close(self, name: str) -> OperationReceipt:
@@ -467,7 +478,56 @@ class SessionManager:
             for component in components:
                 if value == component[field]:
                     return str(component["id"])
-        raise ValueError(f"unknown component reference, id, or exact path: {value}")
+        named = [component for component in components if value == component["name"]]
+        if len(named) == 1:
+            return str(named[0]["id"])
+        if named:
+            paths = ", ".join(sorted(str(component["path"]) for component in named))
+            raise ValueError(
+                f"ambiguous component display name {value!r}; matches: {paths}; "
+                "use an exact path or stable ID"
+            )
+        raise ValueError(
+            f"unknown component reference, stable ID, exact display name, or exact path: {value}"
+        )
+
+    @staticmethod
+    def _component_references(
+        files: SessionFiles, command: Command
+    ) -> tuple[ResolvedComponentReference, ...]:
+        component_ids: dict[str, None] = {}
+
+        def visit(value: object, field: str | None = None) -> None:
+            if field == "component_id" and isinstance(value, str):
+                component_ids[value] = None
+                return
+            if field in {"component_ids", "focus_component_ids"} and isinstance(value, list):
+                for component_id in value:
+                    if isinstance(component_id, str):
+                        component_ids[component_id] = None
+                return
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    visit(child, key)
+                return
+            if isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(command.model_dump(mode="json"))
+        if not component_ids:
+            return ()
+        payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+        by_id = {component["id"]: component for component in payload["components"]}
+        return tuple(
+            ResolvedComponentReference(
+                ref=by_id[component_id]["ref"],
+                id=component_id,
+                name=by_id[component_id]["name"],
+                path=by_id[component_id]["path"],
+            )
+            for component_id in component_ids
+        )
 
     def raw_result(self, receipt: OperationReceipt) -> object:
         if receipt.result_path is None:
@@ -691,6 +751,7 @@ class SessionManager:
         artifacts: tuple[str, ...] = (),
         *,
         warnings: tuple[str, ...] = (),
+        components: tuple[ResolvedComponentReference, ...] = (),
     ) -> OperationReceipt:
         return OperationReceipt(
             session=files.name,
@@ -700,4 +761,5 @@ class SessionManager:
             state_path=files.relative(files.state),
             artifact_paths=artifacts,
             warnings=warnings,
+            components=components,
         )
