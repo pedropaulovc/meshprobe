@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Releases now create a version tag from `pyproject.toml`, publish to PyPI, and create the
-  GitHub Release only after publishing succeeds.
+- After CI passes, releases now create a version tag from `pyproject.toml`, publish to PyPI,
+  and create the GitHub Release only after publishing succeeds.
 
 ## [0.2.0] - 2026-07-16
 

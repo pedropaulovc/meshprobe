@@ -1,11 +1,14 @@
 name: Auto-tag
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 jobs:
   tag:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -13,11 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v8.3.2
-        with:
-          python-version: "3.12"
 
       - name: Check version tag
         id: version
@@ -53,18 +55,6 @@ jobs:
             exit 1
           fi
 
-      - name: Install release dependencies
-        if: steps.version.outputs.exists == 'false'
-        run: uv sync --locked --all-groups
-
-      - name: Validate release
-        if: steps.version.outputs.exists == 'false'
-        run: |
-          uv run ruff format --check .
-          uv run ruff check .
-          uv run mypy src
-          uv build
-
       - name: Create version tag
         if: steps.version.outputs.exists == 'false'
         env:
@@ -72,7 +62,7 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           echo "Creating tag $TAG"
-          SHA=$(git rev-parse HEAD)
+          SHA="${{ github.event.workflow_run.head_sha }}"
           gh api "repos/${{ github.repository }}/git/refs" \
             -f ref="refs/tags/$TAG" \
             -f sha="$SHA"
