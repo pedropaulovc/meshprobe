@@ -241,16 +241,23 @@ def command_result_json_schema() -> dict[str, object]:
     ``results/*.json`` file or an adapter response): ``request_id``, ``op`` pinned to the
     command, and ``result`` expanded to that op's concrete result schema.
     """
-    return {
-        op: {
+    schemas: dict[str, object] = {}
+    for op, model in _RESULT_MODELS.items():
+        result_schema = TypeAdapter(model).json_schema()
+        # Hoist the result's shared definitions to the envelope root so its
+        # "#/$defs/..." references resolve against the standalone per-op schema.
+        definitions = result_schema.pop("$defs", None)
+        envelope: dict[str, object] = {
             "type": "object",
             "additionalProperties": False,
             "required": ["request_id", "op", "result"],
             "properties": {
                 "request_id": {"type": "string"},
                 "op": {"const": op},
-                "result": TypeAdapter(model).json_schema(),
+                "result": result_schema,
             },
         }
-        for op, model in _RESULT_MODELS.items()
-    }
+        if definitions:
+            envelope["$defs"] = definitions
+        schemas[op] = envelope
+    return schemas

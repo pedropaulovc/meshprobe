@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,8 +40,7 @@ def test_schema_command_emits_discriminated_union() -> None:
 
 
 def _property_description(envelope: dict[str, object], model: str, field: str) -> str:
-    result_schema = envelope["properties"]["result"]  # type: ignore[index]
-    defs = result_schema.get("$defs", {})
+    defs = envelope.get("$defs", {})
     assert isinstance(defs, dict)
     properties = defs[model]["properties"]
     return properties[field].get("description", "")
@@ -79,6 +79,18 @@ def test_schema_results_kind_documents_result_envelope_fields() -> None:
     assert _property_description(sheet, "ContactSheetPanel", "caption").strip()
     assert _property_description(sheet, "ContactSheetCallout", "image_xy").strip()
     assert _property_description(sheet, "OccluderRemovalStep", "visible_fraction_after").strip()
+
+
+def test_schema_results_have_no_dangling_definition_references() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "results"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+
+    for op, envelope in payload.items():
+        root_definitions = set(envelope.get("$defs", {}))
+        referenced = set(re.findall(r"#/\$defs/(\w+)", json.dumps(envelope)))
+        missing = sorted(referenced - root_definitions)
+        assert not missing, f"{op} result schema references undefined $defs: {missing}"
 
 
 def test_schema_all_full_surfaces_result_envelope_fields() -> None:
