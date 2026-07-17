@@ -32,6 +32,7 @@ from meshprobe.models import (
 from meshprobe.protocol import (
     Command,
     IlluminationSetCommand,
+    RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
@@ -412,11 +413,7 @@ class SessionManager:
             self._write_state(
                 files,
                 snapshot,
-                render_style=(
-                    RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
-                    if isinstance(command, RenderImageCommand)
-                    else None
-                ),
+                render_style=self._render_style(command),
             )
             self._update_checkpoint(files, command, snapshot)
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
@@ -627,6 +624,14 @@ class SessionManager:
             files.components,
             yaml.safe_dump(payload.model_dump(mode="json"), sort_keys=False),
         )
+
+    @staticmethod
+    def _render_style(command: Command) -> RenderStyleState | None:
+        if isinstance(command, RenderImageCommand):
+            return RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
+        if isinstance(command, RenderContactSheetCommand):
+            return RenderStyleState()
+        return None
 
     @staticmethod
     def _write_state(

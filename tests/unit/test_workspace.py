@@ -19,6 +19,8 @@ from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     IlluminationSetCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
@@ -57,6 +59,9 @@ class FakeSessionService:
         elif isinstance(command, SessionResetCommand):
             assert self.session is not None
             result = self.session.reset().model_dump(mode="json")
+        elif isinstance(command, (RenderImageCommand, RenderContactSheetCommand)):
+            assert self.session is not None
+            result = {}
         else:
             raise AssertionError(f"unexpected command: {command.op}")
         return CommandResponse(request_id=command.request_id, op=command.op, result=result)
@@ -149,6 +154,43 @@ def test_session_manager_writes_compact_queryable_state(
     }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_contact_sheet_records_worker_default_render_style(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+    files = SessionFiles(manager.root, "review")
+    edged_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert edged_state["render_style"]["style"] == "shaded_edges"
+
+    manager.execute(
+        "review",
+        RenderContactSheetCommand(
+            request_id="sheet",
+            op="render.contact_sheet",
+            output_path=str(tmp_path / "sheet.png"),
+            focus_component_ids=(scene_manifest.components[0].id,),
+        ),
+    )
+
+    sheet_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert sheet_state["render_style"] == RenderStyleState().model_dump(mode="json")
 
 
 def test_reused_request_ids_preserve_every_result(

@@ -2139,10 +2139,23 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
 ) -> None:
     source = build_glb(tmp_path)
     output = tmp_path / "contact-sheet.png"
+    edged_output = tmp_path / "shaded-edges.png"
     with BlenderController(timeout_seconds=30) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         initial = controller.request("session.snapshot")["session"]
+        controller.execute(
+            RenderImageCommand(
+                request_id="edges-before-sheet",
+                op="render.image",
+                output_path=str(edged_output),
+                width=128,
+                height=128,
+                samples=1,
+                style=RenderStyle.SHADED_EDGES,
+            )
+        )
+        assert controller.request("session.runtime")["render"]["use_freestyle"] is True
         sheet = controller.execute(
             RenderContactSheetCommand(
                 request_id="sheet",
@@ -2155,6 +2168,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
             )
         )
         restored = controller.request("session.snapshot")["session"]
+        render_runtime = controller.request("session.runtime")["render"]
 
     assert isinstance(sheet, ContactSheetManifest)
     assert len(sheet.panels) == 9
@@ -2164,6 +2178,8 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
     )
     assert all(panel.callouts for panel in sheet.panels)
+    assert all(panel.render.style is RenderStyle.SHADED for panel in sheet.panels)
+    assert render_runtime["use_freestyle"] is False
     assert all(panel.callouts[0].component_id == target for panel in sheet.panels)
     assert sheet.occlusion.visible_fraction_after >= sheet.occlusion.visible_fraction_before
     assert Image.open(sheet.sheet.path).size == (384, 528)
