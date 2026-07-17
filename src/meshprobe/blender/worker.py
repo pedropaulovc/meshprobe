@@ -1320,6 +1320,7 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
             "background_rgb": deepcopy(runtime["background_rgb"]),
             "background_strength": runtime["background_strength"],
         }
+    resolved.setdefault("background_srgb", illumination.get("background_srgb"))
     clear_lights()
     configure_world(
         runtime["background_rgb"],
@@ -1603,6 +1604,7 @@ def runtime_diagnostics() -> dict[str, Any]:
             "camera_background_source": camera_background_source,
             "background_rgb": list(visible_background.inputs["Color"].default_value[:3]),
             "background_strength": float(visible_background.inputs["Strength"].default_value),
+            "background_srgb": current_illumination.get("background_srgb"),
             "ambient_rgb": list(ambient_background.inputs["Color"].default_value[:3]),
             "ambient_strength": float(ambient_background.inputs["Strength"].default_value),
         },
@@ -2109,6 +2111,43 @@ def published_compositor_path(
     return expected
 
 
+def display_referred_background() -> tuple[float, float, float] | None:
+    illumination = CURRENT_ILLUMINATION
+    if illumination is None:
+        return None
+    srgb = illumination.get("background_srgb")
+    if srgb is None or illumination.get("visible_background_mode", "color") != "color":
+        return None
+    return (float(srgb[0]), float(srgb[1]), float(srgb[2]))
+
+
+def composite_over_background(path: Path, background_srgb: tuple[float, float, float]) -> None:
+    import numpy as np  # type: ignore[import-not-found]
+
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        image.colorspace_settings.name = "Non-Color"
+        width, height = image.size
+        pixels = np.array(image.pixels[:], dtype=np.float64).reshape(height, width, 4)
+    finally:
+        bpy.data.images.remove(image)
+    alpha = pixels[..., 3:4]
+    background = np.array(background_srgb, dtype=np.float64)
+    straight = pixels[..., :3] * alpha + background[None, None, :] * (1.0 - alpha)
+    opaque = np.concatenate([np.clip(straight, 0.0, 1.0), np.ones((height, width, 1))], axis=-1)
+    composed = bpy.data.images.new(
+        "MeshProbeBackgroundComposite", width=width, height=height, alpha=True
+    )
+    try:
+        composed.colorspace_settings.name = "Non-Color"
+        composed.file_format = "PNG"
+        composed.pixels[:] = opaque.reshape(-1).tolist()
+        composed.filepath_raw = str(path)
+        composed.save()
+    finally:
+        bpy.data.images.remove(composed)
+
+
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
     output = Path(command["output_path"]).expanduser().resolve()
@@ -2117,7 +2156,13 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     with temporary_render_style():
         device = configure_render(command)
         configure_render_style(command)
+        backdrop = display_referred_background()
+        if backdrop is not None:
+            bpy.context.scene.render.film_transparent = True
         render_still(output)
+        if backdrop is not None:
+            bpy.context.scene.render.film_transparent = False
+            composite_over_background(output, backdrop)
         luminance = luminance_summary(output)
         evaluator = None
         if command.get("evaluator_output_dir") is not None:

@@ -22,6 +22,7 @@ from meshprobe.identity import stable_component_id
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 PositiveFiniteFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+UnitFloat = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
 type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
@@ -472,6 +473,7 @@ class PresetIllumination(ContractModel):
         tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] | None
     ) = None
     background_strength: NonNegativeFiniteFloat | None = None
+    background_srgb: tuple[UnitFloat, UnitFloat, UnitFloat] | None = None
 
 
 class EnvironmentMap(ContractModel):
@@ -492,6 +494,7 @@ class CustomIllumination(ContractModel):
     ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
         Field(default_factory=lambda data: data["background_rgb"])
     )
+    background_srgb: tuple[UnitFloat, UnitFloat, UnitFloat] | None = None
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
     visible_background_mode: VisibleBackgroundMode = Field(

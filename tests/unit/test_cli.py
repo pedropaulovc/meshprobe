@@ -1038,6 +1038,89 @@ def test_illumination_cli_accepts_custom_json_and_preset_background_override(
     assert preset_command.illumination.background_rgb == (1, 1, 1)
 
 
+def test_illumination_cli_accepts_display_referred_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "neutral_studio", "--background-srgb", "1", "1", "1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    (command,) = client.commands
+    assert isinstance(command, IlluminationSetCommand)
+    assert command.illumination.background_srgb == (1, 1, 1)
+    assert command.illumination.background_rgb is None
+
+
+def test_illumination_cli_rejects_display_and_linear_background_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "illumination-set",
+            "neutral_studio",
+            "--background-srgb",
+            "1",
+            "1",
+            "1",
+            "--background-rgb",
+            "0.5",
+            "0.5",
+            "0.5",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert client.commands == []
+
+
+def test_illumination_cli_rejects_display_background_with_custom_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    illumination_path = tmp_path / "illumination.json"
+    illumination_path.write_text(
+        json.dumps(
+            {
+                "preset": "custom",
+                "background_rgb": [1, 1, 1],
+                "ambient_rgb": [0.1, 0.1, 0.1],
+                "ambient_strength": 0.15,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "illumination-set",
+            "custom",
+            "--illumination-json",
+            str(illumination_path),
+            "--background-srgb",
+            "1",
+            "1",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert client.commands == []
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -223,3 +223,61 @@ def test_render_matches_perceptual_edge_and_exact_mask_goldens(tmp_path: Path) -
     expected_mask = Image.open(MASK_GOLDEN).convert("L")
     assert semantic_mask.size == expected_mask.size
     assert semantic_mask.tobytes() == expected_mask.tobytes()
+
+
+def test_display_referred_background_renders_exact_srgb(tmp_path: Path) -> None:
+    source = build_golden_scene(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="bg-view",
+                op="view.orbit",
+                target_mm=(0, 0, 800),
+                azimuth_degrees=-55,
+                elevation_degrees=28,
+                distance_mm=5_200,
+                projection=PerspectiveProjection(focal_length_mm=62),
+            )
+        )
+
+        def render_backdrop_corners(
+            color: tuple[float, float, float], name: str
+        ) -> set[tuple[int, int, int]]:
+            controller.execute(
+                IlluminationSetCommand(
+                    request_id=f"bg-light-{name}",
+                    op="illumination.set",
+                    illumination=PresetIllumination(
+                        preset=IlluminationPreset.NEUTRAL_STUDIO,
+                        background_srgb=color,
+                    ),
+                )
+            )
+            output = tmp_path / f"background-{name}.png"
+            controller.render_image(
+                RenderImageCommand(
+                    request_id=f"bg-render-{name}",
+                    op="render.image",
+                    output_path=str(output),
+                    width=96,
+                    height=96,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                )
+            )
+            with Image.open(output) as image:
+                rgb = image.convert("RGB")
+                width, height = rgb.size
+                return {
+                    rgb.getpixel(corner)
+                    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
+                }
+
+        # 1 1 1 must clip to pure white, which the AgX view transform alone never reaches.
+        assert render_backdrop_corners((1.0, 1.0, 1.0), "white") == {(255, 255, 255)}
+        gray_corners = render_backdrop_corners((0.5, 0.5, 0.5), "gray")
+        assert all(all(abs(channel - 128) <= 1 for channel in corner) for corner in gray_corners)
