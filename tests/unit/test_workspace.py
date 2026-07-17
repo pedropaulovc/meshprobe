@@ -11,6 +11,8 @@ from meshprobe.models import (
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
+    GraphicsDeviceClass,
+    GraphicsPlatform,
     RenderStyle,
     RenderStyleState,
     SceneManifest,
@@ -31,11 +33,14 @@ from meshprobe.workspace import SessionFiles, SessionManager, atomic_json
 
 
 class FakeSessionService:
-    def __init__(self, manifest: SceneManifest) -> None:
+    def __init__(
+        self, manifest: SceneManifest, *, graphics: GraphicsPlatform | None = None
+    ) -> None:
         self.manifest = manifest
         self.session: InspectionSession | None = None
         self.closed = False
         self.killed = False
+        self.graphics = graphics
 
     @property
     def worker_pid(self) -> int | None:
@@ -198,6 +203,118 @@ def test_contact_sheet_records_worker_default_render_style(
 
     sheet_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
     assert sheet_state["render_style"] == RenderStyleState().model_dump(mode="json")
+
+
+def _fake_graphics_platform() -> GraphicsPlatform:
+    return GraphicsPlatform(
+        vendor="Microsoft",
+        renderer="D3D12 (Vendor GPU)",
+        version="1.0",
+        backend="d3d12",
+        blender_device_type="CPU",
+        device_class=GraphicsDeviceClass.SOFTWARE,
+        warnings=(
+            "Blender labels this adapter SOFTWARE, but its renderer identifies a "
+            "hardware-backed D3D12 adapter.",
+        ),
+    )
+
+
+def test_graphics_warning_surfaces_once_and_not_on_every_command(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    graphics = _fake_graphics_platform()
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest, graphics=graphics),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+
+    open_receipt = manager.open("review", source)
+    assert open_receipt.warnings == graphics.warnings
+
+    snapshot_receipt = manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="snapshot", op="session.snapshot"),
+    )
+    assert snapshot_receipt.warnings == ()
+
+
+def test_graphics_warning_resurfaces_when_the_worker_is_recreated(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    graphics = _fake_graphics_platform()
+
+    class RecoveringSessionService(FakeSessionService):
+        worker_generation = 1
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 4_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "recreate-worker":
+                self.worker_generation += 1
+            return super().execute(command)
+
+    service = RecoveringSessionService(scene_manifest, graphics=graphics)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+
+    preserved_receipt = manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="same-worker", op="session.snapshot"),
+    )
+    assert preserved_receipt.warnings == ()
+
+    recreated_receipt = manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recreate-worker", op="session.snapshot"),
+    )
+    assert recreated_receipt.warnings == graphics.warnings
+
+
+def test_graphics_warning_resurfaces_after_a_recovered_workers_first_command_is_rejected(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    graphics = _fake_graphics_platform()
+
+    class RejectingFirstCommandService(FakeSessionService):
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "will-fail":
+                raise ValueError("rejected")
+            return super().execute(command)
+
+    def factory() -> RejectingFirstCommandService:
+        return RejectingFirstCommandService(scene_manifest, graphics=graphics)
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+
+    # A fresh manager with no in-memory service simulates a daemon restart: the
+    # next command recovers a brand-new worker before running the user's command.
+    recovered = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    with pytest.raises(ValueError):
+        recovered.execute(
+            "review",
+            SessionSnapshotCommand(request_id="will-fail", op="session.snapshot"),
+        )
+
+    receipt = recovered.execute(
+        "review",
+        SessionSnapshotCommand(request_id="now-succeeds", op="session.snapshot"),
+    )
+    assert receipt.warnings == graphics.warnings
 
 
 def test_recreated_worker_resets_durable_render_style(
