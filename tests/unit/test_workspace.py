@@ -181,6 +181,13 @@ def test_contact_sheet_records_worker_default_render_style(
 
     manager.execute(
         "review",
+        SessionSnapshotCommand(request_id="same-renderer", op="session.snapshot"),
+    )
+    live_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert live_state["render_style"]["style"] == "shaded_edges"
+
+    manager.execute(
+        "review",
         RenderContactSheetCommand(
             request_id="sheet",
             op="render.contact_sheet",
@@ -191,6 +198,95 @@ def test_contact_sheet_records_worker_default_render_style(
 
     sheet_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
     assert sheet_state["render_style"] == RenderStyleState().model_dump(mode="json")
+
+
+def test_recreated_worker_resets_durable_render_style(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class RecoveringSessionService(FakeSessionService):
+        worker_generation = 1
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 4_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "recreate-worker":
+                self.worker_generation += 1
+            return super().execute(command)
+
+    service = RecoveringSessionService(scene_manifest)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+    files = SessionFiles(manager.root, "review")
+
+    manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recreate-worker", op="session.snapshot"),
+    )
+
+    recovered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
+
+
+def test_worker_recreated_after_render_resets_durable_render_style(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class SnapshotRecoveringSessionService(FakeSessionService):
+        worker_generation = 1
+        recreate_on_checkpoint = False
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 5_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "checkpoint" and self.recreate_on_checkpoint:
+                self.worker_generation += 1
+                self.recreate_on_checkpoint = False
+            return super().execute(command)
+
+    service = SnapshotRecoveringSessionService(scene_manifest)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    service.recreate_on_checkpoint = True
+
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+
+    files = SessionFiles(manager.root, "review")
+    recovered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
 
 
 def test_reused_request_ids_preserve_every_result(
@@ -357,8 +453,11 @@ def test_import_failure_preserves_existing_session(
     assert (files.artifacts / "preserved.png").read_bytes() == b"evidence"
 
 
-def test_closed_and_killed_sessions_recover_from_acknowledged_checkpoint(
-    tmp_path: Path, scene_manifest: SceneManifest
+@pytest.mark.parametrize("termination", ["close", "kill"])
+def test_closed_and_killed_sessions_recover_checkpoint_with_default_render_style(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    termination: str,
 ) -> None:
     services: list[FakeSessionService] = []
 
@@ -382,8 +481,22 @@ def test_closed_and_killed_sessions_recover_from_acknowledged_checkpoint(
             mode=DisplayMode.HIDDEN,
         ),
     )
-    manager.kill("default")
-    assert services[0].killed
+    manager.execute(
+        "default",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+    files = SessionFiles(root, "default")
+    rendered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert rendered_state["render_style"]["style"] == "shaded_edges"
+
+    getattr(manager, termination)("default")
+    assert services[0].closed is (termination == "close")
+    assert services[0].killed is (termination == "kill")
 
     recovered = SessionManager(root, service_factory=factory)
     receipt = recovered.execute(
@@ -394,6 +507,8 @@ def test_closed_and_killed_sessions_recover_from_acknowledged_checkpoint(
     assert isinstance(payload, dict)
     session = payload["result"]["session"]
     assert session["components"][component_id]["display"] == "hidden"
+    recovered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
     recovered.close("default")
     assert services[-1].closed
 

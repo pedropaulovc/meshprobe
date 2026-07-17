@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -50,6 +51,12 @@ STATE_OPERATIONS = frozenset(
         "component.mark",
     }
 )
+
+
+class RendererContinuity(StrEnum):
+    PRESERVED = "preserved"
+    RECREATED_BEFORE_SNAPSHOT = "recreated_before_snapshot"
+    RECREATED_DURING_SNAPSHOT = "recreated_during_snapshot"
 
 
 class SessionMetadata(BaseModel):
@@ -402,18 +409,28 @@ class SessionManager:
             )
         with self._lock:
             files = self._require_files(name)
+            previous_service = self._services.get(name)
+            previous_worker_pid = (
+                previous_service.worker_pid if previous_service is not None else None
+            )
             try:
                 service = self._service(name, files)
                 response = service.execute(command)
+                command_worker_pid = service.worker_pid
                 snapshot = self._snapshot(service)
             except Exception as error:
                 self._event(files, command, "rejected", error=str(error))
                 raise
+            renderer_continuity = RendererContinuity.RECREATED_BEFORE_SNAPSHOT
+            if command_worker_pid != service.worker_pid:
+                renderer_continuity = RendererContinuity.RECREATED_DURING_SNAPSHOT
+            elif service is previous_service and service.worker_pid == previous_worker_pid:
+                renderer_continuity = RendererContinuity.PRESERVED
             result_path = self._write_result(files, command.request_id, response)
             self._write_state(
                 files,
                 snapshot,
-                render_style=self._render_style(command),
+                render_style=self._render_style(command, renderer_continuity),
             )
             self._update_checkpoint(files, command, snapshot)
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
@@ -626,10 +643,17 @@ class SessionManager:
         )
 
     @staticmethod
-    def _render_style(command: Command) -> RenderStyleState | None:
+    def _render_style(
+        command: Command,
+        renderer_continuity: RendererContinuity,
+    ) -> RenderStyleState | None:
+        if renderer_continuity is RendererContinuity.RECREATED_DURING_SNAPSHOT:
+            return RenderStyleState()
         if isinstance(command, RenderImageCommand):
             return RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
         if isinstance(command, RenderContactSheetCommand):
+            return RenderStyleState()
+        if renderer_continuity is RendererContinuity.RECREATED_BEFORE_SNAPSHOT:
             return RenderStyleState()
         return None
 
