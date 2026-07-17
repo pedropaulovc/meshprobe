@@ -17,6 +17,7 @@ from meshprobe.models import (
     PerspectiveProjection,
     PresetIllumination,
     RenderEngine,
+    RenderStyle,
 )
 from meshprobe.protocol import (
     IlluminationSetCommand,
@@ -281,3 +282,64 @@ def test_display_referred_background_renders_exact_srgb(tmp_path: Path) -> None:
         assert render_backdrop_corners((1.0, 1.0, 1.0), "white") == {(255, 255, 255)}
         gray_corners = render_backdrop_corners((0.5, 0.5, 0.5), "gray")
         assert all(all(abs(channel - 128) <= 1 for channel in corner) for corner in gray_corners)
+
+
+def edge_magnitude(image: Image.Image) -> float:
+    return ImageStat.Stat(image.convert("L").filter(ImageFilter.FIND_EDGES)).mean[0]
+
+
+def test_shaded_edges_keeps_freestyle_off_the_evaluator_passes(tmp_path: Path) -> None:
+    source = build_golden_scene(tmp_path)
+    evaluator_root = tmp_path / "evaluator"
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="edges-view",
+                op="view.orbit",
+                target_mm=(0, 0, 800),
+                azimuth_degrees=-55,
+                elevation_degrees=28,
+                distance_mm=5_200,
+                projection=PerspectiveProjection(focal_length_mm=62),
+            )
+        )
+        controller.execute(
+            IlluminationSetCommand(
+                request_id="edges-light",
+                op="illumination.set",
+                illumination=PresetIllumination(preset=IlluminationPreset.NEUTRAL_STUDIO),
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="edges-render",
+                op="render.image",
+                output_path=str(tmp_path / "edges-color.png"),
+                width=192,
+                height=192,
+                samples=1,
+                engine=RenderEngine.EEVEE,
+                style=RenderStyle.SHADED_EDGES,
+            ),
+            evaluator_output_dir=evaluator_root,
+        )
+
+    # The evaluator passes render with Freestyle disabled (it never writes to Depth or
+    # Normal), so the exact component mask still resolves under shaded_edges.
+    assert rendered.evaluator is not None
+    semantic_mask = semantic_component_mask(
+        Path(rendered.evaluator.component_ids.path),
+        rendered.evaluator.component_colors,
+        manifest.components,
+    )
+    assert semantic_mask.tobytes() == Image.open(MASK_GOLDEN).convert("L").tobytes()
+
+    # Freestyle stays on for the visible color pass: its outlines lift the edge content
+    # well above the plain shaded golden.
+    edges = edge_magnitude(Image.open(rendered.color.path).convert("RGB"))
+    shaded_edges_baseline = edge_magnitude(Image.open(COLOR_GOLDEN).convert("RGB"))
+    assert edges > shaded_edges_baseline

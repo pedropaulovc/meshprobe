@@ -130,6 +130,16 @@ def test_render_sheet_help_advertises_occlusion_analysis() -> None:
     assert "automatic occlusion analysis" in unstyle(result.stdout)
 
 
+def test_render_image_style_help_documents_shaded_edges_cost() -> None:
+    result = runner.invoke(app, ["render-image", "--help"])
+
+    assert result.exit_code == 0
+    help_text = unstyle(result.stdout)
+    assert "shaded_edges" in help_text
+    assert "slower" in help_text
+    assert "visible components" in help_text
+
+
 def test_occlusion_command_uses_current_camera_query(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
