@@ -877,6 +877,7 @@ def preset_lights(preset: str) -> dict[str, Any]:
         "ambient_rgb": background,
         "ambient_strength": ambient,
         "lights": lights,
+        "visible_background_mode": "color",
     }
 
 
@@ -886,6 +887,7 @@ def configure_world(
     ambient_rgb: list[float],
     ambient_strength: float,
     environment_map: dict[str, Any] | None,
+    visible_background_mode: str,
 ) -> None:
     world = bpy.context.scene.world or bpy.data.worlds.new("MeshProbeWorld")
     bpy.context.scene.world = world
@@ -923,6 +925,7 @@ def configure_world(
         environment.name = "MeshProbeEnvironmentBackground"
         environment.inputs["Strength"].default_value = environment_map["strength"]
         add = nodes.new("ShaderNodeAddShader")
+        add.name = "MeshProbeEnvironmentLighting"
         links.new(texture_coordinates.outputs["Generated"], mapping.inputs["Vector"])
         links.new(mapping.outputs["Vector"], texture.inputs["Vector"])
         links.new(texture.outputs["Color"], environment.inputs["Color"])
@@ -931,9 +934,15 @@ def configure_world(
         environment_output = add.outputs["Shader"]
     light_path = nodes.new("ShaderNodeLightPath")
     mix = nodes.new("ShaderNodeMixShader")
+    mix.name = "MeshProbeVisibleBackgroundMix"
+    camera_output = (
+        environment_output
+        if visible_background_mode == "environment"
+        else visible.outputs["Background"]
+    )
     links.new(light_path.outputs["Is Camera Ray"], mix.inputs[0])
     links.new(environment_output, mix.inputs[1])
-    links.new(visible.outputs["Background"], mix.inputs[2])
+    links.new(camera_output, mix.inputs[2])
     links.new(mix.outputs["Shader"], output.inputs["Surface"])
 
 
@@ -964,11 +973,38 @@ def create_light(spec: dict[str, Any]) -> None:
         data.angle = math.radians(spec["angle_degrees"])
 
 
+def custom_illumination_has_effective_output(illumination: dict[str, Any]) -> bool:
+    if illumination["ambient_strength"] > 0 and any(illumination["ambient_rgb"]):
+        return True
+    if illumination.get("environment_map") is not None:
+        return True
+    return any(
+        light.get("color_temperature_k") is not None
+        or any(light.get("linear_rgb") or ())
+        for light in illumination["lights"]
+    )
+
+
 def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
     if illumination["preset"] == "custom":
         resolved = deepcopy(illumination)
         resolved.setdefault("background_strength", resolved["ambient_strength"])
         resolved.setdefault("ambient_rgb", deepcopy(resolved["background_rgb"]))
+        resolved.setdefault("lights", [])
+        resolved.setdefault("environment_map", None)
+        resolved.setdefault(
+            "visible_background_mode",
+            "environment" if resolved.get("environment_map") is not None else "color",
+        )
+        if resolved["visible_background_mode"] not in {"color", "environment"}:
+            raise ValueError("unknown visible background mode")
+        if (
+            resolved["visible_background_mode"] == "environment"
+            and resolved.get("environment_map") is None
+        ):
+            raise ValueError("environment visible background requires an environment map")
+        if not custom_illumination_has_effective_output(resolved):
+            raise ValueError("custom illumination must have non-zero light output")
         runtime = resolved
     else:
         runtime = preset_lights(illumination["preset"])
@@ -991,6 +1027,7 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
         runtime["ambient_rgb"],
         runtime["ambient_strength"],
         runtime.get("environment_map"),
+        runtime["visible_background_mode"],
     )
     for light in runtime["lights"]:
         create_light(light)
@@ -1212,11 +1249,16 @@ def reset_session() -> dict[str, Any]:
 
 
 def runtime_diagnostics() -> dict[str, Any]:
+    current_illumination = CURRENT_ILLUMINATION
+    if current_illumination is None:
+        raise RuntimeError("no active illumination")
     camera = camera_object()
     world_nodes = bpy.context.scene.world.node_tree.nodes
     environment = world_nodes.get("MeshProbeEnvironment")
     visible_background = world_nodes.get("MeshProbeVisibleBackground")
     ambient_background = world_nodes.get("MeshProbeAmbient")
+    visible_background_mix = world_nodes.get("MeshProbeVisibleBackgroundMix")
+    camera_background_source = visible_background_mix.inputs[2].links[0].from_node.name
     return {
         "components": {
             component_id: {
@@ -1253,6 +1295,11 @@ def runtime_diagnostics() -> dict[str, Any]:
             else None
         ),
         "world": {
+            "visible_background_mode": current_illumination.get(
+                "visible_background_mode",
+                "color",
+            ),
+            "camera_background_source": camera_background_source,
             "background_rgb": list(visible_background.inputs["Color"].default_value[:3]),
             "background_strength": float(visible_background.inputs["Strength"].default_value),
             "ambient_rgb": list(ambient_background.inputs["Color"].default_value[:3]),

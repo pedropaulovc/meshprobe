@@ -297,6 +297,11 @@ class IlluminationPreset(StrEnum):
     FLAT_DIAGNOSTIC = "flat_diagnostic"
 
 
+class VisibleBackgroundMode(StrEnum):
+    ENVIRONMENT = "environment"
+    COLOR = "color"
+
+
 class PresetIllumination(ContractModel):
     preset: IlluminationPreset
     background_rgb: (
@@ -325,6 +330,13 @@ class CustomIllumination(ContractModel):
     )
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
+    visible_background_mode: VisibleBackgroundMode = Field(
+        default_factory=lambda data: (
+            VisibleBackgroundMode.ENVIRONMENT
+            if data["environment_map"] is not None
+            else VisibleBackgroundMode.COLOR
+        )
+    )
 
     @field_validator("lights")
     @classmethod
@@ -336,6 +348,11 @@ class CustomIllumination(ContractModel):
 
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
+        if (
+            self.visible_background_mode is VisibleBackgroundMode.ENVIRONMENT
+            and self.environment_map is None
+        ):
+            raise ValueError("environment visible background requires an environment map")
         ambient_contributes = self.ambient_strength > 0 and any(self.ambient_rgb)
         environment_contributes = self.environment_map is not None
         light_contributes = any(
