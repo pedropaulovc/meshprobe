@@ -1308,6 +1308,7 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
         runtime = resolved
     else:
         runtime = preset_lights(illumination["preset"])
+        srgb_override = illumination.get("background_srgb")
         background_override = illumination.get("background_rgb")
         strength_override = illumination.get("background_strength")
         if background_override is not None:
@@ -1315,12 +1316,20 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
             runtime["background_strength"] = 1.0
         if strength_override is not None:
             runtime["background_strength"] = strength_override
-        resolved = {
-            **deepcopy(illumination),
-            "background_rgb": deepcopy(runtime["background_rgb"]),
-            "background_strength": runtime["background_strength"],
-        }
-    resolved.setdefault("background_srgb", illumination.get("background_srgb"))
+        if srgb_override is None:
+            resolved = {
+                **deepcopy(illumination),
+                "background_rgb": deepcopy(runtime["background_rgb"]),
+                "background_strength": runtime["background_strength"],
+            }
+        else:
+            # A display-referred backdrop composites the exact color, so the resolved
+            # snapshot carries only background_srgb (no shadowed linear override).
+            resolved = {
+                **deepcopy(illumination),
+                "background_rgb": None,
+                "background_strength": None,
+            }
     clear_lights()
     configure_world(
         runtime["background_rgb"],
@@ -2122,30 +2131,34 @@ def display_referred_background() -> tuple[float, float, float] | None:
 
 
 def composite_over_background(path: Path, background_srgb: tuple[float, float, float]) -> None:
-    import numpy as np  # type: ignore[import-not-found]
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError as error:  # pragma: no cover - numpy ships with Blender
+        raise RuntimeError(
+            "--background-srgb compositing needs numpy, which is bundled with Blender but "
+            "was not importable in this build; drop the flag or install numpy for this Blender"
+        ) from error
 
+    # Composite the exact display-referred color behind the transparent (film_transparent)
+    # backdrop in place, using the bulk pixel API into a float32 buffer so a max-resolution
+    # render never materializes the whole image as a Python float list.
     image = bpy.data.images.load(str(path), check_existing=False)
     try:
         image.colorspace_settings.name = "Non-Color"
         width, height = image.size
-        pixels = np.array(image.pixels[:], dtype=np.float64).reshape(height, width, 4)
+        buffer = np.empty(width * height * 4, dtype=np.float32)
+        image.pixels.foreach_get(buffer)
+        pixels = buffer.reshape(-1, 4)
+        alpha = pixels[:, 3:4]
+        background = np.asarray(background_srgb, dtype=np.float32)
+        pixels[:, :3] = np.clip(pixels[:, :3] * alpha + background * (1.0 - alpha), 0.0, 1.0)
+        pixels[:, 3] = 1.0
+        image.pixels.foreach_set(buffer)
+        image.file_format = "PNG"
+        image.filepath_raw = str(path)
+        image.save()
     finally:
         bpy.data.images.remove(image)
-    alpha = pixels[..., 3:4]
-    background = np.array(background_srgb, dtype=np.float64)
-    straight = pixels[..., :3] * alpha + background[None, None, :] * (1.0 - alpha)
-    opaque = np.concatenate([np.clip(straight, 0.0, 1.0), np.ones((height, width, 1))], axis=-1)
-    composed = bpy.data.images.new(
-        "MeshProbeBackgroundComposite", width=width, height=height, alpha=True
-    )
-    try:
-        composed.colorspace_settings.name = "Non-Color"
-        composed.file_format = "PNG"
-        composed.pixels[:] = opaque.reshape(-1).tolist()
-        composed.filepath_raw = str(path)
-        composed.save()
-    finally:
-        bpy.data.images.remove(composed)
 
 
 def render_image(command: dict[str, Any]) -> dict[str, Any]:

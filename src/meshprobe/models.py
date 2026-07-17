@@ -475,6 +475,17 @@ class PresetIllumination(ContractModel):
     background_strength: NonNegativeFiniteFloat | None = None
     background_srgb: tuple[UnitFloat, UnitFloat, UnitFloat] | None = None
 
+    @model_validator(mode="after")
+    def _reject_conflicting_background(self) -> PresetIllumination:
+        if self.background_srgb is not None and (
+            self.background_rgb is not None or self.background_strength is not None
+        ):
+            raise ValueError(
+                "background_srgb is display-referred and cannot be combined with the "
+                "linear-referred background_rgb/background_strength"
+            )
+        return self
+
 
 class EnvironmentMap(ContractModel):
     path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
@@ -494,7 +505,6 @@ class CustomIllumination(ContractModel):
     ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
         Field(default_factory=lambda data: data["background_rgb"])
     )
-    background_srgb: tuple[UnitFloat, UnitFloat, UnitFloat] | None = None
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
     visible_background_mode: VisibleBackgroundMode = Field(
