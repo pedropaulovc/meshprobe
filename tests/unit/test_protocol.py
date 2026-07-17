@@ -282,7 +282,7 @@ def test_render_command_defaults_favor_inspection_resolution() -> None:
         }
     )
     assert isinstance(sheet, RenderContactSheetCommand)
-    assert (sheet.panel_width, sheet.panel_height) == (1288, 1288)
+    assert (sheet.panel_width, sheet.panel_height) == (1200, 1200)
 
 
 def test_custom_contact_sheet_requires_nine_declared_panels() -> None:

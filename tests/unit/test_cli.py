@@ -677,7 +677,7 @@ def test_render_defaults_favor_inspection_resolution(monkeypatch: pytest.MonkeyP
     assert isinstance(image_command, RenderImageCommand)
     assert isinstance(sheet_command, RenderContactSheetCommand)
     assert (image_command.width, image_command.height) == (2576, 2576)
-    assert (sheet_command.panel_width, sheet_command.panel_height) == (1288, 1288)
+    assert (sheet_command.panel_width, sheet_command.panel_height) == (1200, 1200)
 
 
 def test_component_commands_resolve_short_references(

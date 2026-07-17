@@ -175,8 +175,8 @@ class RenderContactSheetCommand(CommandModel):
     recipe: Literal["focused_3x3", "custom_3x3"] = "focused_3x3"
     focus_component_ids: tuple[str, ...] = Field(min_length=1)
     panels: tuple[ContactSheetPanelSpec, ...] = Field(default=(), max_length=9)
-    panel_width: Annotated[int, Field(ge=128, le=4_096)] = 1288
-    panel_height: Annotated[int, Field(ge=128, le=4_096)] = 1288
+    panel_width: Annotated[int, Field(ge=128, le=4_096)] = 1200
+    panel_height: Annotated[int, Field(ge=128, le=4_096)] = 1200
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
     engine: RenderEngine = RenderEngine.EEVEE
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
