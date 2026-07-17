@@ -714,6 +714,37 @@ def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
     assert after["state_sha256"] == before["state_sha256"]
 
 
+def test_rejected_raw_view_set_preserves_camera_operation(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+        )
+        before = controller.request("session.snapshot")["session"]
+        invalid_camera = deepcopy(before["camera"])
+        invalid_camera["pose"]["frame"] = "camera"
+
+        with pytest.raises(BlenderWorkerError, match="camera pose frame must be source or world"):
+            controller.request("view.set", camera=invalid_camera)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
 def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=30) as controller:
@@ -801,11 +832,16 @@ def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> 
         unsupported_mode = {**projection, "mode": "fisheye"}
         bad_sensor_fit = {**projection, "sensor_fit": "diagonal"}
         missing_orthographic_scale = {"mode": "orthographic"}
+        extra_projection_field = {**projection, "debug": 1}
+        extra_depth_of_field = deepcopy(projection)
+        extra_depth_of_field["depth_of_field"]["debug"] = 1
 
         for invalid_projection, error in (
             (unsupported_mode, "unknown projection mode"),
             (bad_sensor_fit, "unknown sensor fit"),
             (missing_orthographic_scale, "scale_mm"),
+            (extra_projection_field, "unknown perspective projection fields"),
+            (extra_depth_of_field, "unknown depth-of-field fields"),
         ):
             with pytest.raises(BlenderWorkerError, match=error):
                 controller.request(

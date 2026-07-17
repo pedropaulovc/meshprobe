@@ -674,9 +674,20 @@ def validate_positive_projection_number(projection: dict[str, Any], key: str) ->
     return float(value)
 
 
+def reject_unknown_fields(payload: dict[str, Any], allowed: set[str], contract: str) -> None:
+    unknown = payload.keys() - allowed
+    if unknown:
+        raise ValueError(f"unknown {contract} fields: {sorted(unknown)}")
+
+
 def normalize_camera_projection(projection: dict[str, Any]) -> dict[str, Any]:
     mode = projection["mode"]
     if mode == "orthographic":
+        reject_unknown_fields(
+            projection,
+            {"mode", "scale_mm", "near_clip_mm", "far_clip_mm"},
+            "orthographic projection",
+        )
         normalized = {
             "near_clip_mm": 0.5,
             "far_clip_mm": 100_000.0,
@@ -687,12 +698,35 @@ def normalize_camera_projection(projection: dict[str, Any]) -> dict[str, Any]:
     if mode != "perspective":
         raise ValueError(f"unknown projection mode: {mode}")
 
+    reject_unknown_fields(
+        projection,
+        {
+            "mode",
+            "focal_length_mm",
+            "sensor_width_mm",
+            "sensor_height_mm",
+            "sensor_fit",
+            "near_clip_mm",
+            "far_clip_mm",
+            "depth_of_field",
+        },
+        "perspective projection",
+    )
+    requested_depth_of_field = projection.get("depth_of_field", {})
+    reject_unknown_fields(
+        requested_depth_of_field,
+        {"mode", "aperture_fstop", "focus_distance_mm", "focus"},
+        "depth-of-field",
+    )
+    requested_focus = requested_depth_of_field.get("focus")
+    if requested_focus is not None:
+        reject_unknown_fields(requested_focus, {"component_id"}, "component focus")
     depth_of_field = {
         "mode": "disabled",
         "aperture_fstop": 2.8,
         "focus_distance_mm": None,
         "focus": None,
-        **deepcopy(projection.get("depth_of_field", {})),
+        **deepcopy(requested_depth_of_field),
     }
     normalized = {
         "mode": "perspective",
@@ -2501,12 +2535,13 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "view.set":
         require_session()
         global CURRENT_CAMERA_OPERATION
-        CURRENT_CAMERA_OPERATION = None
-        return apply_camera(
+        apply_camera(
             command["camera"],
             command.get("focus_component_ids", ()),
             command.get("aspect_ratio", 1.0),
         )
+        CURRENT_CAMERA_OPERATION = None
+        return session_snapshot()
     if operation == "view.orbit":
         require_session()
         return orbit_camera(command)
