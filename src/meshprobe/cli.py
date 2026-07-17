@@ -993,7 +993,15 @@ def render_image(
     style: Annotated[RenderStyle, typer.Option("--style")] = RenderStyle.SHADED,
     edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
     edge_width: Annotated[float, typer.Option("--edge-width", min=0.01, max=10)] = 1.5,
-    crease_angle: Annotated[float, typer.Option("--crease-angle", min=0.01, max=180)] = 60,
+    crease_angle: Annotated[
+        float,
+        typer.Option(
+            "--crease-angle",
+            min=0.01,
+            max=180,
+            help="Maximum face angle in degrees classified as a crease.",
+        ),
+    ] = 120,
     edge_types: Annotated[
         str,
         typer.Option(

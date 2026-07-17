@@ -124,7 +124,7 @@ def test_session_manager_writes_compact_queryable_state(
         "shaded_edges": {
             "line_color": "#202020",
             "line_width": 1.5,
-            "crease_angle_degrees": 60.0,
+            "crease_angle_degrees": 120.0,
             "edge_types": ["silhouette", "border", "crease", "material_boundary"],
         },
     }

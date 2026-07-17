@@ -1973,12 +1973,6 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: P
                 height=240,
                 samples=1,
                 style=RenderStyle.SHADED_EDGES,
-                shaded_edges=ShadedEdgesStyle(
-                    line_color="#101820",
-                    line_width=2,
-                    crease_angle_degrees=120,
-                    edge_types=("silhouette", "border", "crease"),
-                ),
             )
         )
         edge_runtime = controller.request("session.runtime")
@@ -1987,7 +1981,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: P
     assert plain.session.state_sha256 == edged.session.state_sha256
     assert plain.session.camera == edged.session.camera
     assert edged.style is RenderStyle.SHADED_EDGES
-    assert edged.shaded_edges.line_color == "#101820"
+    assert edged.shaded_edges == ShadedEdgesStyle()
     assert edge_runtime["render"]["use_freestyle"] is True
 
     plain_image = Image.open(plain.color.path).convert("RGB")

@@ -2019,7 +2019,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             {
                 "line_color": "#202020",
                 "line_width": 1.5,
-                "crease_angle_degrees": 60,
+                "crease_angle_degrees": 120,
                 "edge_types": ["silhouette", "border", "crease", "material_boundary"],
             },
         ),

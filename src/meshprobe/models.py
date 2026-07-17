@@ -632,7 +632,7 @@ class EdgeType(StrEnum):
 class ShadedEdgesStyle(ContractModel):
     line_color: Annotated[str, StringConstraints(pattern=r"^#[0-9A-Fa-f]{6}$")] = "#202020"
     line_width: Annotated[float, Field(gt=0, le=10, allow_inf_nan=False)] = 1.5
-    crease_angle_degrees: Annotated[float, Field(gt=0, le=180, allow_inf_nan=False)] = 60
+    crease_angle_degrees: Annotated[float, Field(gt=0, le=180, allow_inf_nan=False)] = 120
     edge_types: tuple[EdgeType, ...] = (
         EdgeType.SILHOUETTE,
         EdgeType.BORDER,
