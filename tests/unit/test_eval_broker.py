@@ -9,13 +9,14 @@ from pydantic import JsonValue
 
 from meshprobe.evals.harness.broker import EvaluationBroker
 from meshprobe.evals.harness.sandbox import visible_artifact_path
-from meshprobe.evals.schemas import EpisodeBudgets, TraceStatus
+from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceStatus
 from meshprobe.protocol import (
     Command,
     IlluminationSetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
+    ViewRotateCommand,
 )
 from meshprobe.service import CommandResponse
 from meshprobe.sources import sha256_file
@@ -46,7 +47,7 @@ class FakeEvaluationService:
             }
         elif operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
-        elif operation == "illumination.set":
+        elif operation in {"illumination.set", "view.rotate"}:
             result = {"state_sha256": "2" * 64}
         elif operation == "render.image":
             assert isinstance(command, RenderImageCommand)
@@ -157,6 +158,24 @@ def test_broker_omits_normalized_geometry_cache_metadata(tmp_path: Path) -> None
 
     assert opened.ok and opened.response is not None
     assert opened.response.result == {"source_sha256": "a" * 64}
+
+
+def test_broker_records_view_rotate_as_a_normal_trace_event(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+
+    rotated = active.execute(
+        ViewRotateCommand(
+            request_id="rotate",
+            op="view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=15,
+        )
+    )
+
+    assert rotated.ok
+    assert active.events[-1].operation is Operation.VIEW_ROTATE
+    assert active.events[-1].status is TraceStatus.ACCEPTED
 
 
 def test_broker_mediates_custom_environment_map_paths(tmp_path: Path) -> None:

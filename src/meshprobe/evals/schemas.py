@@ -23,6 +23,7 @@ class Operation(StrEnum):
     VIEW_SET = "view.set"
     VIEW_ORBIT = "view.orbit"
     VIEW_MOVE = "view.move"
+    VIEW_ROTATE = "view.rotate"
     ILLUMINATION_SET = "illumination.set"
     COMPONENT_DISPLAY = "component.display"
     COMPONENT_MARK = "component.mark"

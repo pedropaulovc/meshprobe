@@ -441,6 +441,8 @@ def apply_camera(
         }
     elif pose.get("frame", "world") != "world":
         raise ValueError("camera pose frame must be source or world")
+    else:
+        resolved_camera["pose"]["frame"] = "world"
     obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
     projection = resolved_camera["projection"]
     data = obj.data
@@ -583,6 +585,9 @@ def transform_from_source(
 def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
+    focus_component_ids = command.get("focus_component_ids", ())
+    aspect_ratio = command.get("aspect_ratio", 1.0)
+    validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
     axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
     axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
     target = Vector(command["target_mm"])
@@ -620,8 +625,8 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     }
     return apply_camera(
         camera,
-        command.get("focus_component_ids", ()),
-        command.get("aspect_ratio", 1.0),
+        focus_component_ids,
+        aspect_ratio,
         list(target),
     )
 
@@ -630,8 +635,7 @@ def validate_camera_diagnostics_inputs(
     focus_component_ids: list[str] | tuple[str, ...],
     aspect_ratio: float,
 ) -> None:
-    focus_ids = set(focus_component_ids)
-    unknown = focus_ids - COMPONENT_OBJECTS.keys()
+    unknown = set(focus_component_ids) - COMPONENT_OBJECTS.keys()
     if unknown:
         raise ValueError(f"unknown focus component ids: {sorted(unknown)}")
     if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:

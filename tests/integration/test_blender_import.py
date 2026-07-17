@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
@@ -631,6 +632,61 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     assert isinstance(source_pose, SessionSnapshot)
     assert source_pose.camera.pose.frame == "world"
     assert source_pose.camera.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
+
+
+def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+            frame="world",
+        )
+        before = controller.request("session.snapshot")["session"]
+
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.rotate",
+                target_mm=target,
+                axis="z",
+                degrees=30,
+                frame="world",
+                focus_component_ids=["missing-component"],
+            )
+
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_raw_world_camera_pose_has_one_canonical_hash(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        implicit_camera = manifest.imported_camera.model_dump(mode="json")
+        implicit_camera["pose"].pop("frame")
+        implicit = controller.request("view.set", camera=implicit_camera)
+
+        explicit_camera = deepcopy(implicit_camera)
+        explicit_camera["pose"]["frame"] = "world"
+        explicit = controller.request("view.set", camera=explicit_camera)
+
+    assert implicit["camera"]["pose"]["frame"] == "world"
+    assert implicit["camera"] == explicit["camera"]
+    assert implicit["state_sha256"] == explicit["state_sha256"]
 
 
 def test_source_frame_rotation_survives_checkpoint_replay_and_reset(

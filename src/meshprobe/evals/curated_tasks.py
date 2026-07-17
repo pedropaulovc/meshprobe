@@ -299,6 +299,8 @@ def _evidence_operations() -> tuple[Operation, ...]:
         Operation.COMPONENT_INSPECT,
         Operation.VIEW_SET,
         Operation.VIEW_ORBIT,
+        Operation.VIEW_MOVE,
+        Operation.VIEW_ROTATE,
         Operation.ILLUMINATION_SET,
         Operation.COMPONENT_DISPLAY,
         Operation.COMPONENT_MARK,

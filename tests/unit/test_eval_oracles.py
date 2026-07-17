@@ -759,6 +759,7 @@ def test_full_investigation_coverage_fails_when_any_operation_is_removed(
             Operation.VIEW_SET,
             Operation.VIEW_ORBIT,
             Operation.VIEW_MOVE,
+            Operation.VIEW_ROTATE,
             Operation.ILLUMINATION_SET,
             Operation.COMPONENT_DISPLAY,
             Operation.COMPONENT_MARK,
