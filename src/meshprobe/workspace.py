@@ -651,7 +651,7 @@ class SessionManager:
             return RenderStyleState()
         if isinstance(command, RenderImageCommand):
             return RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
-        if isinstance(command, RenderContactSheetCommand):
+        if isinstance(command, (RenderContactSheetCommand, SessionResetCommand)):
             return RenderStyleState()
         if renderer_continuity is RendererContinuity.RECREATED_BEFORE_SNAPSHOT:
             return RenderStyleState()

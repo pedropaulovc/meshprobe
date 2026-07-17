@@ -620,15 +620,26 @@ def test_reset_clears_replay_and_artifact_detection_is_render_only(
     )
     manager.execute(
         "default",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+    files = SessionFiles(manager.root, "default")
+    rendered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert rendered_state["render_style"]["style"] == "shaded_edges"
+
+    manager.execute(
+        "default",
         SessionResetCommand(request_id="reset", op="session.reset"),
     )
-    checkpoint = json.loads(
-        (tmp_path / ".meshprobe" / "sessions" / "default" / "checkpoint.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    checkpoint = json.loads(files.checkpoint.read_text(encoding="utf-8"))
+    reset_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
 
     assert checkpoint["accepted_commands"] == []
+    assert reset_state["render_style"] == RenderStyleState().model_dump(mode="json")
     assert SessionManager._artifact_paths("session.snapshot", {"path": "component/path"}) == ()
     assert SessionManager._artifact_paths(
         "render.image",
