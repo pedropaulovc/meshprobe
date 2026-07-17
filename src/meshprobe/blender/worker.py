@@ -376,7 +376,17 @@ def framed_default_camera(
         half_width = max(abs((corner - center) @ right) for corner in corners)
         half_height = max(abs((corner - center) @ up) for corner in corners)
         framed_projection = deepcopy(projection)
-        framed_projection["scale_mm"] = 2.0 * max(half_width, half_height, 1.0) / frame_fill
+        # Blender's ortho_scale, like a perspective sensor under sensor_fit="auto",
+        # sets the FITTED axis directly and derives the other from aspect_ratio: a
+        # landscape (>= 1) render fits horizontally (the vertical extent is scaled
+        # down by aspect_ratio), a portrait render fits vertically. Fitting as if
+        # aspect_ratio were always 1 ignores that derivation and can under-size the
+        # non-fitted axis, clipping it in the requested render.
+        if aspect_ratio >= 1:
+            required_half = max(half_width, half_height * aspect_ratio, 1.0)
+        else:
+            required_half = max(half_height, half_width / aspect_ratio, 1.0)
+        framed_projection["scale_mm"] = 2.0 * required_half / frame_fill
         standoff = max(clearance, half_extent, 1.0)
         position = center - forward * standoff
     else:

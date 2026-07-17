@@ -408,6 +408,7 @@ class SessionManager:
         *,
         request_id: str = "open",
         blender: str | None = None,
+        aspect_ratio: float = 1.0,
     ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
@@ -416,6 +417,7 @@ class SessionManager:
                 request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
+                aspect_ratio=aspect_ratio,
             )
             service = self._new_service(selected_blender)
             try:
@@ -474,6 +476,7 @@ class SessionManager:
                 Path(command.source_path),
                 request_id=command.request_id,
                 blender=blender,
+                aspect_ratio=command.aspect_ratio,
             )
         with self._lock:
             files = self._require_files(name)

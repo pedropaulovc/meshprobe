@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
+from meshprobe.protocol import SceneOpenCommand
 from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
 
 
@@ -298,3 +299,37 @@ def test_windows_pid_liveness_does_not_send_ctrl_c(monkeypatch: pytest.MonkeyPat
 
     assert MeshProbeClient._pid_alive(42)
     assert not MeshProbeClient._pid_alive(41)
+
+
+def test_execute_omits_default_valued_fields_from_the_wire_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An already-running daemon from a previous version validates commands with
+    # extra="forbid" and may not know about a newly added field (e.g.
+    # aspect_ratio); sending it unconditionally would reject every command from
+    # an upgraded client until the daemon is restarted.
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    client.execute(
+        "review",
+        SceneOpenCommand(request_id="open", op="scene.open", source_path="/models/assembly.glb"),
+    )
+    assert "aspect_ratio" not in captured["command"]
+
+    client.execute(
+        "review",
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path="/models/assembly.glb",
+            aspect_ratio=2.5,
+        ),
+    )
+    assert captured["command"]["aspect_ratio"] == 2.5

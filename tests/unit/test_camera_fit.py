@@ -84,3 +84,33 @@ def test_fit_is_far_tighter_than_a_typical_source_camera() -> None:
     assert fitted_fill == pytest.approx(DEFAULT_FRAME_FILL)
     # The default frame fills the frame many times more tightly than the source.
     assert fitted_fill > source_fill * 4
+
+
+def test_fit_leaves_a_clearance_margin_for_wide_fov_diagonal_fits() -> None:
+    # A cube centred at the origin, viewed along its body diagonal by a very wide
+    # lens. The nearest corner sits almost exactly on the view axis (zero
+    # horizontal/vertical offset), so the per-corner screen-space fit alone
+    # converges to (but does not exceed) that corner's own depth, leaving no
+    # margin between the camera and the nearest surface.
+    half_extent = 500.0
+    minimum_mm = (-half_extent, -half_extent, -half_extent)
+    maximum_mm = (half_extent, half_extent, half_extent)
+    forward = (-1 / math.sqrt(3), -1 / math.sqrt(3), -1 / math.sqrt(3))
+    right = (-1 / math.sqrt(2), 1 / math.sqrt(2), 0.0)
+    up = (-1 / math.sqrt(6), -1 / math.sqrt(6), 2 / math.sqrt(6))
+
+    distance = bounds_fit_distance_mm(
+        minimum_mm=minimum_mm,
+        maximum_mm=maximum_mm,
+        forward=forward,
+        right=right,
+        up=up,
+        horizontal_half_tan=3.6,
+        vertical_half_tan=2.4,
+        frame_fill=DEFAULT_FRAME_FILL,
+    )
+
+    nearest_corner_depth = half_extent * sum(forward)  # the (500, 500, 500) corner
+    # The nearest corner stays strictly in front of the camera by at least 1 mm,
+    # instead of landing exactly on it (distance == -nearest_corner_depth).
+    assert distance > -nearest_corner_depth + 0.5

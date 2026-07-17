@@ -274,6 +274,53 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_tall_box_ortho_glb(tmp_path: Path) -> Path:
+    """A box centered at the origin, narrow in the camera's right axis (150 mm)
+    and tall in its up axis (600 mm), viewed head-on by an orthographic camera
+    looking down -X. Fitting the orthographic scale as if the render were always
+    square ignores which axis the requested aspect ratio actually fits (issue
+    #56)."""
+
+    output = tmp_path / "tall-box-ortho.glb"
+    script = tmp_path / "build_tall_box_ortho.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+box = bpy.context.object
+box.name = 'box'
+box.scale = (0.3, 0.3, 1.2)
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.type = 'ORTHO'
+camera_data.ortho_scale = 2.0
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (10, 0, 0)
+camera.rotation_euler = (1.5707963267948966, 0, 1.5707963267948966)
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_diagonal_cube_wide_lens_glb(tmp_path: Path) -> Path:
     """A unit cube centered at the origin, viewed along its body diagonal by a
     very wide perspective lens. The nearest corner sits almost exactly on the
@@ -2174,6 +2221,61 @@ def test_default_view_backs_orthographic_camera_off_the_near_face(tmp_path: Path
 
     # And the near clip plane sits well in front of the (now backed-off) face.
     assert rendered.session.camera.projection.near_clip_mm < 1.0
+
+
+def test_default_view_fits_orthographic_camera_for_non_square_render(tmp_path: Path) -> None:
+    """Blender's ortho_scale, like a perspective sensor under sensor_fit="auto",
+    fits the requested render's limiting axis directly and derives the other
+    from the aspect ratio. Fitting as if the render were always square ignores
+    that derivation and can under-size the non-fitted axis (issue #56)."""
+
+    source = build_tall_box_ortho_glb(tmp_path)
+    landscape_width, landscape_height = 1920, 480
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source, aspect_ratio=landscape_width / landscape_height)
+        fitted_dir = tmp_path / "fitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="fitted-landscape",
+                op="render.image",
+                output_path=str(tmp_path / "fitted-landscape.png"),
+                width=landscape_width,
+                height=landscape_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(fitted_dir),
+        )
+        fitted = _mask_frame_coverage(fitted_dir / "fitted-landscape.components.png")
+
+        # Resetting without declaring the render's aspect ratio reproduces the
+        # bug: the default view assumes a square frame, so the same landscape
+        # render clips this tall box top and bottom.
+        controller.execute(SessionResetCommand(request_id="reset-square", op="session.reset"))
+        unfitted_dir = tmp_path / "unfitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="unfitted-landscape",
+                op="render.image",
+                output_path=str(tmp_path / "unfitted-landscape.png"),
+                width=landscape_width,
+                height=landscape_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(unfitted_dir),
+        )
+        unfitted = _mask_frame_coverage(unfitted_dir / "unfitted-landscape.components.png")
+
+    # Declaring the true render aspect ratio up front keeps the box inside the
+    # frame with margin...
+    assert fitted["min_y"] >= 0.005
+    assert fitted["max_y"] <= 0.995
+
+    # ...while assuming a square render for the same landscape output clips it.
+    assert unfitted["min_y"] < 0.005 or unfitted["max_y"] > 0.995
 
 
 def test_default_view_leaves_near_clip_margin_for_wide_fov_diagonal_fit(tmp_path: Path) -> None:

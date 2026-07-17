@@ -55,12 +55,14 @@ class FakeSessionService:
         self.closed = False
         self.killed = False
         self.graphics = graphics
+        self.received_commands: list[Command] = []
 
     @property
     def worker_pid(self) -> int | None:
         return None if self.closed or self.killed else 4242
 
     def execute(self, command: Command) -> CommandResponse:
+        self.received_commands.append(command)
         if isinstance(command, SceneOpenCommand):
             self.session = InspectionSession(self.manifest)
             result: JsonValue = self.manifest.model_dump(mode="json")
@@ -199,6 +201,35 @@ def test_session_manager_writes_compact_queryable_state(
     }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_session_manager_execute_propagates_open_aspect_ratio_to_the_worker(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.execute(
+        "review",
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path=str(source),
+            aspect_ratio=2.5,
+        ),
+    )
+
+    assert len(services) == 1
+    received = services[0].received_commands[0]
+    assert isinstance(received, SceneOpenCommand)
+    assert received.aspect_ratio == 2.5
 
 
 def test_find_receipt_reports_match_count(tmp_path: Path, scene_manifest: SceneManifest) -> None:

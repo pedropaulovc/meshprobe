@@ -46,10 +46,16 @@ class MeshProbeClient:
         self.blender = str(Path(resolved_blender).resolve()) if resolved_blender else blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
+        # Omit fields left at their declared default: an already-running daemon
+        # from a previous version validates commands with `extra="forbid"` and may
+        # not know about a newly added field, so sending it unconditionally (as
+        # `model_dump` does by default) would reject the command until the daemon
+        # is restarted. A field equal to its own default behaves identically
+        # whether sent or omitted, so this is safe for any existing field too.
         payload = self.request(
             "execute",
             session=session,
-            command=command.model_dump(mode="json"),
+            command=command.model_dump(mode="json", exclude_defaults=True),
             blender=self.blender,
         )
         return OperationReceipt.model_validate(payload)

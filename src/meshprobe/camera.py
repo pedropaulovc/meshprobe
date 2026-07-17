@@ -55,15 +55,23 @@ def bounds_fit_distance_mm(
         Vec3, tuple((low + high) / 2 for low, high in zip(minimum_mm, maximum_mm, strict=True))
     )
     distance = 0.0
+    nearest_depth = math.inf
     for corner in _box_corners(minimum_mm, maximum_mm):
         offset = cast(
             Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))
         )
         depth = _dot(offset, forward)
+        nearest_depth = min(nearest_depth, depth)
         horizontal = abs(_dot(offset, right)) / (horizontal_half_tan * frame_fill)
         vertical = abs(_dot(offset, up)) / (vertical_half_tan * frame_fill)
         distance = max(distance, horizontal - depth, vertical - depth)
-    return distance
+    # For a very wide field of view, the per-corner screen-space fit can converge
+    # to (but not exceed) the nearest corner's own depth — e.g. a box viewed along
+    # its diagonal has zero horizontal/vertical offset for that corner, so
+    # `horizontal - depth`/`vertical - depth` reduce to exactly `-depth`. Without
+    # an explicit clearance margin, that places the camera exactly on the corner.
+    clearance = -nearest_depth + 1.0
+    return max(distance, clearance)
 
 
 def _box_corners(minimum_mm: Vec3, maximum_mm: Vec3) -> list[Vec3]:
