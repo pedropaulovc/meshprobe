@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from meshprobe.camera import camera_diagnostics
 from meshprobe.models import (
     Camera,
+    CameraPoseFrame,
     ComponentVisualState,
     DisplayMode,
     Illumination,
@@ -36,6 +37,8 @@ class InspectionSession:
         return self.snapshot()
 
     def set_camera(self, camera: Camera) -> SessionSnapshot:
+        if camera.pose.frame is not CameraPoseFrame.WORLD:
+            raise ValueError("in-memory sessions require a world-frame camera")
         self._camera = camera
         return self.snapshot()
 

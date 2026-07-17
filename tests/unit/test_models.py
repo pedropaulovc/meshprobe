@@ -63,6 +63,16 @@ def test_pose_rejects_zero_quaternion() -> None:
         Pose(position_mm=(1, 2, 3), orientation_xyzw=(0, 0, 0, 0))
 
 
+@pytest.mark.parametrize("frame", ["camera", "component"])
+def test_camera_pose_rejects_unimplemented_frames(frame: str) -> None:
+    with pytest.raises(ValidationError, match=r"source.*world"):
+        Pose(
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            frame=frame,  # type: ignore[arg-type]
+        )
+
+
 def test_bounds_reject_inverted_axis() -> None:
     with pytest.raises(ValidationError, match="minimum_mm"):
         Bounds(minimum_mm=(2, 0, 0), maximum_mm=(1, 1, 1))
@@ -403,6 +413,51 @@ def test_scene_rejects_noncanonical_source_metadata(
     payload = scene_manifest.model_dump(mode="json")
     payload[field] = value
     with pytest.raises(ValidationError, match=message):
+        SceneManifest.model_validate(payload)
+
+
+def test_scene_reports_source_and_world_coordinate_frames(
+    scene_manifest: SceneManifest,
+) -> None:
+    frames = scene_manifest.coordinate_frames
+
+    assert scene_manifest.schema_version == 2
+    assert frames.source.name == "gltf_y_up"
+    assert frames.source.up_axis == "+y"
+    assert frames.source.handedness == "right"
+    assert frames.world.name == "meshprobe_z_up"
+    assert frames.source_to_world == (
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+    )
+    assert scene_manifest.root_bounds.frame == "world"
+    assert scene_manifest.components[0].world_transform_frame == "world"
+    assert scene_manifest.imported_camera.pose.frame == "world"
+
+
+def test_scene_manifest_v2_requires_coordinate_frames(scene_manifest: SceneManifest) -> None:
+    payload = scene_manifest.model_dump(mode="json")
+    payload["schema_version"] = 1
+    with pytest.raises(ValidationError, match="Input should be 2"):
+        SceneManifest.model_validate(payload)
+
+    payload["schema_version"] = 2
+    del payload["coordinate_frames"]
+    with pytest.raises(ValidationError, match="Field required"):
         SceneManifest.model_validate(payload)
 
 

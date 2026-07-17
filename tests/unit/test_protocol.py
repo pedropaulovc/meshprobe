@@ -12,6 +12,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewMoveCommand,
+    ViewRotateCommand,
     command_json_schema,
     parse_command_json,
 )
@@ -37,7 +38,8 @@ def test_unknown_operation_fails() -> None:
 
 
 def test_schema_contains_all_public_operations() -> None:
-    encoded = json.dumps(command_json_schema())
+    schema = command_json_schema()
+    encoded = json.dumps(schema)
     for operation in (
         "scene.open",
         "session.snapshot",
@@ -46,6 +48,7 @@ def test_schema_contains_all_public_operations() -> None:
         "view.set",
         "view.orbit",
         "view.move",
+        "view.rotate",
         "illumination.set",
         "component.display",
         "component.mark",
@@ -54,6 +57,53 @@ def test_schema_contains_all_public_operations() -> None:
         "session.reset",
     ):
         assert operation in encoded
+    assert schema["$defs"]["CameraPoseFrame"]["enum"] == ["source", "world"]
+    assert schema["$defs"]["Pose"]["properties"]["frame"]["$ref"] == ("#/$defs/CameraPoseFrame")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "request_id": "invalid-view-set-frame",
+            "op": "view.set",
+            "camera": {
+                "pose": {
+                    "position_mm": [0, 0, 100],
+                    "orientation_xyzw": [0, 0, 0, 1],
+                    "frame": "camera",
+                },
+                "projection": {"mode": "perspective"},
+            },
+        },
+        {
+            "request_id": "invalid-contact-sheet-frame",
+            "op": "render.contact_sheet",
+            "output_path": "sheet.png",
+            "recipe": "custom_3x3",
+            "focus_component_ids": ["cmp_target"],
+            "panels": [
+                {
+                    "caption": "invalid camera frame",
+                    "camera": {
+                        "pose": {
+                            "position_mm": [0, 0, 100],
+                            "orientation_xyzw": [0, 0, 0, 1],
+                            "frame": "component",
+                        },
+                        "projection": {"mode": "perspective"},
+                    },
+                }
+            ]
+            * 9,
+        },
+    ],
+)
+def test_command_cameras_only_accept_source_or_world_frames(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match=r"source.*world"):
+        COMMAND_ADAPTER.validate_python(payload)
 
 
 @pytest.mark.parametrize("field", ["azimuth_degrees", "elevation_degrees", "roll_degrees"])
@@ -88,6 +138,24 @@ def test_move_combines_world_and_camera_deltas() -> None:
     assert command.camera_delta_mm == (-25, 0, 50)
     with pytest.raises(ValidationError, match="non-zero"):
         COMMAND_ADAPTER.validate_python({"request_id": "stationary", "op": "view.move"})
+
+
+def test_rotate_accepts_source_axis_and_preserves_projection_by_default() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "rotate-source-y",
+            "op": "view.rotate",
+            "target_mm": [0, 10, 20],
+            "axis": "y",
+            "degrees": 145,
+            "frame": "source",
+        }
+    )
+
+    assert isinstance(command, ViewRotateCommand)
+    assert command.frame == "source"
+    assert command.axis == "y"
+    assert command.projection is None
 
 
 def test_render_command_bounds_engine_and_samples() -> None:

@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     CorpusManifest,
     CorpusTier,
@@ -28,6 +29,8 @@ from meshprobe.evals.schemas import (
 
 
 def test_full_investigation_requires_every_evaluated_operation() -> None:
+    assert Operation.VIEW_ROTATE in EVALUATED_OPERATIONS
+
     with pytest.raises(ValidationError, match="every evaluated operation"):
         EpisodeSpec(
             episode_id="episode_0001",

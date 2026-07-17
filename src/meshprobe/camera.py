@@ -8,6 +8,7 @@ from typing import cast
 from meshprobe.models import (
     Camera,
     CameraDiagnostics,
+    CameraPoseFrame,
     OrthographicProjection,
     Pose,
     Projection,
@@ -64,6 +65,8 @@ def camera_diagnostics(
 ) -> CameraDiagnostics:
     """Describe camera basis and world-space frustum without a renderer."""
 
+    if camera.pose.frame is not CameraPoseFrame.WORLD:
+        raise ValueError("camera diagnostics require a world-frame pose")
     right = _rotate_vector(camera.pose.orientation_xyzw, (1.0, 0.0, 0.0))
     up = _rotate_vector(camera.pose.orientation_xyzw, (0.0, 1.0, 0.0))
     forward = _rotate_vector(camera.pose.orientation_xyzw, (0.0, 0.0, -1.0))

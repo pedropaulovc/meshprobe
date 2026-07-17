@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from meshprobe.models import DisplayMode, MarkMode, SceneManifest
+from meshprobe.models import CameraPoseFrame, DisplayMode, MarkMode, SceneManifest
 from meshprobe.session import InspectionSession
 
 
@@ -62,6 +62,21 @@ def test_invalid_custom_mark_does_not_mutate_session(
 
     with pytest.raises(ValueError, match=message):
         session.mark([target], mode, color)  # type: ignore[arg-type]
+
+    assert session.snapshot() == before
+
+
+def test_source_frame_camera_does_not_mutate_in_memory_session(
+    scene_manifest: SceneManifest,
+) -> None:
+    session = InspectionSession(scene_manifest)
+    before = session.snapshot()
+    source_camera = before.camera.model_copy(
+        update={"pose": before.camera.pose.model_copy(update={"frame": CameraPoseFrame.SOURCE})}
+    )
+
+    with pytest.raises(ValueError, match="world-frame camera"):
+        session.set_camera(source_camera)
 
     assert session.snapshot() == before
 

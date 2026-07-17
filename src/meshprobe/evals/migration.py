@@ -160,11 +160,13 @@ def restore_schema_v1_source(
         payload = _read_json(path)
         payload["schema_version"] = 1
         _rename_operation_v1(payload)
+        _remove_view_rotate(payload)
         _write_json(path, payload)
     for path in sorted(truth_root.glob("*.json")):
         payload = _read_json(path)
         payload["schema_version"] = 1
         _rename_operation_v1(payload)
+        _remove_view_rotate(payload)
         if opaque_family is not None and str(payload.get("generator_family", "")).startswith(
             "opaque_family_"
         ):
@@ -199,6 +201,7 @@ def _normalized_payload(payload: dict[str, Any], *, private: bool) -> dict[str, 
     normalized = cast(dict[str, Any], json.loads(json.dumps(payload)))
     normalized["schema_version"] = 2
     _rename_operation(normalized)
+    _upgrade_full_operation_contract(normalized)
     if private and str(normalized.get("generator_family", "")).startswith("opaque_family_"):
         normalized["generator_family"] = "opaque_family"
     return normalized
@@ -208,7 +211,29 @@ def _migrated_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = cast(dict[str, Any], json.loads(json.dumps(payload)))
     migrated["schema_version"] = 2
     _rename_operation(migrated)
+    _upgrade_full_operation_contract(migrated)
     return migrated
+
+
+def _upgrade_full_operation_contract(payload: dict[str, Any]) -> None:
+    required = payload.get("required_operations")
+    if not isinstance(required, list):
+        return
+    legacy_operations = {
+        operation.value for operation in EVALUATED_OPERATIONS if operation.value != "view.rotate"
+    }
+    if set(required) != legacy_operations:
+        return
+    payload["required_operations"] = [operation.value for operation in EVALUATED_OPERATIONS]
+
+
+def _remove_view_rotate(payload: dict[str, Any]) -> None:
+    required = payload.get("required_operations")
+    if not isinstance(required, list):
+        return
+    payload["required_operations"] = [
+        operation for operation in required if operation != "view.rotate"
+    ]
 
 
 def _rename_operation(value: object) -> None:

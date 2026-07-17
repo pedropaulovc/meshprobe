@@ -140,7 +140,11 @@ def bounds_of_points(points: list[Vector]) -> dict[str, list[float]]:
 def object_bounds(obj: bpy.types.Object) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
     local_points = [Vector(corner) for corner in obj.bound_box]
     world_points = [obj.matrix_world @ point for point in local_points]
-    return bounds_of_points(local_points), bounds_of_points(world_points)
+    local_bounds = bounds_of_points(local_points)
+    local_bounds["frame"] = "component"  # type: ignore[assignment]
+    world_bounds = bounds_of_points(world_points)
+    world_bounds["frame"] = "world"  # type: ignore[assignment]
+    return local_bounds, world_bounds
 
 
 def matrix_in_millimeters(obj: bpy.types.Object) -> list[float]:
@@ -420,13 +424,28 @@ def apply_camera(
     target_mm: list[float] | tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
+    resolved_camera = deepcopy(camera)
+    resolved_camera["projection"] = normalize_camera_projection(camera["projection"])
     obj = camera_object()
-    pose = camera["pose"]
+    pose = resolved_camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
     x, y, z, w = pose["orientation_xyzw"]
     rotation = Quaternion((w, x, y, z)).normalized()
+    if pose.get("frame", "world") == "source":
+        source_to_world = source_to_world_matrix()
+        position = source_to_world @ position
+        rotation = source_to_world.to_quaternion() @ rotation
+        resolved_camera["pose"] = {
+            "position_mm": [value * MILLIMETERS_PER_METER for value in position],
+            "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+            "frame": "world",
+        }
+    elif pose.get("frame", "world") != "world":
+        raise ValueError("camera pose frame must be source or world")
+    else:
+        resolved_camera["pose"]["frame"] = "world"
     obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
-    projection = camera["projection"]
+    projection = resolved_camera["projection"]
     data = obj.data
     data.clip_start = projection["near_clip_mm"] / MILLIMETERS_PER_METER
     data.clip_end = projection["far_clip_mm"] / MILLIMETERS_PER_METER
@@ -462,7 +481,7 @@ def apply_camera(
                     depth_of_field["focus_distance_mm"] / MILLIMETERS_PER_METER
                 )
     global CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
-    CURRENT_CAMERA = deepcopy(camera)
+    CURRENT_CAMERA = resolved_camera
     CURRENT_CAMERA_DIAGNOSTICS = camera_diagnostics(
         obj,
         focus_component_ids,
@@ -547,16 +566,220 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def source_to_world_matrix() -> Matrix:
+    frames = require_session()["coordinate_frames"]
+    rows = tuple(
+        tuple(frames["source_to_world"][row * 4 + column] for column in range(4))
+        for row in range(4)
+    )
+    return Matrix(rows)
+
+
+def transform_from_source(
+    values: list[float] | tuple[float, float, float], *, point: bool
+) -> Vector:
+    matrix = source_to_world_matrix()
+    vector = Vector(values)
+    return matrix @ vector if point else matrix.to_3x3() @ vector
+
+
+def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
+    if CURRENT_CAMERA is None:
+        raise ValueError("session camera is not initialized")
+    focus_component_ids = command.get("focus_component_ids", ())
+    aspect_ratio = command.get("aspect_ratio", 1.0)
+    validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
+    frame = command.get("frame", "world")
+    if frame not in {"source", "world"}:
+        raise ValueError("camera rotation frame must be source or world")
+    degrees = command["degrees"]
+    if isinstance(degrees, bool) or not isinstance(degrees, (int, float)):
+        raise ValueError("degrees must be finite")
+    if not math.isfinite(degrees):
+        raise ValueError("degrees must be finite")
+    axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
+    axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
+    target_mm = command["target_mm"]
+    if not isinstance(target_mm, (list, tuple)) or len(target_mm) != 3:
+        raise ValueError("target_mm must contain three finite numbers")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+        for value in target_mm
+    ):
+        raise ValueError("target_mm must contain three finite numbers")
+    target = Vector(target_mm)
+    if frame == "source":
+        axis = transform_from_source(axis, point=False)
+        target = transform_from_source(target, point=True)
+    axis.normalize()
+    rotation = Quaternion(axis, math.radians(degrees))
+    previous_pose = deepcopy(CURRENT_CAMERA["pose"])
+    position = Vector(previous_pose["position_mm"])
+    x, y, z, w = previous_pose["orientation_xyzw"]
+    orientation = rotation @ Quaternion((w, x, y, z))
+    resulting_pose = {
+        "position_mm": [round(value, 12) for value in target + rotation @ (position - target)],
+        "orientation_xyzw": [
+            round(value, 12)
+            for value in (orientation.x, orientation.y, orientation.z, orientation.w)
+        ],
+        "frame": "world",
+    }
+    requested_projection = command.get("projection")
+    projection = (
+        CURRENT_CAMERA["projection"]
+        if requested_projection is None
+        else normalize_camera_projection(requested_projection)
+    )
+    camera = {
+        "pose": resulting_pose,
+        "projection": projection,
+    }
+    global CURRENT_CAMERA_OPERATION
+    CURRENT_CAMERA_OPERATION = {
+        "operation": "rotate",
+        "frame": frame,
+        "target_mm": command["target_mm"],
+        "axis": command["axis"],
+        "axis_world": list(axis),
+        "degrees": degrees,
+        "previous_pose": previous_pose,
+        "resulting_pose": resulting_pose,
+    }
+    return apply_camera(
+        camera,
+        focus_component_ids,
+        aspect_ratio,
+        list(target),
+    )
+
+
 def validate_camera_diagnostics_inputs(
     focus_component_ids: list[str] | tuple[str, ...],
     aspect_ratio: float,
 ) -> None:
-    focus_ids = set(focus_component_ids)
-    unknown = focus_ids - COMPONENT_OBJECTS.keys()
+    unknown = set(focus_component_ids) - COMPONENT_OBJECTS.keys()
     if unknown:
         raise ValueError(f"unknown focus component ids: {sorted(unknown)}")
     if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
         raise ValueError("aspect_ratio must be between 0.01 and 100")
+
+
+def validate_positive_projection_number(projection: dict[str, Any], key: str) -> float:
+    value = projection[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{key} must be a positive finite number")
+    return float(value)
+
+
+def reject_unknown_fields(payload: dict[str, Any], allowed: set[str], contract: str) -> None:
+    unknown = payload.keys() - allowed
+    if unknown:
+        raise ValueError(f"unknown {contract} fields: {sorted(unknown)}")
+
+
+def normalize_camera_projection(projection: dict[str, Any]) -> dict[str, Any]:
+    mode = projection["mode"]
+    if mode == "orthographic":
+        reject_unknown_fields(
+            projection,
+            {"mode", "scale_mm", "near_clip_mm", "far_clip_mm"},
+            "orthographic projection",
+        )
+        normalized = {
+            "near_clip_mm": 0.5,
+            "far_clip_mm": 100_000.0,
+            **deepcopy(projection),
+        }
+        validate_camera_projection(normalized)
+        return normalized
+    if mode != "perspective":
+        raise ValueError(f"unknown projection mode: {mode}")
+
+    reject_unknown_fields(
+        projection,
+        {
+            "mode",
+            "focal_length_mm",
+            "sensor_width_mm",
+            "sensor_height_mm",
+            "sensor_fit",
+            "near_clip_mm",
+            "far_clip_mm",
+            "depth_of_field",
+        },
+        "perspective projection",
+    )
+    requested_depth_of_field = projection.get("depth_of_field", {})
+    reject_unknown_fields(
+        requested_depth_of_field,
+        {"mode", "aperture_fstop", "focus_distance_mm", "focus"},
+        "depth-of-field",
+    )
+    requested_focus = requested_depth_of_field.get("focus")
+    if requested_focus is not None:
+        reject_unknown_fields(requested_focus, {"component_id"}, "component focus")
+    depth_of_field = {
+        "mode": "disabled",
+        "aperture_fstop": 2.8,
+        "focus_distance_mm": None,
+        "focus": None,
+        **deepcopy(requested_depth_of_field),
+    }
+    normalized = {
+        "mode": "perspective",
+        "focal_length_mm": 50.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "sensor_fit": "auto",
+        "near_clip_mm": 0.5,
+        "far_clip_mm": 100_000.0,
+        **deepcopy(projection),
+        "depth_of_field": depth_of_field,
+    }
+    validate_camera_projection(normalized)
+    return normalized
+
+
+def validate_camera_projection(projection: dict[str, Any]) -> None:
+    mode = projection["mode"]
+    if mode not in {"orthographic", "perspective"}:
+        raise ValueError(f"unknown projection mode: {mode}")
+    near_clip_mm = validate_positive_projection_number(projection, "near_clip_mm")
+    far_clip_mm = validate_positive_projection_number(projection, "far_clip_mm")
+    if far_clip_mm <= near_clip_mm:
+        raise ValueError("far_clip_mm must be greater than near_clip_mm")
+    if mode == "orthographic":
+        validate_positive_projection_number(projection, "scale_mm")
+        return
+
+    validate_positive_projection_number(projection, "focal_length_mm")
+    validate_positive_projection_number(projection, "sensor_width_mm")
+    validate_positive_projection_number(projection, "sensor_height_mm")
+    sensor_fit = projection["sensor_fit"]
+    if sensor_fit not in {"auto", "horizontal", "vertical"}:
+        raise ValueError(f"unknown sensor fit: {sensor_fit}")
+    depth_of_field = projection.get("depth_of_field", {"mode": "disabled"})
+    depth_of_field_mode = depth_of_field["mode"]
+    if depth_of_field_mode not in {"disabled", "enabled"}:
+        raise ValueError(f"unknown depth-of-field mode: {depth_of_field_mode}")
+    focus = depth_of_field.get("focus")
+    focus_distance_mm = depth_of_field.get("focus_distance_mm")
+    if depth_of_field_mode == "disabled":
+        if focus is not None or focus_distance_mm is not None:
+            raise ValueError("disabled depth of field cannot declare a focus target")
+        return
+    validate_positive_projection_number(depth_of_field, "aperture_fstop")
+    if (focus is None) == (focus_distance_mm is None):
+        raise ValueError("enabled depth of field requires exactly one focus target")
+    if focus is not None:
+        component_id = focus["component_id"]
+        if component_id not in COMPONENT_OBJECTS:
+            raise ValueError(f"unknown depth-of-field component id: {component_id}")
+        return
+    validate_positive_projection_number(depth_of_field, "focus_distance_mm")
 
 
 def camera_diagnostics(
@@ -1927,6 +2150,66 @@ def import_source(path: Path) -> list[dict[str, Any]]:
     return warnings
 
 
+def coordinate_frames(source_format: str) -> dict[str, Any]:
+    identity = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    source_to_world = identity
+    source_name = f"{source_format}_z_up_assumed"
+    up_axis = "+z"
+    if source_format in {"glb", "gltf", "obj"}:
+        source_to_world = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+        source_name = "gltf_y_up" if source_format in {"glb", "gltf"} else "obj_y_up_assumed"
+        up_axis = "+y"
+    return {
+        "source": {
+            "name": source_name,
+            "frame": "source",
+            "handedness": "right",
+            "up_axis": up_axis,
+        },
+        "world": {
+            "name": "meshprobe_z_up",
+            "frame": "world",
+            "handedness": "right",
+            "up_axis": "+z",
+        },
+        "source_to_world": source_to_world,
+    }
+
+
 def build_manifest(
     source_path: Path, source_sha256: str, import_warnings: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1979,6 +2262,7 @@ def build_manifest(
                 "child_ids": sorted(children[obj]),
                 "mesh_hash": mesh_hash(obj.data),
                 "world_transform": matrix_in_millimeters(obj),
+                "world_transform_frame": "world",
                 "local_bounds": local_bounds,
                 "world_bounds": world_bounds,
                 "materials": materials,
@@ -1986,6 +2270,7 @@ def build_manifest(
         )
 
     root_bounds = bounds_of_points(all_world_points)
+    root_bounds["frame"] = "world"  # type: ignore[assignment]
     camera, camera_warning = imported_camera(root_bounds)
     illumination, illumination_warnings = imported_illumination()
     source_format = source_path.suffix.lower().removeprefix(".")
@@ -2076,10 +2361,11 @@ def build_manifest(
             "preserved" if components_with_materials == len(components) else "partial"
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha256": source_sha256,
         "source_format": source_format,
         "units": "millimeter",
+        "coordinate_frames": coordinate_frames(source_format),
         "root_bounds": root_bounds,
         "components": components,
         "imported_camera": camera,
@@ -2249,18 +2535,22 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "view.set":
         require_session()
         global CURRENT_CAMERA_OPERATION
-        CURRENT_CAMERA_OPERATION = None
-        return apply_camera(
+        apply_camera(
             command["camera"],
             command.get("focus_component_ids", ()),
             command.get("aspect_ratio", 1.0),
         )
+        CURRENT_CAMERA_OPERATION = None
+        return session_snapshot()
     if operation == "view.orbit":
         require_session()
         return orbit_camera(command)
     if operation == "view.move":
         require_session()
         return move_camera(command)
+    if operation == "view.rotate":
+        require_session()
+        return rotate_camera(command)
     if operation == "illumination.set":
         require_session()
         return apply_illumination(command["illumination"])

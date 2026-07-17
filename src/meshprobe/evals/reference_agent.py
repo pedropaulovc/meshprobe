@@ -349,6 +349,22 @@ def _orbit_direction(
     )
 
 
+def _rotate(
+    client: ProtocolClient,
+    component_id: str,
+    target: tuple[float, float, float],
+) -> None:
+    client.call(
+        "view.rotate",
+        target_mm=list(target),
+        axis="z",
+        degrees=12,
+        frame="world",
+        focus_component_ids=[component_id],
+        aspect_ratio=1,
+    )
+
+
 def _render(client: ProtocolClient, name: str) -> str:
     result = client.call(
         "render.image",
@@ -412,6 +428,8 @@ def _run_curated(
             focus_component_ids=[target["id"]],
             aspect_ratio=1,
         )
+    if "view.rotate" in required:
+        _rotate(client, target["id"], target_center)
     client.call("component.display", component_ids=[target["id"]], mode="isolated")
     client.call("component.mark", component_ids=[target["id"]], mode="highlighted")
     client.call("illumination.set", illumination={"preset": "neutral_studio"})
@@ -521,6 +539,8 @@ def _run_procedural(
             focus_component_ids=[target["id"]],
             aspect_ratio=1,
         )
+    if "view.rotate" in required:
+        _rotate(client, target["id"], _center(target))
     client.call(
         "component.display",
         component_ids=[

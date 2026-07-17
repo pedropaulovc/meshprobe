@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
@@ -37,6 +38,7 @@ from meshprobe.models import (
     PresetIllumination,
     RenderEngine,
     RenderManifest,
+    SceneManifest,
     SessionSnapshot,
     VisibleBackgroundMode,
 )
@@ -47,15 +49,35 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SessionResetCommand,
+    SessionSnapshotCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
+    ViewRotateCommand,
     ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.sources import snapshot_source
+from meshprobe.workspace import SessionManager
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
 runner = CliRunner()
+
+
+def build_obj_axes(tmp_path: Path) -> Path:
+    output = tmp_path / "axes.obj"
+    output.write_text(
+        """o axes
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 0 0 1
+l 1 2
+l 1 3
+l 1 4
+""",
+        encoding="utf-8",
+    )
+    return output
 
 
 def build_glb(tmp_path: Path) -> Path:
@@ -454,6 +476,9 @@ def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
     with BlenderController(timeout_seconds=30) as controller:
         result = controller.request("scene.open", source_path=str(source))
 
+    manifest = SceneManifest.model_validate(result)
+    assert manifest.schema_version == 2
+    assert result["schema_version"] == 2
     assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
@@ -582,6 +607,374 @@ def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> Non
     assert after.camera == before.camera
     assert after.camera_operation == before.camera_operation
     assert after.state_sha256 == before.state_sha256
+
+
+def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        rotated = controller.execute(
+            ViewRotateCommand(
+                request_id="rotate-source-y",
+                op="view.rotate",
+                target_mm=(0, 0, 0),
+                axis="y",
+                degrees=90,
+                frame="source",
+            )
+        )
+        source_pose = controller.execute(
+            ViewSetCommand(
+                request_id="set-source-pose",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(1_000, 2_000, 3_000),
+                        orientation_xyzw=(0, 0, 0, 1),
+                        frame="source",
+                    ),
+                    projection=PerspectiveProjection(),
+                ),
+            )
+        )
+
+    assert manifest.coordinate_frames.source.name == "gltf_y_up"
+    assert manifest.coordinate_frames.source_to_world == pytest.approx(
+        (1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1)
+    )
+    assert manifest.root_bounds.frame == "world"
+    assert all(component.local_bounds.frame == "component" for component in manifest.components)
+    assert isinstance(rotated, SessionSnapshot)
+    assert rotated.camera.pose.position_mm == pytest.approx((-4_000, 5_000, 3_000))
+    assert rotated.camera_operation is not None
+    assert rotated.camera_operation.frame == "source"
+    assert rotated.camera_operation.axis_world == pytest.approx((0, 0, 1))
+    assert rotated.camera_operation.resulting_pose == rotated.camera.pose
+    assert isinstance(source_pose, SessionSnapshot)
+    assert source_pose.camera.pose.frame == "world"
+    assert source_pose.camera.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
+
+
+def test_obj_source_frame_matches_default_importer_axis_conversion(tmp_path: Path) -> None:
+    source = build_obj_axes(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        rotated = controller.request(
+            "view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=15,
+            frame="source",
+        )
+
+    assert manifest.coordinate_frames.source.name == "obj_y_up_assumed"
+    assert manifest.coordinate_frames.source_to_world == pytest.approx(
+        (1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1)
+    )
+    assert manifest.root_bounds.minimum_mm == pytest.approx((0, -1_000, 0), abs=1e-3)
+    assert manifest.root_bounds.maximum_mm == pytest.approx((1_000, 0, 1_000), abs=1e-3)
+    assert rotated["camera_operation"]["axis_world"] == pytest.approx((0, -1, 0))
+
+
+def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+            frame="world",
+        )
+        before = controller.request("session.snapshot")["session"]
+
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.rotate",
+                target_mm=target,
+                axis="z",
+                degrees=30,
+                frame="world",
+                focus_component_ids=["missing-component"],
+            )
+
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_rejected_raw_view_set_preserves_camera_operation(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+        )
+        before = controller.request("session.snapshot")["session"]
+        invalid_camera = deepcopy(before["camera"])
+        invalid_camera["pose"]["frame"] = "camera"
+
+        with pytest.raises(BlenderWorkerError, match="camera pose frame must be source or world"):
+            controller.request("view.set", camera=invalid_camera)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        rotated = controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+            projection={"mode": "perspective"},
+        )
+
+    assert rotated["camera_operation"]["frame"] == "world"
+    assert rotated["camera_operation"]["target_mm"] == list(target)
+    assert rotated["camera"]["projection"] == PerspectiveProjection().model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("invalid_field", "invalid_value", "error"),
+    [
+        ("frame", "component", "camera rotation frame must be source or world"),
+        ("degrees", math.nan, "degrees must be finite"),
+        ("degrees", math.inf, "degrees must be finite"),
+        ("target_mm", (math.nan, 0, 0), "target_mm must contain three finite numbers"),
+        ("target_mm", (0, math.inf, 0), "target_mm must contain three finite numbers"),
+    ],
+)
+def test_rejected_raw_rotation_contract_preserves_camera_state(
+    tmp_path: Path,
+    invalid_field: str,
+    invalid_value: object,
+    error: str,
+) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        before = controller.request("session.snapshot")["session"]
+        command: dict[str, object] = {
+            "target_mm": target,
+            "axis": "z",
+            "degrees": 30,
+            "frame": "world",
+        }
+        command[invalid_field] = invalid_value
+
+        with pytest.raises(BlenderWorkerError, match=error):
+            controller.request("view.rotate", **command)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        before = controller.request("session.snapshot")["session"]
+        projection = manifest.imported_camera.projection.model_dump(mode="json")
+        unsupported_mode = {**projection, "mode": "fisheye"}
+        bad_sensor_fit = {**projection, "sensor_fit": "diagonal"}
+        missing_orthographic_scale = {"mode": "orthographic"}
+        extra_projection_field = {**projection, "debug": 1}
+        extra_depth_of_field = deepcopy(projection)
+        extra_depth_of_field["depth_of_field"]["debug"] = 1
+
+        for invalid_projection, error in (
+            (unsupported_mode, "unknown projection mode"),
+            (bad_sensor_fit, "unknown sensor fit"),
+            (missing_orthographic_scale, "scale_mm"),
+            (extra_projection_field, "unknown perspective projection fields"),
+            (extra_depth_of_field, "unknown depth-of-field fields"),
+        ):
+            with pytest.raises(BlenderWorkerError, match=error):
+                controller.request(
+                    "view.rotate",
+                    target_mm=target,
+                    axis="z",
+                    degrees=30,
+                    projection=invalid_projection,
+                )
+            after = controller.request("session.snapshot")["session"]
+            assert after["camera"] == before["camera"]
+            assert after["camera_operation"] == before["camera_operation"]
+            assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_rejected_rotation_depth_of_field_preserves_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        controller.request(
+            "view.rotate",
+            target_mm=target,
+            axis="z",
+            degrees=15,
+            frame="world",
+        )
+        before = controller.request("session.snapshot")["session"]
+        projection = manifest.imported_camera.projection.model_dump(mode="json")
+        projection["depth_of_field"] = {
+            "mode": "enabled",
+            "aperture_fstop": 2.8,
+            "focus_distance_mm": None,
+            "focus": {"component_id": "missing-component"},
+        }
+
+        with pytest.raises(BlenderWorkerError, match="unknown depth-of-field component id"):
+            controller.request(
+                "view.rotate",
+                target_mm=target,
+                axis="z",
+                degrees=30,
+                frame="world",
+                projection=projection,
+            )
+
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
+
+
+def test_raw_world_camera_pose_has_one_canonical_hash(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        implicit_camera = manifest.imported_camera.model_dump(mode="json")
+        implicit_camera["pose"].pop("frame")
+        implicit = controller.request("view.set", camera=implicit_camera)
+
+        explicit_camera = deepcopy(implicit_camera)
+        explicit_camera["pose"]["frame"] = "world"
+        explicit = controller.request("view.set", camera=explicit_camera)
+
+    assert implicit["camera"]["pose"]["frame"] == "world"
+    assert implicit["camera"] == explicit["camera"]
+    assert implicit["state_sha256"] == explicit["state_sha256"]
+
+
+def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    root = tmp_path / ".meshprobe"
+    command = ViewRotateCommand(
+        request_id="rotate-source-y",
+        op="view.rotate",
+        target_mm=(0, 0, 0),
+        axis="y",
+        degrees=90,
+        frame="source",
+    )
+    manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    manager.open("review", source)
+    rotated_receipt = manager.execute("review", command)
+    rotated_envelope = manager.raw_result(rotated_receipt)
+    assert isinstance(rotated_envelope, dict)
+    rotated = SessionSnapshot.model_validate(rotated_envelope["result"])
+    manager.close("review")
+
+    recovered_manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    recovered_receipt = recovered_manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recovered", op="session.snapshot"),
+    )
+    recovered_envelope = recovered_manager.raw_result(recovered_receipt)
+    assert isinstance(recovered_envelope, dict)
+    recovered = SessionSnapshot.model_validate(recovered_envelope["result"]["session"])
+
+    assert recovered.camera.pose.position_mm == pytest.approx(rotated.camera.pose.position_mm)
+    assert recovered.camera.pose.orientation_xyzw == pytest.approx(
+        rotated.camera.pose.orientation_xyzw
+    )
+    assert recovered.camera.projection == rotated.camera.projection
+    assert recovered.state_sha256 == rotated.state_sha256
+    checkpoint = json.loads(
+        (root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
+
+    recovered_manager.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset"),
+    )
+    reapplied_receipt = recovered_manager.execute(
+        "review",
+        command.model_copy(update={"request_id": "rotate-source-y-again"}),
+    )
+    reapplied_envelope = recovered_manager.raw_result(reapplied_receipt)
+    assert isinstance(reapplied_envelope, dict)
+    reapplied = SessionSnapshot.model_validate(reapplied_envelope["result"])
+
+    assert reapplied.camera == rotated.camera
+    assert reapplied.state_sha256 == rotated.state_sha256
+    recovered_manager.shutdown()
 
 
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:

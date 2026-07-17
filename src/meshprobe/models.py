@@ -68,9 +68,50 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class CoordinateFrame(StrEnum):
+    SOURCE = "source"
+    WORLD = "world"
+    CAMERA = "camera"
+    COMPONENT = "component"
+
+
+class CameraPoseFrame(StrEnum):
+    SOURCE = "source"
+    WORLD = "world"
+
+
+class Handedness(StrEnum):
+    RIGHT = "right"
+
+
+class AxisDirection(StrEnum):
+    POSITIVE_X = "+x"
+    POSITIVE_Y = "+y"
+    POSITIVE_Z = "+z"
+
+
+class CoordinateSystem(ContractModel):
+    name: Identifier
+    frame: CoordinateFrame
+    handedness: Handedness
+    up_axis: AxisDirection
+
+
+class SceneCoordinateFrames(ContractModel):
+    source: CoordinateSystem
+    world: CoordinateSystem = CoordinateSystem(
+        name="meshprobe_z_up",
+        frame=CoordinateFrame.WORLD,
+        handedness=Handedness.RIGHT,
+        up_axis=AxisDirection.POSITIVE_Z,
+    )
+    source_to_world: Matrix4x4
+
+
 class Bounds(ContractModel):
     minimum_mm: Vec3
     maximum_mm: Vec3
+    frame: CoordinateFrame = CoordinateFrame.WORLD
 
     @model_validator(mode="after")
     def validate_extents(self) -> Self:
@@ -82,6 +123,7 @@ class Bounds(ContractModel):
 class Pose(ContractModel):
     position_mm: Vec3
     orientation_xyzw: UnitQuaternion
+    frame: CameraPoseFrame = CameraPoseFrame.WORLD
 
 
 class SensorFit(StrEnum):
@@ -226,6 +268,20 @@ class CameraTranslationReceipt(ContractModel):
     resolved_world_delta_mm: Vec3
     previous_pose: Pose
     resulting_pose: Pose
+
+
+class CameraRotationReceipt(ContractModel):
+    operation: Literal["rotate"] = "rotate"
+    frame: CoordinateFrame
+    target_mm: Vec3
+    axis: Literal["x", "y", "z"]
+    axis_world: Vec3
+    degrees: FiniteFloat
+    previous_pose: Pose
+    resulting_pose: Pose
+
+
+type CameraOperationReceipt = CameraTranslationReceipt | CameraRotationReceipt
 
 
 class LightType(StrEnum):
@@ -407,6 +463,7 @@ class Component(ContractModel):
     child_ids: tuple[Identifier, ...] = ()
     mesh_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")] | None = None
     world_transform: Matrix4x4
+    world_transform_frame: CoordinateFrame = CoordinateFrame.WORLD
     local_bounds: Bounds
     world_bounds: Bounds
     materials: MaterialSummary = MaterialSummary()
@@ -430,7 +487,7 @@ class SessionSnapshot(ContractModel):
     illumination: Illumination
     components: dict[Identifier, ComponentVisualState]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-    camera_operation: CameraTranslationReceipt | None = None
+    camera_operation: CameraOperationReceipt | None = None
 
 
 class CapabilityWarning(ContractModel):
@@ -467,10 +524,11 @@ class NormalizedGeometryArtifact(ContractModel):
 
 
 class SceneManifest(ContractModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     source_format: Literal["glb", "gltf", "obj", "stl"]
     units: Literal["millimeter"]
+    coordinate_frames: SceneCoordinateFrames
     root_bounds: Bounds
     components: tuple[Component, ...]
     imported_camera: Camera

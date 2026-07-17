@@ -23,6 +23,7 @@ from meshprobe.evals.schemas import (
     EpisodeGroundTruth,
     EpisodeSpec,
     ModelSource,
+    Operation,
     StructuredAnswer,
     TaskFamily,
 )
@@ -53,6 +54,18 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
     assert audit.model_hashes_unchanged
     assert audit.episode_ids_unchanged
     assert audit.truth_payloads_unchanged
+    full_spec = next(
+        EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (migrated.root / "public" / "episodes").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["family"] == "full_investigation"
+    )
+    full_truth = EpisodeGroundTruth.model_validate_json(
+        (migrated.root / "private" / "ground_truth" / f"{full_spec.episode_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert Operation.VIEW_ROTATE in full_spec.required_operations
+    assert full_truth.required_operations == full_spec.required_operations
 
     existing, repeated_audit = migrate_corpus_v2(
         source.root,
