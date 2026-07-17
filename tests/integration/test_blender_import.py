@@ -228,6 +228,98 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_centered_cube_ortho_glb(tmp_path: Path) -> Path:
+    """A unit cube centered at the origin, viewed head-on by an orthographic
+    camera. A symmetric cube has equal near- and far-corner depths from the
+    bounds center, which is the exact case where fitting the orthographic
+    standoff from the farthest corner's *absolute* depth places the camera on
+    the near face instead of backed off from it (issue #56)."""
+
+    output = tmp_path / "centered-cube-ortho.glb"
+    script = tmp_path / "build_centered_cube_ortho.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = 'cube'
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.type = 'ORTHO'
+camera_data.ortho_scale = 2.0
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (0, -10, 0)
+camera.rotation_euler = (1.5707963267948966, 0, 0)
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_diagonal_cube_wide_lens_glb(tmp_path: Path) -> Path:
+    """A unit cube centered at the origin, viewed along its body diagonal by a
+    very wide perspective lens. The nearest corner sits almost exactly on the
+    view axis, so a per-corner screen-space fit alone converges to (but does
+    not exceed) that corner's own depth, leaving no margin for the near-clip
+    floor to sit safely in front of it (issue #56)."""
+
+    output = tmp_path / "diagonal-cube-wide-lens.glb"
+    script = tmp_path / "build_diagonal_cube_wide_lens.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = 'cube'
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.lens = 5
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (10, 10, 10)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_edge_style_glb(tmp_path: Path) -> Path:
     output = tmp_path / "edge-style.glb"
     script = tmp_path / "build_edge_style.py"
@@ -1991,6 +2083,304 @@ def test_default_view_frames_full_scene_tightly(tmp_path: Path) -> None:
 
     # And it is dramatically tighter than the source camera it replaced.
     assert framed["area_fraction"] > source_view["area_fraction"] * 4
+
+
+def test_default_view_fits_perspective_camera_for_non_square_render(tmp_path: Path) -> None:
+    """glTF-imported cameras use ``sensor_fit="vertical"``, so a portrait render
+    narrows the horizontal FOV proportionally to its aspect ratio while the
+    vertical FOV stays fixed. Fitting the default view as if the render were
+    square keeps the (wrong, wider) horizontal FOV assumption, undershooting
+    the true horizontal extent and clipping the model left and right when the
+    render is actually portrait (issue #56)."""
+
+    source = build_far_camera_tall_glb(tmp_path)
+    portrait_width, portrait_height = 480, 1920
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source, aspect_ratio=portrait_width / portrait_height)
+        fitted_dir = tmp_path / "fitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="fitted-portrait",
+                op="render.image",
+                output_path=str(tmp_path / "fitted-portrait.png"),
+                width=portrait_width,
+                height=portrait_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(fitted_dir),
+        )
+        fitted = _mask_frame_coverage(fitted_dir / "fitted-portrait.components.png")
+
+        # Resetting without declaring the render's aspect ratio reproduces the
+        # bug: the default view assumes a square frame, so the same portrait
+        # render clips this model left and right.
+        controller.execute(SessionResetCommand(request_id="reset-square", op="session.reset"))
+        unfitted_dir = tmp_path / "unfitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="unfitted-portrait",
+                op="render.image",
+                output_path=str(tmp_path / "unfitted-portrait.png"),
+                width=portrait_width,
+                height=portrait_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(unfitted_dir),
+        )
+        unfitted = _mask_frame_coverage(unfitted_dir / "unfitted-portrait.components.png")
+
+    # Declaring the true render aspect ratio up front keeps the model inside the
+    # frame with margin...
+    assert fitted["min_x"] >= 0.005
+    assert fitted["max_x"] <= 0.995
+
+    # ...while assuming a square render for the same portrait output clips it.
+    assert unfitted["min_x"] < 0.005 or unfitted["max_x"] > 0.995
+
+
+def test_default_view_backs_orthographic_camera_off_the_near_face(tmp_path: Path) -> None:
+    """A symmetric cube viewed head-on has equal near- and far-corner depths
+    from the bounds center; fitting the orthographic standoff from the
+    farthest corner's absolute depth places the camera exactly on the near
+    face instead of backed off from it (issue #56)."""
+
+    source = build_centered_cube_ortho_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source)
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="ortho-default",
+                op="render.image",
+                output_path=str(tmp_path / "ortho-default.png"),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+
+    position = rendered.session.camera.pose.position_mm
+    distance_from_center = math.sqrt(sum(component**2 for component in position))
+
+    # The cube's half-extent is 500 mm; the old formula put the camera exactly
+    # there (on the near face). The fix backs it off by a clearance margin.
+    assert distance_from_center > 500.5
+
+    # And the near clip plane sits well in front of the (now backed-off) face.
+    assert rendered.session.camera.projection.near_clip_mm < 1.0
+
+
+def test_default_view_leaves_near_clip_margin_for_wide_fov_diagonal_fit(tmp_path: Path) -> None:
+    """A very wide lens viewing a cube along its body diagonal converges the
+    per-corner screen-space fit to (but not past) the nearest corner's own
+    depth, since that corner sits almost exactly on the view axis; the fix's
+    explicit clearance term backs the camera off an extra margin so the fixed
+    near-clip floor doesn't slice through that corner (issue #56)."""
+
+    source = build_diagonal_cube_wide_lens_glb(tmp_path)
+    half_extent_mm = 500.0
+    corners = [
+        (x, y, z)
+        for x in (-half_extent_mm, half_extent_mm)
+        for y in (-half_extent_mm, half_extent_mm)
+        for z in (-half_extent_mm, half_extent_mm)
+    ]
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source)
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="diagonal-wide",
+                op="render.image",
+                output_path=str(tmp_path / "diagonal-wide.png"),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+
+    position = rendered.session.camera.pose.position_mm
+    nearest_corner_distance = min(
+        math.sqrt(sum((corner[axis] - position[axis]) ** 2 for axis in range(3)))
+        for corner in corners
+    )
+
+    # The nearest corner stays strictly in front of the near clip plane instead
+    # of sitting exactly on (or behind) it.
+    assert nearest_corner_distance > rendered.session.camera.projection.near_clip_mm
+
+
+def test_framed_default_camera_recomputes_stale_depth_of_field_focus(tmp_path: Path) -> None:
+    """An explicit ``focus_distance_mm`` names a world-space point relative to
+    the source camera's own position. Re-framing dollies the camera to a new
+    position along the same forward axis, so carrying the distance over
+    unchanged would refocus on the wrong point instead of the one the source
+    camera actually named (issue #56).
+
+    glTF has no depth-of-field extension, so a real import can never produce
+    an imported camera with DOF enabled; ``framed_default_camera`` is
+    exercised directly (loaded by file path, bypassing the package's
+    pydantic-dependent ``__init__.py``, which is not importable inside
+    Blender's bundled Python) with a hand-built camera dict instead."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "probe_reframe_dof.py"
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+from mathutils import Vector
+
+position = Vector((5000.0, -5000.0, 1500.0))
+direction = Vector((0.0, 0.0, 0.0)) - position
+rotation = direction.to_track_quat('-Z', 'Y').normalized()
+original_distance = position.length
+
+camera = {{
+    "pose": {{
+        "position_mm": list(position),
+        "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+    }},
+    "projection": {{
+        "mode": "perspective",
+        "focal_length_mm": 50.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "sensor_fit": "auto",
+        "near_clip_mm": 0.5,
+        "far_clip_mm": 100000.0,
+        "depth_of_field": {{
+            "mode": "enabled",
+            "aperture_fstop": 2.8,
+            "focus_distance_mm": original_distance,
+        }},
+    }},
+}}
+root_bounds = {{
+    "minimum_mm": [-300.0, -300.0, -600.0],
+    "maximum_mm": [300.0, 300.0, 600.0],
+}}
+
+framed = worker.framed_default_camera(camera, root_bounds)
+new_position = Vector(framed["pose"]["position_mm"])
+print(json.dumps({{
+    "new_focus_distance_mm": framed["projection"]["depth_of_field"]["focus_distance_mm"],
+    "expected_focus_distance_mm": new_position.length,
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    # The world-space focus point named by the source camera stays fixed: the
+    # recomputed distance from the NEW (fitted) position matches it.
+    assert result["new_focus_distance_mm"] == pytest.approx(
+        result["expected_focus_distance_mm"], rel=1e-3
+    )
+
+
+def test_visible_root_bounds_excludes_originally_hidden_components(tmp_path: Path) -> None:
+    """``root_bounds`` spans every imported mesh including source-hidden
+    construction geometry or alternate configurations; framing the default
+    view against it can centre and back off the camera for objects the
+    default view never actually shows (issue #56).
+
+    glTF export does not round-trip ``hide_render``, so a real import can
+    never produce an originally-hidden component; ``visible_root_bounds`` is
+    exercised directly (loaded by file path, bypassing the package's
+    pydantic-dependent ``__init__.py``, which is not importable inside
+    Blender's bundled Python) against a hand-built component/visibility
+    state instead."""
+
+    script = tmp_path / "probe_visible_bounds.py"
+    repo_root = Path(__file__).resolve().parents[2]
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+small = bpy.context.object
+small.name = "visible_small"
+small.scale = (0.1, 0.1, 0.1)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+large = bpy.context.object
+large.name = "hidden_large"
+large.scale = (50, 50, 50)
+large.hide_render = True
+
+bpy.context.view_layer.update()
+
+worker.COMPONENT_OBJECTS = {{"small": small, "large": large}}
+worker.ORIGINAL_VISIBILITY = {{
+    "small": (small.hide_render, small.hide_viewport),
+    "large": (large.hide_render, large.hide_viewport),
+}}
+
+fallback = {{
+    "minimum_mm": [-50000.0, -50000.0, -50000.0],
+    "maximum_mm": [50000.0, 50000.0, 50000.0],
+}}
+bounds = worker.visible_root_bounds(fallback)
+print(json.dumps(bounds))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    bounds = json.loads(result_line)
+
+    # The 50 m hidden cube is excluded; only the 100 mm visible cube's bounds
+    # (half-extent 50 mm) remain.
+    assert bounds["minimum_mm"] == pytest.approx([-50.0, -50.0, -50.0], abs=0.01)
+    assert bounds["maximum_mm"] == pytest.approx([50.0, 50.0, 50.0], abs=0.01)
 
 
 def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:

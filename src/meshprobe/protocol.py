@@ -47,6 +47,7 @@ class CommandModel(BaseModel):
 class SceneOpenCommand(CommandModel):
     op: Literal["scene.open"]
     source_path: str
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 class SessionSnapshotCommand(CommandModel):
@@ -203,6 +204,7 @@ class RenderContactSheetCommand(CommandModel):
 
 class SessionResetCommand(CommandModel):
     op: Literal["session.reset"]
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 type Command = Annotated[

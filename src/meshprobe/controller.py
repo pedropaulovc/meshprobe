@@ -271,7 +271,7 @@ class BlenderController:
             raise BlenderWorkerError("worker returned a non-object result")
         return result
 
-    def open_scene(self, source_path: str | Path) -> SceneManifest:
+    def open_scene(self, source_path: str | Path, aspect_ratio: float = 1.0) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
         before = snapshot_source(source)
         self._source_path = None
@@ -281,13 +281,19 @@ class BlenderController:
         self._accepted_commands.clear()
         try:
             result = self.request(
-                "scene.open", source_path=str(source), source_sha256=before.sha256
+                "scene.open",
+                source_path=str(source),
+                source_sha256=before.sha256,
+                aspect_ratio=aspect_ratio,
             )
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self.close()
             self.start()
             result = self.request(
-                "scene.open", source_path=str(source), source_sha256=before.sha256
+                "scene.open",
+                source_path=str(source),
+                source_sha256=before.sha256,
+                aspect_ratio=aspect_ratio,
             )
         after_import = snapshot_source(source)
         if before != after_import:

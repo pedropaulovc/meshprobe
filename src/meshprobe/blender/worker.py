@@ -300,10 +300,33 @@ def imported_camera(
 DEFAULT_FRAME_FILL = 0.9
 
 
+def visible_root_bounds(fallback: dict[str, list[float]]) -> dict[str, list[float]]:
+    """Bounds of only the originally-shown components, for default-view framing.
+
+    ``root_bounds`` spans every imported mesh including source-hidden construction
+    geometry or alternate configurations, so framing against it can centre and back
+    off the camera for objects the default view never actually shows. Falls back to
+    the full scene bounds if every component started hidden, so framing never
+    degenerates to an empty/undefined bounding box.
+    """
+    points: list[Vector] = []
+    for component_id, obj in COMPONENT_OBJECTS.items():
+        hide_render, _ = ORIGINAL_VISIBILITY.get(component_id, (False, False))
+        if hide_render:
+            continue
+        points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
+    if not points:
+        return fallback
+    bounds = bounds_of_points(points)
+    bounds["frame"] = "world"  # type: ignore[assignment]
+    return bounds
+
+
 def framed_default_camera(
     camera: dict[str, Any],
     root_bounds: dict[str, list[float]],
     frame_fill: float = DEFAULT_FRAME_FILL,
+    aspect_ratio: float = 1.0,
 ) -> dict[str, Any]:
     """Re-frame an imported camera so the whole scene fills the default view.
 
@@ -312,6 +335,13 @@ def framed_default_camera(
     occupies ``frame_fill`` of the frame instead of whatever margin the source
     happened to author. The faithful source camera is left untouched in the
     manifest; only the applied session view is tightened.
+
+    ``aspect_ratio`` is the render width/height the caller intends to use with
+    this default view. A perspective camera with ``sensor_fit="auto"`` narrows
+    one FOV axis relative to the other away from a square render, so fitting
+    against the wrong assumed aspect can under- or over-shoot the true frame
+    and clip a tightly-fit model; it defaults to ``1.0`` (square) when the
+    caller has no specific render size in mind yet.
     """
 
     framed = deepcopy(camera)
@@ -333,20 +363,26 @@ def framed_default_camera(
     ]
     half_extent = max((high - low) / 2 for low, high in zip(minimum, maximum, strict=True))
 
+    # The nearest bound's depth (most negative, i.e. closest to the camera along
+    # -forward) sets a floor on how far back the camera must sit: fitting only
+    # against the far/aggregate extent (as `half_extent` alone does) can still
+    # place the camera on or inside a bound that is very close along this specific
+    # viewing axis (a corner or a thin, view-aligned object), which then gets
+    # clipped regardless of the near_clip_mm floor below.
+    nearest_depth = min((corner - center) @ forward for corner in corners)
+    clearance = -nearest_depth + 1.0
+
     if projection["mode"] == "orthographic":
         half_width = max(abs((corner - center) @ right) for corner in corners)
         half_height = max(abs((corner - center) @ up) for corner in corners)
         framed_projection = deepcopy(projection)
         framed_projection["scale_mm"] = 2.0 * max(half_width, half_height, 1.0) / frame_fill
-        standoff = max(
-            (abs((corner - center) @ forward) for corner in corners), default=half_extent
-        )
-        standoff = max(standoff, half_extent, 1.0)
+        standoff = max(clearance, half_extent, 1.0)
         position = center - forward * standoff
-        framed_projection["near_clip_mm"] = max(0.1, standoff - half_extent * 2.0 - 1.0)
-        framed_projection["far_clip_mm"] = (standoff + half_extent * 2.0 + 1.0) * 2.0
     else:
-        horizontal_half_tan, vertical_half_tan = _perspective_half_tangents(projection, 1.0)
+        horizontal_half_tan, vertical_half_tan = _perspective_half_tangents(
+            projection, aspect_ratio
+        )
         distance = 0.0
         for corner in corners:
             offset = corner - center
@@ -354,12 +390,35 @@ def framed_default_camera(
             horizontal = abs(offset @ right) / (horizontal_half_tan * frame_fill)
             vertical = abs(offset @ up) / (vertical_half_tan * frame_fill)
             distance = max(distance, horizontal - depth, vertical - depth)
-        distance = max(distance, half_extent + 1.0)
+        distance = max(distance, half_extent + 1.0, clearance)
         position = center - forward * distance
-        depths = [(corner - position) @ forward for corner in corners]
         framed_projection = deepcopy(projection)
-        framed_projection["near_clip_mm"] = max(0.1, min(depths) * 0.5)
-        framed_projection["far_clip_mm"] = max(depths) * 1.5
+
+    # Recompute clip planes from the actual camera position (not the aggregate
+    # half_extent) for both projections alike: `clearance` above guarantees
+    # min(depths) >= 1.0, so near_clip_mm (half that) always sits strictly in
+    # front of the nearest surface instead of relying on its own 0.1 mm floor to
+    # save a degenerate fit.
+    depths = [(corner - position) @ forward for corner in corners]
+    framed_projection["near_clip_mm"] = max(0.1, min(depths) * 0.5)
+    framed_projection["far_clip_mm"] = max(depths) * 1.5
+
+    # An explicit numeric focus_distance_mm is an absolute distance from the SOURCE
+    # camera position; re-derive it from the world-space point it originally named,
+    # or the newly framed (dollied/re-centred) view keeps focusing where the source
+    # camera used to sit instead of where it now points.
+    depth_of_field = framed_projection.get("depth_of_field")
+    if (
+        depth_of_field is not None
+        and depth_of_field.get("mode") == "enabled"
+        and depth_of_field.get("focus_distance_mm") is not None
+    ):
+        original_position = Vector(pose["position_mm"])
+        world_focus_point = original_position + forward * depth_of_field["focus_distance_mm"]
+        framed_projection["depth_of_field"] = {
+            **depth_of_field,
+            "focus_distance_mm": max(0.1, (world_focus_point - position) @ forward),
+        }
 
     framed["pose"] = {
         "position_mm": list(position),
@@ -1651,7 +1710,7 @@ def session_snapshot() -> dict[str, Any]:
     }
 
 
-def reset_session() -> dict[str, Any]:
+def reset_session(command: dict[str, Any]) -> dict[str, Any]:
     if IMPORTED_CAMERA is None or IMPORTED_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
     global CURRENT_CAMERA_OPERATION
@@ -1667,7 +1726,13 @@ def reset_session() -> dict[str, Any]:
             "mark": "unmarked",
             "mark_color": None,
         }
-    apply_camera(framed_default_camera(IMPORTED_CAMERA, require_session()["root_bounds"]))
+    apply_camera(
+        framed_default_camera(
+            IMPORTED_CAMERA,
+            visible_root_bounds(require_session()["root_bounds"]),
+            aspect_ratio=command.get("aspect_ratio", 1.0),
+        )
+    )
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
     configure_render_style({})
     return session_snapshot()
@@ -3184,7 +3249,9 @@ def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
+def initialize_session(
+    manifest: dict[str, Any], source_path: Path, aspect_ratio: float = 1.0
+) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_OPERATION
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
@@ -3217,7 +3284,11 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
         for component_id, obj in COMPONENT_OBJECTS.items()
     }
     IMPORTED_CAMERA = deepcopy(manifest["imported_camera"])
-    CURRENT_CAMERA = framed_default_camera(IMPORTED_CAMERA, manifest["root_bounds"])
+    CURRENT_CAMERA = framed_default_camera(
+        IMPORTED_CAMERA,
+        visible_root_bounds(manifest["root_bounds"]),
+        aspect_ratio=aspect_ratio,
+    )
     CURRENT_CAMERA_OPERATION = None
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
@@ -3623,7 +3694,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
-    initialize_session(manifest, source_path)
+    initialize_session(manifest, source_path, command.get("aspect_ratio", 1.0))
     return manifest
 
 
@@ -3682,7 +3753,7 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
         return component_mark(command)
     if operation == "session.reset":
         require_session()
-        return reset_session()
+        return reset_session(command)
     if operation == "session.runtime":
         require_session()
         return runtime_diagnostics()
