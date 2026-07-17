@@ -1120,9 +1120,12 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
     mode = command["mode"]
     if mode not in MARK_MODES:
         raise ValueError(f"unknown mark mode: {mode}")
+    color = command.get("color")
+    if color is not None:
+        color = color.lower()
     for component_id in selected:
         COMPONENT_STATES[component_id]["mark"] = mode
-        COMPONENT_STATES[component_id]["mark_color"] = command.get("color")
+        COMPONENT_STATES[component_id]["mark_color"] = color
         refresh_component_appearance(component_id)
     return session_snapshot()
 

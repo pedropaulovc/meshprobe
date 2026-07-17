@@ -914,6 +914,25 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert custom_mark_runtime["material_colors"][0] == pytest.approx([1, 0, 1, 1])
         assert manifest.components[-1].materials.names != ("MeshProbeMark-highlighted-ff00ff",)
 
+        uppercase_mark = SessionSnapshot.model_validate(
+            controller.request(
+                "component.mark",
+                component_ids=[target],
+                mode="highlighted",
+                color="#FF00FF",
+            )
+        )
+        lowercase_mark = SessionSnapshot.model_validate(
+            controller.request(
+                "component.mark",
+                component_ids=[target],
+                mode="highlighted",
+                color="#ff00ff",
+            )
+        )
+        assert uppercase_mark.components[target].mark_color == "#ff00ff"
+        assert uppercase_mark.state_sha256 == lowercase_mark.state_sha256
+
         labeled = controller.execute(
             ComponentMarkCommand(
                 request_id="label",
@@ -1342,6 +1361,15 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     ) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="custom-color",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+                color="#ff00ff",
+            )
+        )
         fixed_pose = manifest.imported_camera.pose
         panels = (
             ContactSheetPanelSpec(
@@ -1463,6 +1491,9 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     assert sheet.panels[6].experiment == "dolly_zoom"
     assert sheet.panels[5].render.session.camera_diagnostics.target_depth_mm == pytest.approx(2_100)
     assert sheet.panels[6].render.session.camera_diagnostics.target_depth_mm == pytest.approx(5_100)
+    assert all(
+        panel.render.session.components[target].mark_color == "#ff00ff" for panel in sheet.panels
+    )
     assert "orthographic 2000mm" in sheet.panels[1].caption
     assert "dolly_zoom" in sheet.panels[5].caption
     assert Image.open(sheet.sheet.path).size == (384, 528)

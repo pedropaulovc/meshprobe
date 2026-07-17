@@ -670,7 +670,29 @@ def test_mark_cli_accepts_srgb_highlight_color(monkeypatch: pytest.MonkeyPatch) 
     assert result.exit_code == 0, result.output
     command = client.commands[0]
     assert command.op == "component.mark"
-    assert command.color == "#ff00ff"  # type: ignore[union-attr]
+    assert command.color == "#ff00ff"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--mode", "highlighted", "--color", "magenta"],
+        ["--mode", "unmarked", "--color", "#ff00ff"],
+    ],
+)
+def test_mark_cli_reports_invalid_color_as_parameter_error(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "mark", "c2", *arguments])
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert "validation error for ComponentMarkCommand" in result.output
+    assert client.commands == []
 
 
 def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -842,16 +842,17 @@ def mark_components(
 ) -> None:
     """Mark components using refs, stable IDs, exact display names, or exact paths."""
 
-    _execute(
-        ctx,
-        ComponentMarkCommand(
+    try:
+        command = ComponentMarkCommand(
             request_id=_request_id("mark"),
             op="component.mark",
             component_ids=_component_ids(ctx, components),
             mode=mode,
             color=color,
-        ),
-    )
+        )
+    except ValidationError as error:
+        raise typer.BadParameter(str(error)) from error
+    _execute(ctx, command)
 
 
 @app.command("render-image")
