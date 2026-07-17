@@ -733,10 +733,13 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     session = InspectionSession(scene_manifest)
     focus_id = scene_manifest.components[-1].id
     blocker_id = scene_manifest.components[-2].id
-    session.mark((focus_id,), MarkMode.SELECTED)
+    session.mark((focus_id,), MarkMode.SELECTED, "#ff00ff")
     expected_restored = session.snapshot()
     controller._accepted_commands = [
-        ("component.mark", {"component_ids": [focus_id], "mode": "selected"})
+        (
+            "component.mark",
+            {"component_ids": [focus_id], "mode": "selected", "color": "#ff00ff"},
+        )
     ]
     calls: list[str] = []
     visibility_measurements = iter(visibility)
@@ -768,6 +771,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
             snapshot = session.mark(
                 cast(list[str], arguments["component_ids"]),
                 MarkMode(cast(str, arguments["mode"])),
+                cast(str | None, arguments.get("color")),
             )
             return snapshot.model_dump(mode="json")
         if operation == "component.display":
@@ -815,6 +819,7 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert sheet.focus_component_ids == (focus_id,)
     resolved_removed = tuple(blocker_id if item == "blocker" else item for item in expected_removed)
     assert sheet.removed_occluder_ids == resolved_removed
+    assert sheet.occlusion is not None
     assert sheet.occlusion.visible_fraction_before == visibility[0]
     assert sheet.occlusion.visible_fraction_after == visibility[-1]
     assert sheet.occlusion.stop_reason == expected_stop
@@ -825,6 +830,10 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(
         panel.render.session.camera.projection.mode == "orthographic" for panel in sheet.panels[3:]
+    )
+    assert all(
+        panel.render.session.components[focus_id].mark_color == "#ff00ff"
+        for panel in sheet.panels[1:]
     )
     assert output.is_file()
     assert session.snapshot() == expected_restored

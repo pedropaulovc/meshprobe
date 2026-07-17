@@ -899,6 +899,40 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         marked_runtime = controller.request("session.runtime")["components"][target]
         assert marked_runtime["materials"] == ["MeshProbeMark-highlighted"]
 
+        custom_mark = controller.execute(
+            ComponentMarkCommand(
+                request_id="custom-mark",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+                color="#ff00ff",
+            )
+        )
+        custom_mark_runtime = controller.request("session.runtime")["components"][target]
+        assert custom_mark.components[target].mark_color == "#ff00ff"
+        assert custom_mark_runtime["materials"] == ["MeshProbeMark-highlighted-ff00ff"]
+        assert custom_mark_runtime["material_colors"][0] == pytest.approx([1, 0, 1, 1])
+        assert manifest.components[-1].materials.names != ("MeshProbeMark-highlighted-ff00ff",)
+
+        uppercase_mark = SessionSnapshot.model_validate(
+            controller.request(
+                "component.mark",
+                component_ids=[target],
+                mode="highlighted",
+                color="#FF00FF",
+            )
+        )
+        lowercase_mark = SessionSnapshot.model_validate(
+            controller.request(
+                "component.mark",
+                component_ids=[target],
+                mode="highlighted",
+                color="#ff00ff",
+            )
+        )
+        assert uppercase_mark.components[target].mark_color == "#ff00ff"
+        assert uppercase_mark.state_sha256 == lowercase_mark.state_sha256
+
         labeled = controller.execute(
             ComponentMarkCommand(
                 request_id="label",
@@ -1110,6 +1144,50 @@ def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_pat
         after = controller.request("session.runtime")
 
     assert after["components"][target] == before["components"][target]
+
+
+def test_worker_rejects_invalid_mark_without_mutation_and_still_renders(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    output = tmp_path / "after-invalid-mark.png"
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        before_runtime = controller.request("session.runtime")
+
+        invalid_commands = (
+            {"component_ids": list(before["components"]), "mode": "unmarked", "color": "#ff00ff"},
+            {
+                "component_ids": list(before["components"]),
+                "mode": "highlighted",
+                "color": "magenta",
+            },
+            {
+                "component_ids": list(before["components"]),
+                "mode": "highlighted",
+                "color": [255, 0, 255],
+            },
+        )
+        for arguments in invalid_commands:
+            with pytest.raises(BlenderWorkerError, match="color"):
+                controller.request("component.mark", **arguments)
+            assert controller.request("session.snapshot")["session"] == before
+            assert controller.request("session.runtime") == before_runtime
+
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-after-invalid-mark",
+                op="render.image",
+                output_path=str(output),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.session.state_sha256 == before["state_sha256"]
+    assert output.is_file()
 
 
 def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
@@ -1327,6 +1405,15 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     ) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
+        controller.execute(
+            ComponentMarkCommand(
+                request_id="custom-color",
+                op="component.mark",
+                component_ids=(target,),
+                mode=MarkMode.HIGHLIGHTED,
+                color="#ff00ff",
+            )
+        )
         fixed_pose = manifest.imported_camera.pose
         panels = (
             ContactSheetPanelSpec(
@@ -1448,6 +1535,9 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     assert sheet.panels[6].experiment == "dolly_zoom"
     assert sheet.panels[5].render.session.camera_diagnostics.target_depth_mm == pytest.approx(2_100)
     assert sheet.panels[6].render.session.camera_diagnostics.target_depth_mm == pytest.approx(5_100)
+    assert all(
+        panel.render.session.components[target].mark_color == "#ff00ff" for panel in sheet.panels
+    )
     assert "orthographic 2000mm" in sheet.panels[1].caption
     assert "dolly_zoom" in sheet.panels[5].caption
     assert Image.open(sheet.sheet.path).size == (384, 528)

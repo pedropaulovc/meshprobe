@@ -26,6 +26,7 @@ from meshprobe.models import (
     MarkMode,
     SceneManifest,
     SessionSnapshot,
+    SrgbHexColor,
 )
 from meshprobe.protocol import (
     Command,
@@ -102,6 +103,7 @@ class ComponentStateOverride(BaseModel):
 
     display: DisplayMode | None = None
     mark: MarkMode | None = None
+    mark_color: SrgbHexColor | None = None
 
 
 class ComponentStateIndex(BaseModel):
@@ -627,6 +629,8 @@ class SessionManager:
                 entry["display"] = visual.display.value
             if visual.mark is not default_mark:
                 entry["mark"] = visual.mark.value
+            if visual.mark_color is not None:
+                entry["mark_color"] = visual.mark_color
             if entry:
                 overrides[refs[component_id]] = entry
         payload = DurableSessionState(

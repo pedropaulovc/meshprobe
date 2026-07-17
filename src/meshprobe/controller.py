@@ -502,6 +502,7 @@ class BlenderController:
             )
 
         accepted_commands = list(self._accepted_commands)
+        mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
         panels: list[ContactSheetPanel] = []
         removed_occluders: tuple[str, ...] = ()
         occlusion: OcclusionEvidence | None = None
@@ -529,7 +530,7 @@ class BlenderController:
                 )
             )
 
-            self.request("component.mark", component_ids=list(focus_ids), mode="highlighted")
+            self._mark_focus_components(focus_ids, "highlighted", mark_colors)
             panels.append(
                 self._render_contact_panel(
                     command,
@@ -632,6 +633,7 @@ class BlenderController:
         if self._manifest is None or self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         accepted_commands = list(self._accepted_commands)
+        mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
         panels: list[ContactSheetPanel] = []
         aspect_ratio = command.panel_width / command.panel_height
         try:
@@ -655,11 +657,7 @@ class BlenderController:
                         mode="isolated",
                     )
                 if spec.mark.value != "unmarked":
-                    self.request(
-                        "component.mark",
-                        component_ids=list(focus_ids),
-                        mode=spec.mark.value,
-                    )
+                    self._mark_focus_components(focus_ids, spec.mark.value, mark_colors)
                 if spec.camera is not None:
                     self.request(
                         "view.set",
@@ -702,6 +700,46 @@ class BlenderController:
             sheet=sheet,
             panels=tuple(panels),
         )
+
+    @staticmethod
+    def _focus_mark_colors(
+        accepted_commands: list[tuple[str, dict[str, object]]],
+        focus_ids: tuple[str, ...],
+    ) -> dict[str, str | None]:
+        colors = dict.fromkeys(focus_ids)
+        for operation, arguments in accepted_commands:
+            if operation != "component.mark":
+                continue
+            component_ids = arguments.get("component_ids")
+            if not isinstance(component_ids, list | tuple):
+                continue
+            color = arguments.get("color")
+            if color is not None and not isinstance(color, str):
+                continue
+            if arguments.get("mode") == "unmarked":
+                color = None
+            for component_id in component_ids:
+                if isinstance(component_id, str) and component_id in colors:
+                    colors[component_id] = color
+        return colors
+
+    def _mark_focus_components(
+        self,
+        focus_ids: tuple[str, ...],
+        mode: str,
+        colors: dict[str, str | None],
+    ) -> None:
+        groups: dict[str | None, list[str]] = {}
+        for component_id in focus_ids:
+            groups.setdefault(colors[component_id], []).append(component_id)
+        for color, component_ids in groups.items():
+            arguments: dict[str, object] = {
+                "component_ids": component_ids,
+                "mode": mode,
+            }
+            if color is not None:
+                arguments["color"] = color
+            self.request("component.mark", **arguments)
 
     def _set_custom_orbit(
         self,

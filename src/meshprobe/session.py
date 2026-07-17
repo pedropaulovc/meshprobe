@@ -15,6 +15,7 @@ from meshprobe.models import (
     MarkMode,
     SceneManifest,
     SessionSnapshot,
+    SrgbHexColor,
 )
 
 
@@ -63,11 +64,17 @@ class InspectionSession:
             )
         return self.snapshot()
 
-    def mark(self, component_ids: Iterable[str], mode: MarkMode) -> SessionSnapshot:
+    def mark(
+        self,
+        component_ids: Iterable[str],
+        mode: MarkMode,
+        color: SrgbHexColor | None = None,
+    ) -> SessionSnapshot:
+        validated = ComponentVisualState(mark=mode, mark_color=color)
         selected = self._validated_ids(component_ids)
         for component_id in selected:
             self._components[component_id] = self._components[component_id].model_copy(
-                update={"mark": mode}
+                update={"mark": validated.mark, "mark_color": validated.mark_color}
             )
         return self.snapshot()
 
