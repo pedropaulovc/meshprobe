@@ -1855,6 +1855,9 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert marked["components"][target]["mark"] == "highlighted"
         marked_runtime = controller.request("session.runtime")["components"][target]
         assert marked_runtime["materials"] == ["MeshProbeMark-highlighted"]
+        assert marked_runtime["material_colors"][0] == pytest.approx(
+            [1.0, 0.006995410187265387, 0.29177064981753587, 1.0]
+        )
 
         custom_mark = controller.execute(
             ComponentMarkCommand(
