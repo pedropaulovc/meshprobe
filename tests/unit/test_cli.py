@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,89 @@ def test_schema_command_emits_discriminated_union() -> None:
     result = runner.invoke(app, ["schema", "--kind", "commands"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
+
+
+def _property_description(envelope: dict[str, object], model: str, field: str) -> str:
+    defs = envelope.get("$defs", {})
+    assert isinstance(defs, dict)
+    properties = defs[model]["properties"]
+    return properties[field].get("description", "")
+
+
+def test_schema_results_kind_documents_result_envelope_fields() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "results"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+
+    # Every command op has a documented result shape.
+    assert {
+        "render.image",
+        "render.contact_sheet",
+        "component.occlusion",
+        "view.orbit",
+        "scene.open",
+    } <= payload.keys()
+
+    # The per-op schema is the CommandResponse envelope pinned to that op.
+    render_envelope = payload["render.image"]
+    assert render_envelope["required"] == ["request_id", "op", "result"]
+    assert render_envelope["properties"]["op"]["const"] == "render.image"
+
+    # Render luminance exposure block.
+    assert _property_description(render_envelope, "LuminanceSummary", "median").strip()
+
+    # Projected component frame bounds and camera intrinsics from an occlusion query.
+    occlusion = payload["component.occlusion"]
+    assert _property_description(occlusion, "CameraDiagnostics", "projected_bounds").strip()
+    assert _property_description(occlusion, "ProjectedComponentBounds", "minimum_image_xy").strip()
+    assert _property_description(occlusion, "PerspectiveProjection", "focal_length_mm").strip()
+
+    # Contact-sheet panel captions, callouts, and the occlusion-removal trace.
+    sheet = payload["render.contact_sheet"]
+    assert _property_description(sheet, "ContactSheetPanel", "caption").strip()
+    assert _property_description(sheet, "ContactSheetCallout", "image_xy").strip()
+    assert _property_description(sheet, "OccluderRemovalStep", "visible_fraction_after").strip()
+
+
+def test_schema_results_have_no_dangling_definition_references() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "results"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+
+    for op, envelope in payload.items():
+        root_definitions = set(envelope.get("$defs", {}))
+        referenced = set(re.findall(r"#/\$defs/(\w+)", json.dumps(envelope)))
+        missing = sorted(referenced - root_definitions)
+        assert not missing, f"{op} result schema references undefined $defs: {missing}"
+
+
+def test_schema_all_full_surfaces_result_envelope_fields() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "all", "--full"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"commands", "results", "state"}
+
+    rendered = result.stdout
+    for field in ("luminance", "projected_bounds", "caption", "callouts", "image_xy"):
+        assert field in rendered
+
+
+def test_render_image_help_advertises_luminance() -> None:
+    result = runner.invoke(app, ["render-image", "--help"])
+    assert result.exit_code == 0
+    assert "luminance" in " ".join(unstyle(result.stdout).split())
+
+
+def test_occlusion_help_advertises_projected_bounds() -> None:
+    result = runner.invoke(app, ["occlusion", "--help"])
+    assert result.exit_code == 0
+    assert "projected_bounds" in " ".join(unstyle(result.stdout).split())
+
+
+def test_view_orbit_help_advertises_camera_intrinsics() -> None:
+    result = runner.invoke(app, ["view-orbit", "--help"])
+    assert result.exit_code == 0
+    assert "focal_length_mm" in " ".join(unstyle(result.stdout).replace("│", " ").split())
 
 
 def test_render_sheet_help_advertises_occlusion_analysis() -> None:

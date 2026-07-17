@@ -8,17 +8,28 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from meshprobe.models import (
     Camera,
+    CameraMotionResult,
+    CameraViewResult,
+    Component,
+    ComponentVisualStateResult,
+    ContactSheetManifest,
     ContactSheetPanelSpec,
     CoordinateFrame,
     DisplayMode,
     FiniteFloat,
     GraphicsPolicy,
     Illumination,
+    IlluminationResult,
     MarkMode,
+    OcclusionQueryResult,
     OrthonormalBasis,
     Projection,
     RenderEngine,
+    RenderManifest,
     RenderStyle,
+    SceneManifest,
+    SessionResetResult,
+    SessionSnapshotResult,
     ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
@@ -202,3 +213,51 @@ def parse_command_json(payload: str) -> Command:
 
 def command_json_schema() -> dict[str, object]:
     return COMMAND_ADAPTER.json_schema()
+
+
+_RESULT_MODELS: dict[str, object] = {
+    "scene.open": SceneManifest,
+    "session.snapshot": SessionSnapshotResult,
+    "component.find": list[Component],
+    "component.inspect": Component,
+    "component.occlusion": OcclusionQueryResult,
+    "view.set": CameraViewResult,
+    "view.orbit": CameraViewResult,
+    "view.move": CameraMotionResult,
+    "view.rotate": CameraMotionResult,
+    "illumination.set": IlluminationResult,
+    "component.display": ComponentVisualStateResult,
+    "component.mark": ComponentVisualStateResult,
+    "render.image": RenderManifest,
+    "render.contact_sheet": ContactSheetManifest,
+    "session.reset": SessionResetResult,
+}
+
+
+def command_result_json_schema() -> dict[str, object]:
+    """Describe the full result envelope each command op returns, keyed by op.
+
+    Each entry is the ``CommandResponse`` envelope a caller reads back (from a
+    ``results/*.json`` file or an adapter response): ``request_id``, ``op`` pinned to the
+    command, and ``result`` expanded to that op's concrete result schema.
+    """
+    schemas: dict[str, object] = {}
+    for op, model in _RESULT_MODELS.items():
+        result_schema = TypeAdapter(model).json_schema()
+        # Hoist the result's shared definitions to the envelope root so its
+        # "#/$defs/..." references resolve against the standalone per-op schema.
+        definitions = result_schema.pop("$defs", None)
+        envelope: dict[str, object] = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["request_id", "op", "result"],
+            "properties": {
+                "request_id": {"type": "string"},
+                "op": {"const": op},
+                "result": result_schema,
+            },
+        }
+        if definitions:
+            envelope["$defs"] = definitions
+        schemas[op] = envelope
+    return schemas

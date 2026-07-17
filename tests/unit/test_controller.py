@@ -23,11 +23,15 @@ from meshprobe.controller import (
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
     Bounds,
+    CameraMotionResult,
     CameraRotationReceipt,
     CameraTranslationReceipt,
+    CameraViewResult,
+    ComponentVisualStateResult,
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
+    IlluminationResult,
     MarkMode,
     OccluderRemovalStep,
     OrthographicProjection,
@@ -456,6 +460,13 @@ def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> N
         },
         "state_sha256": snapshot.state_sha256,
     }
+
+    # The published result envelopes match the documented result contracts (schema lockstep).
+    CameraViewResult.model_validate(view)
+    CameraMotionResult.model_validate(moved)
+    CameraMotionResult.model_validate(rotated)
+    IlluminationResult.model_validate(illumination)
+    ComponentVisualStateResult.model_validate(isolated)
 
 
 def test_execute_returns_nonstate_result(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -142,10 +142,24 @@ class ComponentFocus(ContractModel):
 
 
 class DepthOfField(ContractModel):
-    mode: DepthOfFieldMode = DepthOfFieldMode.DISABLED
-    aperture_fstop: PositiveFiniteFloat = 2.8
-    focus_distance_mm: PositiveFiniteFloat | None = None
-    focus: ComponentFocus | None = None
+    mode: DepthOfFieldMode = Field(
+        default=DepthOfFieldMode.DISABLED,
+        description="Whether the lens simulates finite-aperture defocus blur.",
+    )
+    aperture_fstop: PositiveFiniteFloat = Field(
+        default=2.8,
+        description="Lens f-number; smaller values widen the aperture and shrink the in-focus "
+        "depth.",
+    )
+    focus_distance_mm: PositiveFiniteFloat | None = Field(
+        default=None,
+        description="Explicit focus-plane distance from the camera in millimetres.",
+    )
+    focus: ComponentFocus | None = Field(
+        default=None,
+        description="Component whose centroid sets the focus distance in lieu of "
+        "focus_distance_mm.",
+    )
 
     @model_validator(mode="after")
     def validate_focus(self) -> Self:
@@ -159,10 +173,21 @@ class DepthOfField(ContractModel):
 
 class PerspectiveProjection(ContractModel):
     mode: Literal["perspective"] = "perspective"
-    focal_length_mm: PositiveFiniteFloat = 50.0
-    sensor_width_mm: PositiveFiniteFloat = 36.0
-    sensor_height_mm: PositiveFiniteFloat = 24.0
-    sensor_fit: SensorFit = SensorFit.AUTO
+    focal_length_mm: PositiveFiniteFloat = Field(
+        default=50.0,
+        description="Camera lens focal length in millimetres; larger values narrow the field of "
+        "view.",
+    )
+    sensor_width_mm: PositiveFiniteFloat = Field(
+        default=36.0, description="Horizontal camera sensor size in millimetres."
+    )
+    sensor_height_mm: PositiveFiniteFloat = Field(
+        default=24.0, description="Vertical camera sensor size in millimetres."
+    )
+    sensor_fit: SensorFit = Field(
+        default=SensorFit.AUTO,
+        description="Which sensor dimension the focal length fits when deriving the field of view.",
+    )
     near_clip_mm: PositiveFiniteFloat = 0.5
     far_clip_mm: PositiveFiniteFloat = 100_000.0
     depth_of_field: DepthOfField = DepthOfField()
@@ -228,11 +253,29 @@ class CameraOrbitAngles(ContractModel):
 
 
 class ProjectedComponentBounds(ContractModel):
-    projection_status: Literal["in_front", "behind", "crosses_camera_plane"]
-    minimum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
-    maximum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = None
-    minimum_depth_mm: FiniteFloat
-    maximum_depth_mm: FiniteFloat
+    projection_status: Annotated[
+        Literal["in_front", "behind", "crosses_camera_plane"],
+        Field(
+            description="Whether the component sits fully in front of, entirely behind, or "
+            "straddling the camera plane."
+        ),
+    ]
+    minimum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = Field(
+        default=None,
+        description="Lower corner of the component's projected bounding box in normalized 0-1 "
+        "frame coordinates; null when it crosses the camera plane.",
+    )
+    maximum_image_xy: tuple[FiniteFloat, FiniteFloat] | None = Field(
+        default=None,
+        description="Upper corner of the component's projected bounding box in normalized 0-1 "
+        "frame coordinates; null when it crosses the camera plane.",
+    )
+    minimum_depth_mm: FiniteFloat = Field(
+        description="Nearest component depth along the camera forward axis in millimetres."
+    )
+    maximum_depth_mm: FiniteFloat = Field(
+        description="Farthest component depth along the camera forward axis in millimetres."
+    )
 
     @model_validator(mode="after")
     def validate_projection(self) -> Self:
@@ -269,8 +312,15 @@ class CameraDiagnostics(ContractModel):
     up: Vec3
     forward: Vec3
     frustum_corners_mm: tuple[Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3, Vec3]
-    target_depth_mm: FiniteFloat
-    projected_bounds: dict[Identifier, ProjectedComponentBounds]
+    target_depth_mm: FiniteFloat = Field(
+        description="Depth of the focus target (or scene centre) along the camera forward axis "
+        "in millimetres."
+    )
+    projected_bounds: dict[Identifier, ProjectedComponentBounds] = Field(
+        description="Per focus-component projected frame coverage keyed by stable id: the "
+        "component's normalized image-space bounding box and depth range for the current camera. "
+        "Populated for focus targets (e.g. an occlusion query); empty for an unfocused render."
+    )
 
 
 class CameraTranslationReceipt(ContractModel):
@@ -733,11 +783,48 @@ class ImageArtifact(ContractModel):
 
 
 class LuminanceSummary(ContractModel):
-    minimum: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    median: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    maximum: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    crushed_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    clipped_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    """Exposure statistics of a rendered frame's luminance.
+
+    Lets a caller detect an under- or over-exposed render programmatically, instead of
+    visually inspecting the PNG.
+    """
+
+    minimum: Annotated[
+        float,
+        Field(ge=0, le=1, allow_inf_nan=False, description="Darkest normalized luminance (0-1)."),
+    ]
+    median: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Median normalized luminance (0-1); a low value (e.g. 0.03) flags a "
+            "near-black, underlit frame.",
+        ),
+    ]
+    maximum: Annotated[
+        float,
+        Field(ge=0, le=1, allow_inf_nan=False, description="Brightest normalized luminance (0-1)."),
+    ]
+    crushed_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Fraction of pixels crushed to black (underexposed shadow clipping).",
+        ),
+    ]
+    clipped_fraction: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Fraction of pixels clipped to white (overexposed highlight clipping).",
+        ),
+    ]
 
     @model_validator(mode="after")
     def validate_order(self) -> Self:
@@ -786,7 +873,10 @@ class RenderManifest(ContractModel):
     session: SessionSnapshot
     color: ImageArtifact
     evaluator: EvaluatorPasses | None = None
-    luminance: LuminanceSummary
+    luminance: LuminanceSummary = Field(
+        description="Exposure summary of the rendered frame; use it to detect an under- or "
+        "over-exposed render programmatically."
+    )
     resolved_depth_of_field: ResolvedDepthOfField | None = None
 
     @model_validator(mode="after")
@@ -797,21 +887,40 @@ class RenderManifest(ContractModel):
 
 
 class ContactSheetPanel(ContractModel):
-    index: Annotated[int, Field(ge=1)]
-    caption: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
+    index: Annotated[
+        int, Field(ge=1, description="1-based panel position within the 3x3 contact sheet.")
+    ]
+    caption: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=10_000),
+        Field(
+            description="Human-readable label describing the panel's view "
+            "(e.g. 'Natural isometric', 'Focused in context')."
+        ),
+    ]
     render: RenderManifest
-    callouts: tuple[ContactSheetCallout, ...] = ()
-    experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
+    callouts: tuple[ContactSheetCallout, ...] = Field(
+        default=(),
+        description="Numbered marker annotations placed on the panel, each pointing at a focus "
+        "component.",
+    )
+    experiment: Annotated[
+        Literal["declared", "fixed_pose_focal_study", "dolly_zoom"],
+        Field(description="Which panel experiment produced this view."),
+    ] = "declared"
 
 
 class ContactSheetCallout(ContractModel):
-    number: Annotated[int, Field(ge=1, le=99)]
-    component_id: Identifier
-    label: Identifier
+    number: Annotated[
+        int,
+        Field(ge=1, le=99, description="Marker number drawn on the panel, matching the badge."),
+    ]
+    component_id: Identifier = Field(description="Stable id of the component the marker points at.")
+    label: Identifier = Field(description="Short label shown beside the marker.")
     image_xy: tuple[
         Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
         Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
-    ]
+    ] = Field(description="Marker position in normalized 0-1 panel image coordinates.")
 
 
 class ContactSheetOrbit(ContractModel):
@@ -852,17 +961,41 @@ class ContactSheetPanelSpec(ContractModel):
 
 
 class OccluderRemovalStep(ContractModel):
-    component_id: Identifier
-    display_name: Identifier
-    component_path: Identifier
-    ray_hit_count: Annotated[int, Field(ge=1)]
-    visible_pixel_count_after: Annotated[int, Field(ge=0)]
-    visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    """One occluder removed while clearing the focus target, with its visibility effect."""
+
+    component_id: Identifier = Field(description="Stable id of the occluder removed at this step.")
+    display_name: Identifier = Field(description="Human-readable name of the removed occluder.")
+    component_path: Identifier = Field(description="Full scene path of the removed occluder.")
+    ray_hit_count: Annotated[
+        int,
+        Field(ge=1, description="Focus rays this occluder was blocking before removal."),
+    ]
+    visible_pixel_count_after: Annotated[
+        int,
+        Field(ge=0, description="Visible focus-mask pixels after removing this occluder."),
+    ]
+    visible_fraction_after: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Visible focus fraction after removing this occluder.",
+        ),
+    ]
 
 
 class OcclusionEvidence(ContractModel):
-    camera: Camera
-    camera_source: Literal["generated_focus_context", "current_session"]
+    """Full trace of the occluder-removal algorithm behind a focused contact sheet."""
+
+    camera: Camera = Field(description="Camera the visibility measurements were taken from.")
+    camera_source: Annotated[
+        Literal["generated_focus_context", "current_session"],
+        Field(
+            description="Whether the camera was auto-framed for the focus target or taken from "
+            "the current session."
+        ),
+    ]
     visibility_width_px: Annotated[
         int,
         Field(
@@ -879,8 +1012,20 @@ class OcclusionEvidence(ContractModel):
             description="Render height used to measure pixel visibility for the attributed camera.",
         ),
     ]
-    visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    removal_budget: Annotated[int, Field(ge=0, le=32)]
+    visibility_threshold: Annotated[
+        float,
+        Field(
+            ge=0,
+            le=1,
+            allow_inf_nan=False,
+            description="Minimum visible focus fraction the sheet aims to reach before it stops "
+            "removing occluders.",
+        ),
+    ]
+    removal_budget: Annotated[
+        int,
+        Field(ge=0, le=32, description="Maximum number of occluders the sheet may remove."),
+    ]
     sample_count: Annotated[
         int,
         Field(
@@ -888,8 +1033,12 @@ class OcclusionEvidence(ContractModel):
             description="Mesh vertex and centroid rays used only to rank blocking components.",
         ),
     ]
-    visible_pixel_count_before: Annotated[int, Field(ge=0)]
-    visible_pixel_count_after: Annotated[int, Field(ge=0)]
+    visible_pixel_count_before: Annotated[
+        int, Field(ge=0, description="Visible focus-mask pixels before any occluder removal.")
+    ]
+    visible_pixel_count_after: Annotated[
+        int, Field(ge=0, description="Visible focus-mask pixels after all removal steps.")
+    ]
     isolated_pixel_count: Annotated[
         int,
         Field(
@@ -915,13 +1064,19 @@ class OcclusionEvidence(ContractModel):
             description="Recomputed pixel visibility after all reported removal steps.",
         ),
     ]
-    steps: tuple[OccluderRemovalStep, ...] = ()
-    stop_reason: Literal[
-        "threshold_met_initial",
-        "threshold_met",
-        "budget_exhausted",
-        "no_blockers",
-        "focus_not_projected",
+    steps: tuple[OccluderRemovalStep, ...] = Field(
+        default=(),
+        description="Ordered trace of each occluder removal and its effect on focus visibility.",
+    )
+    stop_reason: Annotated[
+        Literal[
+            "threshold_met_initial",
+            "threshold_met",
+            "budget_exhausted",
+            "no_blockers",
+            "focus_not_projected",
+        ],
+        Field(description="Why occluder removal halted."),
     ]
 
     @model_validator(mode="after")
@@ -976,8 +1131,11 @@ class OcclusionBlocker(ContractModel):
 
 class OcclusionQueryResult(ContractModel):
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
-    camera: Camera
-    camera_diagnostics: CameraDiagnostics
+    camera: Camera = Field(description="Camera the occlusion query was evaluated from.")
+    camera_diagnostics: CameraDiagnostics = Field(
+        description="Camera framing for the query, including projected_bounds: the per-component "
+        "normalized frame coverage of each focus target."
+    )
     aspect_ratio: PositiveFiniteFloat
     camera_source: Literal["current_session"] = "current_session"
     projection_status: Literal["projected", "not_projected"]
@@ -1000,7 +1158,11 @@ class OcclusionQueryResult(ContractModel):
             description="Visible focus rays divided by all projected focus rays.",
         ),
     ]
-    blockers: tuple[OcclusionBlocker, ...] = ()
+    blockers: tuple[OcclusionBlocker, ...] = Field(
+        default=(),
+        description="Components blocking the focus target from this camera, ranked by blocked "
+        "ray count.",
+    )
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
     @model_validator(mode="after")
@@ -1032,12 +1194,82 @@ class ContactSheetManifest(ContractModel):
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()
-    occlusion: OcclusionEvidence | None = None
+    occlusion: OcclusionEvidence | None = Field(
+        default=None,
+        description="Trace of the automatic occluder-removal analysis, or null when none ran.",
+    )
     sheet: ImageArtifact
-    panels: tuple[ContactSheetPanel, ...] = Field(min_length=9, max_length=9)
+    panels: tuple[ContactSheetPanel, ...] = Field(
+        min_length=9,
+        max_length=9,
+        description="The nine rendered panels, each with its caption and numbered callouts.",
+    )
 
     @model_validator(mode="after")
     def validate_panel_indices(self) -> Self:
         if tuple(panel.index for panel in self.panels) != tuple(range(1, 10)):
             raise ValueError("focused contact-sheet panel indices must be 1 through 9")
         return self
+
+
+StateHash = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{64}$"),
+    Field(description="Digest of the durable session state after the operation."),
+]
+
+
+class CameraViewResult(ContractModel):
+    """Result of an absolute view command (view.set / view.orbit)."""
+
+    state_sha256: StateHash
+    camera: Camera = Field(description="Resolved camera pose and projection after the view change.")
+    camera_diagnostics: CameraDiagnostics = Field(
+        description="Derived camera framing: field of view, basis axes, frustum corners, and "
+        "projected focus bounds."
+    )
+
+
+class CameraMotionResult(CameraViewResult):
+    """Result of a relative view command (view.move / view.rotate)."""
+
+    camera_operation: CameraOperationReceipt = Field(
+        description="Receipt describing the requested and applied camera translation or rotation."
+    )
+
+
+class IlluminationResult(ContractModel):
+    """Result of illumination.set."""
+
+    state_sha256: StateHash
+    illumination: Illumination = Field(description="Resolved scene illumination after the change.")
+
+
+class ComponentVisualStateResult(ContractModel):
+    """Result of component.display / component.mark."""
+
+    state_sha256: StateHash
+    components: dict[Identifier, ComponentVisualState] = Field(
+        description="Per-component visibility and mark state after the change, keyed by stable id."
+    )
+
+
+class SessionResetResult(ContractModel):
+    """Result of session.reset."""
+
+    reset: Literal[True] = Field(
+        default=True,
+        description="Always true; confirms the visual state was reset to the scene defaults.",
+    )
+    state_sha256: StateHash
+
+
+class SessionSnapshotResult(ContractModel):
+    """Result of session.snapshot."""
+
+    scene: SceneManifest = Field(
+        description="The imported scene manifest: components, coordinate frames, and capabilities."
+    )
+    session: SessionSnapshot = Field(
+        description="Complete camera, illumination, and per-component visual state snapshot."
+    )
