@@ -238,6 +238,7 @@ _RESULT_MODELS: dict[str, object] = {
     "component.occlusion": OcclusionQueryResult,
     "view.set": CameraViewResult,
     "view.orbit": CameraViewResult,
+    "view.frame": CameraViewResult,
     "view.move": CameraMotionResult,
     "view.rotate": CameraMotionResult,
     "illumination.set": IlluminationResult,

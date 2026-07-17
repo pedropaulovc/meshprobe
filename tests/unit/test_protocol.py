@@ -15,6 +15,7 @@ from meshprobe.protocol import (
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
+    command_result_json_schema,
     parse_command_json,
 )
 
@@ -49,6 +50,7 @@ def test_schema_contains_all_public_operations() -> None:
         "component.occlusion",
         "view.set",
         "view.orbit",
+        "view.frame",
         "view.move",
         "view.rotate",
         "illumination.set",
@@ -61,6 +63,31 @@ def test_schema_contains_all_public_operations() -> None:
         assert operation in encoded
     assert schema["$defs"]["CameraPoseFrame"]["enum"] == ["source", "world"]
     assert schema["$defs"]["Pose"]["properties"]["frame"]["$ref"] == ("#/$defs/CameraPoseFrame")
+
+
+def test_result_schema_covers_every_command_operation() -> None:
+    """Every op in the Command union must have a result schema entry, or a client
+    reading `meshprobe schema --kind results` silently has no schema for it."""
+    result_schema = command_result_json_schema()
+    for operation in (
+        "scene.open",
+        "session.snapshot",
+        "component.find",
+        "component.inspect",
+        "component.occlusion",
+        "view.set",
+        "view.orbit",
+        "view.frame",
+        "view.move",
+        "view.rotate",
+        "illumination.set",
+        "component.display",
+        "component.mark",
+        "render.image",
+        "render.contact_sheet",
+        "session.reset",
+    ):
+        assert operation in result_schema, f"missing result schema for {operation}"
 
 
 @pytest.mark.parametrize(
