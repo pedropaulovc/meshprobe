@@ -1474,6 +1474,7 @@ def reset_session() -> dict[str, Any]:
         }
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
+    configure_render_style({})
     return session_snapshot()
 
 

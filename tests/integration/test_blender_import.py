@@ -1733,11 +1733,26 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         assert controller.request("session.snapshot")["session"] == before_invalid_mode
 
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render-edges-before-reset",
+                op="render.image",
+                output_path=str(tmp_path / "edges-before-reset.png"),
+                width=128,
+                height=128,
+                samples=1,
+                style=RenderStyle.SHADED_EDGES,
+            )
+        )
+        assert controller.request("session.runtime")["render"]["use_freestyle"] is True
+
         reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
         assert reset == initial
-        reset_runtime = controller.request("session.runtime")["components"]
+        reset_runtime = controller.request("session.runtime")
+        assert reset_runtime["render"]["use_freestyle"] is False
         assert (
-            reset_runtime[target]["material_colors"] == initial_runtime[target]["material_colors"]
+            reset_runtime["components"][target]["material_colors"]
+            == initial_runtime[target]["material_colors"]
         )
 
 
@@ -1966,7 +1981,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(tmp_path: P
         )
         blocked_evaluator = tmp_path / "blocked-evaluator"
         blocked_evaluator.write_text("not a directory", encoding="utf-8")
-        with pytest.raises(BlenderWorkerError, match="File exists"):
+        with pytest.raises(BlenderWorkerError, match=r"worker\.FileExistsError"):
             controller.render_image(
                 RenderImageCommand(
                     request_id="render-edges-rejected",
