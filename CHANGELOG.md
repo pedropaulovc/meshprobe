@@ -44,12 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer change preset lighting or material brightness.
 - Render styles, camera operations, depth-of-field state, coordinate frames, and graphics details
   are persisted in versioned session and evidence manifests for deterministic replay and recovery.
+- Public and private qualification corpora are migrated to evaluation schema 3 and repinned for
+  MeshProbe 0.3.0 as `qualification-v7` and `private-v8` without changing model identities,
+  episode identities, or evaluator truth.
 - After CI passes, releases now validate the workflows, changelog, wheel, and source distribution;
   tag the tested `main` commit; publish to PyPI with retry-safe duplicate checks; and create the
   GitHub Release only after publishing succeeds.
 
 ### Fixed
 
+- `meshprobe.__version__` is derived from installed distribution metadata so it cannot drift from
+  the package version used by PyPI and runtime qualification pins.
 - WSL2 EEVEE rendering now detects and uses Mesa D3D12 on the selected NVIDIA adapter instead of
   silently labeling llvmpipe software rendering as hardware graphics.
 - Graphics policy now propagates to internal visibility and contact-sheet renders.
