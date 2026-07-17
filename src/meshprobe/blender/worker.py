@@ -38,7 +38,9 @@ MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MARK_COLORS = {
     "selected": (0.05, 0.8, 1.0, 1.0),
-    "highlighted": (1.0, 0.2, 0.02, 1.0),
+    # Linear RGBA of sRGB #FF1493 (deep pink); pops against brass/copper materials
+    # that the former salmon default blended into. See issue #60.
+    "highlighted": (1.0, 0.006995410187265387, 0.29177064981753587, 1.0),
     "labeled": (1.0, 0.85, 0.05, 1.0),
 }
 SUPPORTED_GLTF_EXTENSIONS = {
