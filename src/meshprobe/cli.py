@@ -275,7 +275,7 @@ def generate_curated_eval_corpus(
 def merge_eval_corpora(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v6",
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v7",
 ) -> None:
     """Combine validated procedural and curated corpora without rewriting artifacts."""
 

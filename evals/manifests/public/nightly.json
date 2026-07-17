@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
   "tier": "nightly",
-  "corpus_version": "qualification-v6",
-  "corpus_manifest_sha256": "da17d14f43036cb355e93612395e858b88e7d63f347fc47a40dc2cadbd429924",
+  "corpus_version": "qualification-v7",
+  "corpus_manifest_sha256": "6ad4b03cca548fb74bc076434f72d8d0c4cbb791275bfb1415c0c9101e1d08ca",
   "generator_sha256": "8ccb46876c287d5a0f585b63f67c6ab65a9c321d5e750ca792587e3bf9cdb4f5",
   "runtime": {
-    "meshprobe_version": "0.2.0",
-    "meshprobe_sha256": "d9e6d5eb7cb92d0570a71a18b0b0a6decd5885e724a1295c736e4c2ca3468726",
+    "meshprobe_version": "0.3.0",
+    "meshprobe_sha256": "ef6c7278012fa2f297538778fd35160918ea5f645d8280988aa52afb0e9df5b1",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
     "importer_sha256": "27ff053927142f57b3af41f5f535f7d20ada0c3b1ee2ec5ab2c705877fb13679",

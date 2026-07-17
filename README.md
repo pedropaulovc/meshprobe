@@ -140,9 +140,9 @@ uv run meshprobe eval curated-generate \
   --build-version curated-v2 --corpus-version curated-tasks-v6
 uv run meshprobe eval merge .corpora \
   .corpora/procedural-v6 .corpora/curated-tasks-v6 \
-  --version qualification-v6
+  --version qualification-v7
 uv run meshprobe eval pin \
-  .corpora/qualification-v6 .corpora/manifests-v6
+  .corpora/qualification-v7 .corpora/manifests-v7
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -156,7 +156,7 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v6 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v7 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -175,7 +175,7 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v6 evals/manifests/public/smoke.json \
+  .corpora/qualification-v7 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
@@ -188,10 +188,10 @@ To migrate existing local datasets without regenerating geometry or task identit
 uv run meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v6
 uv run meshprobe eval migrate .corpora/curated-tasks-v5 .corpora \
   --version curated-tasks-v6
-uv run meshprobe eval migrate .corpora/qualification-v5 .corpora \
-  --version qualification-v6
-uv run meshprobe eval migrate .corpora/private-v6 .corpora \
-  --version private-v7 --opaque-family opaque_family_v7
+uv run meshprobe eval migrate .corpora/qualification-v6 .corpora \
+  --version qualification-v7
+uv run meshprobe eval migrate .corpora/private-v7 .corpora \
+  --version private-v8 --opaque-family opaque_family_v8
 ```
 
 `eval audit-migration` verifies that model hashes, episode IDs, evaluator truth, and the
@@ -213,7 +213,7 @@ private evaluator data stay outside the sandbox:
 
 ```bash
 uv run meshprobe eval ergonomics \
-  .corpora/qualification-v6 .runs/ergonomics-v1
+  .corpora/qualification-v7 .runs/ergonomics-v1
 ```
 
 Live provider streams and stderr are saved beneath
