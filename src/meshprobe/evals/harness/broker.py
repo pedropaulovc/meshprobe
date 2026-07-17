@@ -152,6 +152,8 @@ class EvaluationBroker:
             private_result = response.result
             produced_bytes = _directory_bytes(private_dir) + _directory_bytes(staging_root)
             if produced_bytes > byte_reservation:
+                self._renders += render_count
+                self._total_pixels += pixel_count
                 self._discard_request_outputs(staging_root, private_dir)
                 raise _RejectedCommand(
                     "budget.output_bytes",
@@ -274,11 +276,16 @@ class EvaluationBroker:
                 command.request_id,
             )
             translated_sheet = command.model_copy(update={"output_path": str(staging_output)})
-            byte_reservation = _contact_sheet_output_reservation(
+            # Caption rows wrap renderer-owned component names and can grow beyond
+            # dimensions derivable from the public command. Reserve the remaining
+            # episode allowance; sandbox limits and post-render accounting still
+            # enforce that hard cap while charging only the bytes actually written.
+            byte_reservation = self._budgets.output_bytes - self._output_bytes
+            minimum_reservation = _contact_sheet_minimum_output_reservation(
                 command.panel_width,
                 command.panel_height,
             )
-            self._check_render_budget(render_count, pixels, byte_reservation)
+            self._check_render_budget(render_count, pixels, minimum_reservation)
             return translated_sheet, render_count, pixels, byte_reservation, staging_root
         return command, 0, 0, 0, None
 
@@ -489,7 +496,7 @@ def _render_output_reservation(pixels: int) -> int:
     return pixels * 48 + 4 * 1024**2
 
 
-def _contact_sheet_output_reservation(panel_width: int, panel_height: int) -> int:
+def _contact_sheet_minimum_output_reservation(panel_width: int, panel_height: int) -> int:
     panel_pixels = panel_width * panel_height
     caption_height = max(48, panel_height // 10)
     sheet_pixels = panel_width * 3 * (panel_height + caption_height) * 3

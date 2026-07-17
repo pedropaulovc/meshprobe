@@ -2409,7 +2409,9 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     assert render_runtime["use_freestyle"] is False
     assert all(panel.callouts[0].component_id == target for panel in sheet.panels)
     assert sheet.occlusion.visible_fraction_after >= sheet.occlusion.visible_fraction_before
-    assert Image.open(sheet.sheet.path).size == (384, 528)
+    sheet_width, sheet_height = Image.open(sheet.sheet.path).size
+    assert sheet_width == 384
+    assert sheet_height >= 528
     assert restored == initial
 
 
@@ -2559,7 +2561,9 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     )
     assert "orthographic 2000mm" in sheet.panels[1].caption
     assert "dolly_zoom" in sheet.panels[5].caption
-    assert Image.open(sheet.sheet.path).size == (384, 528)
+    sheet_width, sheet_height = Image.open(sheet.sheet.path).size
+    assert sheet_width == 384
+    assert sheet_height >= 528
 
 
 def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:

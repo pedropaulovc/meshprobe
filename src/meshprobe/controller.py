@@ -20,6 +20,7 @@ from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
+    Component,
     ContactSheetCallout,
     ContactSheetManifest,
     ContactSheetPanel,
@@ -589,7 +590,7 @@ class BlenderController:
 
             occlusion = self._remove_occluders(command, focus_ids)
             removed_occluders = tuple(step.component_id for step in occlusion.steps)
-            third_caption = "Occluders removed"
+            third_caption = self._removed_occluder_caption(occlusion.steps)
             if not removed_occluders:
                 self._set_orbit(
                     scene_center,
@@ -903,9 +904,12 @@ class BlenderController:
                 )
                 measured = measure()
                 after = float(measured["visible_fraction"])
+                component = self._component(component_id)
                 steps.append(
                     OccluderRemovalStep(
                         component_id=component_id,
+                        display_name=component.display_name,
+                        component_path=component.path,
                         ray_hit_count=int(blocker["blocked_rays"]),
                         visible_fraction_after=after,
                     )
@@ -921,6 +925,19 @@ class BlenderController:
             visible_fraction_after=after,
             steps=tuple(steps),
             stop_reason=stop_reason,
+        )
+
+    def _component(self, component_id: str) -> Component:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot resolve a component before a scene is open")
+        return ComponentIndex(self._manifest).by_id(component_id)
+
+    @staticmethod
+    def _removed_occluder_caption(steps: tuple[OccluderRemovalStep, ...]) -> str:
+        if not steps:
+            return "No occluders found"
+        return "Occluders removed:\n" + "\n".join(
+            f"{index}. {step.display_name}" for index, step in enumerate(steps, 1)
         )
 
     @staticmethod
@@ -988,7 +1005,7 @@ class BlenderController:
                 ContactSheetCallout(
                     number=number,
                     component_id=component_id,
-                    label=labels[component_id][:64],
+                    label=labels[component_id],
                     image_xy=center,
                 )
             )

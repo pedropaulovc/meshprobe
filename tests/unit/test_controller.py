@@ -27,6 +27,7 @@ from meshprobe.models import (
     DisplayMode,
     EnvironmentMap,
     MarkMode,
+    OccluderRemovalStep,
     OrthographicProjection,
     PerspectiveProjection,
     PresetIllumination,
@@ -509,6 +510,25 @@ def test_execute_rejects_component_query_before_open() -> None:
         BlenderController().execute(command)
 
 
+def test_removed_occluder_caption_retains_every_full_blocker_name() -> None:
+    names = tuple(f"blocker-{index}-" + "x" * 230 for index in range(32))
+    steps = tuple(
+        OccluderRemovalStep(
+            component_id=f"blocker-{index}",
+            display_name=name,
+            component_path=f"/blocker-{index}",
+            ray_hit_count=1,
+            visible_fraction_after=index / 32,
+        )
+        for index, name in enumerate(names)
+    )
+
+    caption = BlenderController._removed_occluder_caption(steps)
+
+    assert len(caption) > 256
+    assert all(name in caption for name in names)
+
+
 def test_execute_routes_scene_open_through_checked_import(
     tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -817,7 +837,7 @@ def test_render_validates_worker_artifact_digests(
 @pytest.mark.parametrize(
     ("visibility", "expected_removed", "expected_stop", "third_caption"),
     [
-        ((0.2, 0.8), ("blocker",), "threshold_met", "Occluders removed"),
+        ((0.2, 0.8), ("blocker",), "threshold_met", "Occluders removed:"),
         ((0.8,), (), "threshold_met_initial", "Alternate context"),
     ],
 )
@@ -934,7 +954,12 @@ def test_contact_sheet_orchestrates_evidence_and_restores_state(
     assert sheet.occlusion.stop_reason == expected_stop
     if resolved_removed:
         assert sheet.occlusion.steps[0].ray_hit_count == 3
-    assert sheet.panels[2].caption == third_caption
+        blocker = next(
+            component for component in scene_manifest.components if component.id == blocker_id
+        )
+        assert sheet.occlusion.steps[0].display_name == blocker.display_name
+        assert sheet.occlusion.steps[0].component_path == blocker.path
+    assert sheet.panels[2].caption.startswith(third_caption)
     assert len({panel.render.state_sha256 for panel in sheet.panels}) == 9
     assert [panel.caption for panel in sheet.panels[3:]] == ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
     assert all(

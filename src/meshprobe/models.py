@@ -786,7 +786,7 @@ class RenderManifest(ContractModel):
 
 class ContactSheetPanel(ContractModel):
     index: Annotated[int, Field(ge=1)]
-    caption: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    caption: Annotated[str, StringConstraints(min_length=1, max_length=10_000)]
     render: RenderManifest
     callouts: tuple[ContactSheetCallout, ...] = ()
     experiment: Literal["declared", "fixed_pose_focal_study", "dolly_zoom"] = "declared"
@@ -795,7 +795,7 @@ class ContactSheetPanel(ContractModel):
 class ContactSheetCallout(ContractModel):
     number: Annotated[int, Field(ge=1, le=99)]
     component_id: Identifier
-    label: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    label: Identifier
     image_xy: tuple[
         Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
         Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)],
@@ -841,6 +841,8 @@ class ContactSheetPanelSpec(ContractModel):
 
 class OccluderRemovalStep(ContractModel):
     component_id: Identifier
+    display_name: Identifier
+    component_path: Identifier
     ray_hit_count: Annotated[int, Field(ge=1)]
     visible_fraction_after: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
@@ -862,7 +864,7 @@ class OcclusionEvidence(ContractModel):
 
 
 class ContactSheetManifest(ContractModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     recipe: Literal["focused_3x3", "custom_3x3"]
     focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
     removed_occluder_ids: tuple[Identifier, ...] = ()
