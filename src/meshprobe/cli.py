@@ -36,12 +36,15 @@ from meshprobe.models import (
     DepthOfField,
     DepthOfFieldMode,
     DisplayMode,
+    EdgeType,
     GraphicsPolicy,
     IlluminationPreset,
     MarkMode,
     PerspectiveProjection,
     Projection,
     RenderEngine,
+    RenderStyle,
+    ShadedEdgesStyle,
 )
 from meshprobe.protocol import (
     Command,
@@ -987,6 +990,25 @@ def render_image(
     height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 1024,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
+    style: Annotated[RenderStyle, typer.Option("--style")] = RenderStyle.SHADED,
+    edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
+    edge_width: Annotated[float, typer.Option("--edge-width", min=0.01, max=10)] = 1.5,
+    crease_angle: Annotated[
+        float,
+        typer.Option(
+            "--crease-angle",
+            min=0.01,
+            max=180,
+            help="Maximum face angle in degrees classified as a crease.",
+        ),
+    ] = 120,
+    edge_types: Annotated[
+        str,
+        typer.Option(
+            "--edge-types",
+            help="Comma-separated silhouette, border, crease, and material boundary types.",
+        ),
+    ] = "silhouette,border,crease,material_boundary",
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
@@ -1001,6 +1023,11 @@ def render_image(
         / "artifacts"
         / f"render-{uuid.uuid4().hex[:12]}.png"
     )
+    try:
+        selected_edge_types = tuple(EdgeType(value.strip()) for value in edge_types.split(","))
+    except ValueError as error:
+        choices = ", ".join(item.value for item in EdgeType)
+        raise typer.BadParameter(f"edge types must be selected from: {choices}") from error
     _execute(
         ctx,
         RenderImageCommand(
@@ -1011,6 +1038,13 @@ def render_image(
             height=height,
             samples=samples,
             engine=engine,
+            style=style,
+            shaded_edges=ShadedEdgesStyle(
+                line_color=edge_color,
+                line_width=edge_width,
+                crease_angle_degrees=crease_angle,
+                edge_types=selected_edge_types,
+            ),
             graphics_policy=graphics_policy,
         ),
     )

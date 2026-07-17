@@ -358,6 +358,46 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert render_command.output_path == str((tmp_path / "relative/render.png").resolve())
 
 
+def test_render_cli_builds_resolved_shaded_edges_style(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "render-image",
+            "--output",
+            str(tmp_path / "edges.png"),
+            "--style",
+            "shaded_edges",
+            "--edge-color",
+            "#101820",
+            "--edge-width",
+            "2.5",
+            "--crease-angle",
+            "45",
+            "--edge-types",
+            "silhouette,crease,material_boundary",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[0]
+    assert isinstance(command, RenderImageCommand)
+    assert command.style == "shaded_edges"
+    assert command.shaded_edges.line_color == "#101820"
+    assert command.shaded_edges.line_width == 2.5
+    assert command.shaded_edges.crease_angle_degrees == 45
+    assert command.shaded_edges.edge_types == (
+        "silhouette",
+        "crease",
+        "material_boundary",
+    )
+
+
 def test_default_render_path_accepts_meshprobe_workspace_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -398,9 +438,17 @@ def test_default_render_path_accepts_meshprobe_workspace_root(
     sheet_command = client.commands[-1]
     assert isinstance(image_command, RenderImageCommand)
     assert isinstance(sheet_command, RenderContactSheetCommand)
+    assert image_command.shaded_edges.crease_angle_degrees == 120
     artifacts = root / "sessions" / "review" / "artifacts"
     assert Path(image_command.output_path).parent == artifacts
     assert Path(sheet_command.output_path).parent == artifacts
+
+    render_help = runner.invoke(app, ["render-image", "--help"])
+    assert render_help.exit_code == 0
+    render_help_text = " ".join(unstyle(render_help.output).split())
+    assert "Maximum face angle in" in render_help_text
+    assert "degrees classified as a" in render_help_text
+    assert "[default: 120]" in render_help_text
 
 
 def test_component_commands_resolve_short_references(

@@ -18,6 +18,8 @@ import sys
 import tempfile
 import traceback
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from statistics import median
@@ -1472,6 +1474,7 @@ def reset_session() -> dict[str, Any]:
         }
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
+    configure_render_style({})
     return session_snapshot()
 
 
@@ -1535,6 +1538,7 @@ def runtime_diagnostics() -> dict[str, Any]:
         "render": {
             "engine": bpy.context.scene.render.engine,
             "eevee_samples": eevee_render_samples(),
+            "use_freestyle": bpy.context.scene.render.use_freestyle,
         },
     }
 
@@ -1562,6 +1566,92 @@ def configure_render(command: dict[str, Any]) -> str:
         )
     configure_eevee_samples(command["samples"])
     return f"graphics_{platform['device_class']}"
+
+
+@contextmanager
+def temporary_render_style() -> Iterator[None]:
+    scene = bpy.context.scene
+    freestyle = bpy.context.view_layer.freestyle_settings
+    line_set = freestyle.linesets[0]
+    selectors = (
+        "select_silhouette",
+        "select_border",
+        "select_crease",
+        "select_material_boundary",
+        "select_contour",
+        "select_external_contour",
+    )
+    original_use_freestyle = scene.render.use_freestyle
+    original_crease_angle = freestyle.crease_angle
+    original_material_boundaries = freestyle.use_material_boundaries
+    original_visibility_selection = line_set.select_by_visibility
+    original_visibility = line_set.visibility
+    original_edge_selection = line_set.select_by_edge_types
+    original_selectors = {attribute: getattr(line_set, attribute) for attribute in selectors}
+    original_edge_mark = line_set.select_edge_mark
+    original_ridge_valley = line_set.select_ridge_valley
+    original_suggestive_contour = line_set.select_suggestive_contour
+    original_line_style = line_set.linestyle
+    original_color = tuple(original_line_style.color) if original_line_style is not None else None
+    original_thickness = original_line_style.thickness if original_line_style is not None else None
+    try:
+        yield
+    finally:
+        scene.render.use_freestyle = original_use_freestyle
+        freestyle.crease_angle = original_crease_angle
+        freestyle.use_material_boundaries = original_material_boundaries
+        line_set.select_by_visibility = original_visibility_selection
+        line_set.visibility = original_visibility
+        line_set.select_by_edge_types = original_edge_selection
+        for attribute, value in original_selectors.items():
+            setattr(line_set, attribute, value)
+        line_set.select_edge_mark = original_edge_mark
+        line_set.select_ridge_valley = original_ridge_valley
+        line_set.select_suggestive_contour = original_suggestive_contour
+        if original_line_style is not None:
+            original_line_style.color = original_color
+            original_line_style.thickness = original_thickness
+
+
+def configure_render_style(command: dict[str, Any]) -> None:
+    scene = bpy.context.scene
+    style = command.get("style", "shaded")
+    scene.render.use_freestyle = style == "shaded_edges"
+    if style == "shaded":
+        return
+    if style != "shaded_edges":
+        raise ValueError(f"unknown render style: {style}")
+    settings = command["shaded_edges"]
+    freestyle = bpy.context.view_layer.freestyle_settings
+    freestyle.crease_angle = math.radians(settings["crease_angle_degrees"])
+    freestyle.use_material_boundaries = "material_boundary" in settings["edge_types"]
+    line_set = freestyle.linesets[0]
+    line_set.select_by_visibility = True
+    line_set.visibility = "VISIBLE"
+    line_set.select_by_edge_types = True
+    selectors = {
+        "silhouette": "select_silhouette",
+        "border": "select_border",
+        "crease": "select_crease",
+        "material_boundary": "select_material_boundary",
+        "contour": "select_contour",
+        "external_contour": "select_external_contour",
+    }
+    selected = set(settings["edge_types"])
+    for edge_type, attribute in selectors.items():
+        setattr(line_set, attribute, edge_type in selected)
+    line_set.select_edge_mark = False
+    line_set.select_ridge_valley = False
+    line_set.select_suggestive_contour = False
+    line_style = line_set.linestyle
+    if line_style is None:
+        line_style = bpy.data.linestyles.new("MeshProbeShadedEdges")
+        line_set.linestyle = line_style
+    color = settings["line_color"]
+    line_style.color = tuple(
+        srgb_channel_to_linear(int(color[offset : offset + 2], 16)) for offset in (1, 3, 5)
+    )
+    line_style.thickness = settings["line_width"]
 
 
 def graphics_platform() -> dict[str, Any]:
@@ -1744,6 +1834,7 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         obj: obj.hide_render for obj in scene.objects if obj.type not in {"MESH", "CAMERA"}
     }
     original_world = scene.world
+    original_freestyle = scene.render.use_freestyle
     mask_world = bpy.data.worlds.get("MeshProbeMaskWorld") or bpy.data.worlds.new(
         "MeshProbeMaskWorld"
     )
@@ -1752,6 +1843,7 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
     background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
     background.inputs["Strength"].default_value = 0.0
     scene.world = mask_world
+    scene.render.use_freestyle = False
     original_transform = scene.view_settings.view_transform
     original_look = scene.view_settings.look
     original_exposure = scene.view_settings.exposure
@@ -1794,6 +1886,7 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         for obj, hide_render in other_visibility.items():
             obj.hide_render = hide_render
         scene.world = original_world
+        scene.render.use_freestyle = original_freestyle
         scene.view_settings.view_transform = original_transform
         scene.view_settings.look = original_look
         scene.view_settings.exposure = original_exposure
@@ -1950,15 +2043,17 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
-    device = configure_render(command)
-    render_still(output)
-    luminance = luminance_summary(output)
-    evaluator = None
-    if command.get("evaluator_output_dir") is not None:
-        evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
-        evaluator_dir.mkdir(parents=True, exist_ok=True)
-        evaluator = render_evaluator_passes(evaluator_dir, output.stem)
-    session = session_snapshot()
+    with temporary_render_style():
+        device = configure_render(command)
+        configure_render_style(command)
+        render_still(output)
+        luminance = luminance_summary(output)
+        evaluator = None
+        if command.get("evaluator_output_dir") is not None:
+            evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
+            evaluator_dir.mkdir(parents=True, exist_ok=True)
+            evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+        session = session_snapshot()
     return {
         "schema_version": 1,
         "source_sha256": manifest["source_sha256"],
@@ -1967,6 +2062,16 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "height": command["height"],
         "samples": command["samples"],
         "engine": command["engine"],
+        "style": command.get("style", "shaded"),
+        "shaded_edges": command.get(
+            "shaded_edges",
+            {
+                "line_color": "#202020",
+                "line_width": 1.5,
+                "crease_angle_degrees": 120,
+                "edge_types": ["silhouette", "border", "crease", "material_boundary"],
+            },
+        ),
         "device": device,
         "graphics_policy": command["graphics_policy"],
         "graphics": graphics_platform(),
@@ -2569,6 +2674,10 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.image":
         require_session()
         return render_image(command)
+    if operation == "render.style":
+        require_session()
+        configure_render_style(command)
+        return {"style": command.get("style", "shaded")}
     if operation == "scene.export_normalized":
         return export_normalized(command)
     if operation == "component.visibility":

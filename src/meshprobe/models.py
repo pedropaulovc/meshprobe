@@ -615,6 +615,51 @@ class RenderEngine(StrEnum):
     CYCLES = "cycles"
 
 
+class RenderStyle(StrEnum):
+    SHADED = "shaded"
+    SHADED_EDGES = "shaded_edges"
+
+
+class EdgeType(StrEnum):
+    SILHOUETTE = "silhouette"
+    BORDER = "border"
+    CREASE = "crease"
+    MATERIAL_BOUNDARY = "material_boundary"
+    CONTOUR = "contour"
+    EXTERNAL_CONTOUR = "external_contour"
+
+
+class ShadedEdgesStyle(ContractModel):
+    line_color: Annotated[str, StringConstraints(pattern=r"^#[0-9A-Fa-f]{6}$")] = "#202020"
+    line_width: Annotated[float, Field(gt=0, le=10, allow_inf_nan=False)] = 1.5
+    crease_angle_degrees: Annotated[float, Field(gt=0, le=180, allow_inf_nan=False)] = 120
+    edge_types: tuple[EdgeType, ...] = (
+        EdgeType.SILHOUETTE,
+        EdgeType.BORDER,
+        EdgeType.CREASE,
+        EdgeType.MATERIAL_BOUNDARY,
+    )
+
+    @field_validator("edge_types")
+    @classmethod
+    def validate_edge_types(cls, edge_types: tuple[EdgeType, ...]) -> tuple[EdgeType, ...]:
+        if not edge_types:
+            raise ValueError("at least one edge type is required")
+        if len(edge_types) != len(set(edge_types)):
+            raise ValueError("edge types must be unique")
+        return edge_types
+
+    @field_validator("line_color")
+    @classmethod
+    def canonical_line_color(cls, line_color: str) -> str:
+        return line_color.lower()
+
+
+class RenderStyleState(ContractModel):
+    style: RenderStyle = RenderStyle.SHADED
+    shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
+
+
 class GraphicsPolicy(StrEnum):
     HARDWARE_REQUIRED = "hardware_required"
     SOFTWARE_ALLOWED = "software_allowed"
@@ -688,6 +733,8 @@ class RenderManifest(ContractModel):
     height: Annotated[int, Field(ge=64, le=16_384)]
     samples: Annotated[int, Field(ge=1, le=4_096)]
     engine: RenderEngine
+    style: RenderStyle = RenderStyle.SHADED
+    shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     device: Literal["graphics_hardware", "graphics_software", "cuda"]
     graphics_policy: GraphicsPolicy
     graphics: GraphicsPlatform
