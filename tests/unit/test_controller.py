@@ -21,6 +21,8 @@ from meshprobe.controller import (
 )
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
+    CameraRotationReceipt,
+    CameraTranslationReceipt,
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
@@ -33,14 +35,19 @@ from meshprobe.models import (
     SessionSnapshot,
 )
 from meshprobe.protocol import (
+    ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    ViewMoveCommand,
+    ViewRotateCommand,
+    ViewSetCommand,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.session import InspectionSession
@@ -342,12 +349,109 @@ def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -
             mode=MarkMode.HIGHLIGHTED,
         )
     )
-    assert isinstance(marked, SessionSnapshot)
+    assert marked == {
+        "components": {target: snapshot.components[target].model_dump(mode="json")},
+        "state_sha256": snapshot.state_sha256,
+    }
     assert len(controller._accepted_commands) == 1
 
     reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
-    assert isinstance(reset, SessionSnapshot)
+    assert reset == {"reset": True, "state_sha256": snapshot.state_sha256}
     assert controller._accepted_commands == []
+
+
+def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    controller = BlenderController()
+    snapshot = InspectionSession(scene_manifest).snapshot()
+    move_receipt = CameraTranslationReceipt(
+        requested_world_delta_mm=(0, 0, 0),
+        requested_camera_delta_mm=(1, 2, 3),
+        resolved_world_delta_mm=(1, 2, 3),
+        previous_pose=snapshot.camera.pose,
+        resulting_pose=snapshot.camera.pose,
+    )
+    moved_snapshot = snapshot.model_copy(update={"camera_operation": move_receipt})
+    rotation_receipt = CameraRotationReceipt(
+        frame="world",
+        target_mm=(0, 0, 0),
+        axis="z",
+        basis={"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)},
+        axis_world=(0, 0, 1),
+        requested_visual_degrees=90,
+        applied_camera_orbit_degrees=-90,
+        previous_pose=snapshot.camera.pose,
+        resulting_pose=snapshot.camera.pose,
+    )
+    rotated_snapshot = snapshot.model_copy(update={"camera_operation": rotation_receipt})
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        resolved = {
+            "view.move": moved_snapshot,
+            "view.rotate": rotated_snapshot,
+        }.get(operation, snapshot)
+        return resolved.model_dump(mode="json")
+
+    monkeypatch.setattr(
+        controller,
+        "request",
+        request,
+    )
+    target = scene_manifest.components[-1].id
+
+    view = controller.execute(
+        ViewSetCommand(request_id="view", op="view.set", camera=snapshot.camera)
+    )
+    moved = controller.execute(
+        ViewMoveCommand(
+            request_id="move",
+            op="view.move",
+            camera_delta_mm=(1, 2, 3),
+        )
+    )
+    rotated = controller.execute(
+        ViewRotateCommand(
+            request_id="rotate",
+            op="view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=90,
+            frame="world",
+        )
+    )
+    illumination = controller.execute(
+        IlluminationSetCommand(
+            request_id="light",
+            op="illumination.set",
+            illumination=snapshot.illumination,
+        )
+    )
+    isolated = controller.execute(
+        ComponentDisplayCommand(
+            request_id="isolate",
+            op="component.display",
+            component_ids=(target,),
+            mode=DisplayMode.ISOLATED,
+        )
+    )
+
+    assert view == {
+        "camera": snapshot.camera.model_dump(mode="json"),
+        "camera_diagnostics": snapshot.camera_diagnostics.model_dump(mode="json"),
+        "state_sha256": snapshot.state_sha256,
+    }
+    assert moved == {**view, "camera_operation": move_receipt.model_dump(mode="json")}
+    assert rotated == {**view, "camera_operation": rotation_receipt.model_dump(mode="json")}
+    assert illumination == {
+        "illumination": snapshot.illumination.model_dump(mode="json"),
+        "state_sha256": snapshot.state_sha256,
+    }
+    assert isolated == {
+        "components": {
+            component_id: state.model_dump(mode="json")
+            for component_id, state in snapshot.components.items()
+        },
+        "state_sha256": snapshot.state_sha256,
+    }
 
 
 def test_execute_returns_nonstate_result(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -454,7 +558,10 @@ def test_execute_recovers_once_after_crash(scene_manifest, monkeypatch) -> None:
             mode=MarkMode.SELECTED,
         )
     )
-    assert isinstance(result, SessionSnapshot)
+    assert result == {
+        "components": {target: snapshot.components[target].model_dump(mode="json")},
+        "state_sha256": snapshot.state_sha256,
+    }
     assert recovered
     assert calls == 2
 

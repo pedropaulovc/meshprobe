@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 import meshprobe.evals.oracles as oracles
@@ -23,6 +24,7 @@ from meshprobe.evals.schemas import (
     GateStatus,
     Operation,
     StatePredicate,
+    StateRequirement,
     TraceEvent,
     TraceStatus,
 )
@@ -68,6 +70,793 @@ def accepted_event(
             "started_monotonic": float(sequence),
             "elapsed_seconds": 0.1,
         }
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "transitions", "expected", "final_state", "saw_transition"),
+    [
+        (
+            "initial None",
+            [(Operation.VIEW_ORBIT, None, "1" * 64)],
+            True,
+            "1" * 64,
+            True,
+        ),
+        (
+            "compact first",
+            [(Operation.VIEW_SET, "0" * 64, "1" * 64)],
+            True,
+            "1" * 64,
+            True,
+        ),
+        (
+            "reset",
+            [
+                (Operation.VIEW_SET, "0" * 64, "1" * 64),
+                (Operation.SESSION_RESET, "1" * 64, "0" * 64),
+            ],
+            True,
+            "0" * 64,
+            True,
+        ),
+        (
+            "repeated same hash",
+            [
+                (Operation.VIEW_SET, "0" * 64, "1" * 64),
+                (Operation.ILLUMINATION_SET, "1" * 64, "1" * 64),
+            ],
+            True,
+            "1" * 64,
+            True,
+        ),
+        (
+            "branch mismatch",
+            [
+                (Operation.VIEW_SET, "0" * 64, "1" * 64),
+                (Operation.ILLUMINATION_SET, "9" * 64, "2" * 64),
+            ],
+            False,
+            "1" * 64,
+            True,
+        ),
+        (
+            "no-op target",
+            [
+                (Operation.VIEW_SET, "0" * 64, "1" * 64),
+                (Operation.COMPONENT_MARK, "1" * 64, "1" * 64),
+            ],
+            True,
+            "1" * 64,
+            True,
+        ),
+        (
+            "view.rotate",
+            [(Operation.VIEW_ROTATE, "0" * 64, "1" * 64)],
+            True,
+            "1" * 64,
+            True,
+        ),
+    ],
+)
+def test_compact_state_replay_transition_matrix(
+    case: str,
+    transitions: list[tuple[Operation, str | None, str]],
+    expected: bool,
+    final_state: str,
+    saw_transition: bool,
+) -> None:
+    del case
+    replay = oracles._CompactStateReplay()
+    result = True
+    for sequence, (operation, before, after) in enumerate(transitions, start=1):
+        event_result: dict[str, object] = {"state_sha256": after}
+        if operation is Operation.SESSION_RESET:
+            event_result["reset"] = True
+        event = accepted_event(
+            sequence,
+            operation,
+            arguments={},
+            result=event_result,
+            before=before,
+            after=after,
+        )
+        if replay.apply(event):
+            continue
+        result = False
+        break
+
+    assert result is expected
+    assert replay.current_state_sha256 == final_state
+    assert replay.saw_transition is saw_transition
+
+
+def test_compact_state_chain_requires_every_grouped_predicate() -> None:
+    state_before = "0" * 64
+    state_after = "1" * 64
+    missing_camera = accepted_event(
+        1,
+        Operation.VIEW_ROTATE,
+        arguments={},
+        result={"state_sha256": state_after},
+        before=state_before,
+        after=state_after,
+    )
+    requirement = StateRequirement(
+        predicate=StatePredicate.PROJECTION_MODE,
+        expected="orthographic",
+    )
+
+    assert not oracles._transition_chain_satisfies_state_group(
+        [missing_camera], missing_camera, [requirement], {}
+    )
+
+    complete = missing_camera.model_copy(
+        update={
+            "result": {
+                "state_sha256": state_after,
+                "camera": {"projection": {"mode": "orthographic"}},
+            }
+        }
+    )
+    assert oracles._transition_chain_satisfies_state_group([complete], complete, [requirement], {})
+
+
+def test_compact_state_chain_rejects_unproven_earlier_delta() -> None:
+    camera_state = "1" * 64
+    rendered_state = "2" * 64
+    camera = accepted_event(
+        1,
+        Operation.VIEW_SET,
+        arguments={},
+        result={
+            "state_sha256": "f" * 64,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before=camera_state,
+        after=camera_state,
+    )
+    illumination = accepted_event(
+        2,
+        Operation.ILLUMINATION_SET,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "illumination": {"preset": "neutral_studio"},
+        },
+        before=camera_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+    ]
+
+    assert not oracles._transition_chain_satisfies_state_group(
+        [camera, illumination], illumination, requirements, {}
+    )
+
+    proven_camera = camera.model_copy(
+        update={
+            "result": {
+                "state_sha256": camera_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+            }
+        }
+    )
+    assert oracles._transition_chain_satisfies_state_group(
+        [proven_camera, illumination], illumination, requirements, {}
+    )
+
+
+def test_compact_state_chain_rejects_discontinuous_hashes() -> None:
+    camera_state = "1" * 64
+    rendered_state = "2" * 64
+    camera = accepted_event(
+        1,
+        Operation.VIEW_ROTATE,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before="0" * 64,
+        after=camera_state,
+    )
+    illumination = accepted_event(
+        2,
+        Operation.ILLUMINATION_SET,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "illumination": {"preset": "neutral_studio"},
+        },
+        before="9" * 64,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+    ]
+
+    assert not oracles._transition_chain_satisfies_state_group(
+        [camera, illumination], illumination, requirements, {}
+    )
+
+    continuous = illumination.model_copy(update={"state_before_sha256": camera_state})
+    assert oracles._transition_chain_satisfies_state_group(
+        [camera, continuous], continuous, requirements, {}
+    )
+
+
+def test_compact_state_chain_accepts_hash_proven_noop_target() -> None:
+    rendered_state = "1" * 64
+    camera = accepted_event(
+        1,
+        Operation.VIEW_ORBIT,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before="0" * 64,
+        after=rendered_state,
+    )
+    illumination = accepted_event(
+        2,
+        Operation.ILLUMINATION_SET,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "illumination": {"preset": "neutral_studio"},
+        },
+        before=rendered_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [camera, illumination], illumination, requirements, {}
+    )
+
+
+def test_compact_state_chain_restores_imported_state_on_reset() -> None:
+    imported_state = "0" * 64
+    changed_state = "1" * 64
+    rendered_state = "2" * 64
+    target = "cmp_target"
+    snapshot = accepted_event(
+        1,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": imported_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            }
+        },
+        before=imported_state,
+        after=imported_state,
+    )
+    changed = accepted_event(
+        2,
+        Operation.VIEW_SET,
+        arguments={},
+        result={
+            "state_sha256": changed_state,
+            "camera": {"projection": {"mode": "perspective"}},
+        },
+        before=imported_state,
+        after=changed_state,
+    )
+    reset = accepted_event(
+        3,
+        Operation.SESSION_RESET,
+        arguments={},
+        result={"reset": True, "state_sha256": imported_state},
+        before=changed_state,
+        after=imported_state,
+    )
+    marked = accepted_event(
+        4,
+        Operation.COMPONENT_MARK,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "components": {target: {"display": "shown", "mark": "highlighted"}},
+        },
+        before=imported_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_MARK,
+            component_role="target",
+            expected="highlighted",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [snapshot, changed, reset, marked],
+        marked,
+        requirements,
+        {"target": target},
+    )
+
+
+def test_compact_state_chain_starts_from_proven_session_snapshot() -> None:
+    imported_state = "0" * 64
+    rendered_state = "1" * 64
+    target = "cmp_target"
+    snapshot = accepted_event(
+        1,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": imported_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            }
+        },
+        before=imported_state,
+        after=imported_state,
+    )
+    marked = accepted_event(
+        2,
+        Operation.COMPONENT_MARK,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "components": {target: {"display": "shown", "mark": "highlighted"}},
+        },
+        before=imported_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_MARK,
+            component_role="target",
+            expected="highlighted",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [snapshot, marked], marked, requirements, {"target": target}
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "embedded", "expected"),
+    [
+        pytest.param(None, "1" * 64, "1" * 64, True, id="initial-bootstrap"),
+        pytest.param("1" * 64, "1" * 64, "1" * 64, True, id="known-noop"),
+        pytest.param(None, None, "1" * 64, False, id="missing-after"),
+        pytest.param("1" * 64, None, "1" * 64, False, id="lost-after"),
+        pytest.param("1" * 64, "2" * 64, "2" * 64, False, id="known-mutation"),
+        pytest.param(None, "1" * 64, "2" * 64, False, id="bootstrap-payload-mismatch"),
+        pytest.param("1" * 64, "1" * 64, "2" * 64, False, id="noop-payload-mismatch"),
+    ],
+)
+def test_replayable_session_snapshot_boundary_matrix(
+    before: str | None,
+    after: str | None,
+    embedded: str,
+    expected: bool,
+) -> None:
+    snapshot = accepted_event(
+        1,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": embedded,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {},
+            }
+        },
+        before=before,
+        after=after,
+    )
+
+    assert (oracles._replayable_session_state(snapshot) is not None) is expected
+
+
+def test_compact_state_chain_starts_from_initial_bootstrap_snapshot() -> None:
+    imported_state = "0" * 64
+    rendered_state = "1" * 64
+    target = "cmp_target"
+    opened = accepted_event(
+        1,
+        Operation.SCENE_OPEN,
+        arguments={},
+        result={"source_sha256": "f" * 64},
+        before=None,
+        after=None,
+    )
+    snapshot = accepted_event(
+        2,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": imported_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            }
+        },
+        before=None,
+        after=imported_state,
+    )
+    marked = accepted_event(
+        3,
+        Operation.COMPONENT_MARK,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "components": {target: {"display": "shown", "mark": "highlighted"}},
+        },
+        before=imported_state,
+        after=rendered_state,
+    )
+    rendered = accepted_event(
+        4,
+        Operation.RENDER_IMAGE,
+        arguments={},
+        result={"state_sha256": rendered_state},
+        before=rendered_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_MARK,
+            component_role="target",
+            expected="highlighted",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [opened, snapshot, marked, rendered],
+        marked,
+        requirements,
+        {"target": target},
+    )
+
+
+def test_compact_state_replay_does_not_reapply_bootstrap_after_transition() -> None:
+    imported_state = "0" * 64
+    changed_state = "1" * 64
+    initial = accepted_event(
+        1,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": imported_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {},
+            }
+        },
+        before=None,
+        after=imported_state,
+    )
+    changed = accepted_event(
+        2,
+        Operation.COMPONENT_MARK,
+        arguments={},
+        result={"state_sha256": changed_state, "components": {}},
+        before=imported_state,
+        after=changed_state,
+    )
+    late_bootstrap = accepted_event(
+        3,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": changed_state,
+                "camera": {"projection": {"mode": "perspective"}},
+                "illumination": {"preset": "raking_left"},
+                "components": {},
+            }
+        },
+        before=None,
+        after=changed_state,
+    )
+    replay = oracles._CompactStateReplay()
+
+    replay.observe_snapshot(initial)
+    assert replay.apply(changed)
+    replay.observe_snapshot(late_bootstrap)
+
+    assert replay.state["camera"] == {"projection": {"mode": "orthographic"}}
+    assert replay.state["illumination"] == {"preset": "neutral_studio"}
+
+
+def test_compact_state_chain_allows_first_transition_without_before_hash() -> None:
+    camera_state = "1" * 64
+    target = "cmp_target"
+    camera = accepted_event(
+        1,
+        Operation.VIEW_ORBIT,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before=None,
+        after=camera_state,
+    )
+    late_snapshot = accepted_event(
+        2,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": camera_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            }
+        },
+        before=camera_state,
+        after=camera_state,
+    )
+    illumination = accepted_event(
+        3,
+        Operation.ILLUMINATION_SET,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "illumination": {"preset": "neutral_studio"},
+        },
+        before=camera_state,
+        after=camera_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="target",
+            expected="shown",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [camera, late_snapshot, illumination],
+        illumination,
+        requirements,
+        {"target": target},
+    )
+
+
+def test_compact_state_chain_allows_reset_without_cached_snapshot() -> None:
+    changed_state = "9" * 64
+    imported_state = "0" * 64
+    camera_state = "1" * 64
+    rendered_state = "2" * 64
+    reset = accepted_event(
+        1,
+        Operation.SESSION_RESET,
+        arguments={},
+        result={"reset": True, "state_sha256": imported_state},
+        before=changed_state,
+        after=imported_state,
+    )
+    camera = accepted_event(
+        2,
+        Operation.VIEW_SET,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before=imported_state,
+        after=camera_state,
+    )
+    illumination = accepted_event(
+        3,
+        Operation.ILLUMINATION_SET,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "illumination": {"preset": "neutral_studio"},
+        },
+        before=camera_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [reset, camera, illumination], illumination, requirements, {}
+    )
+
+
+def test_compact_state_chain_refreshes_from_snapshot_after_target() -> None:
+    rendered_state = "1" * 64
+    target = "cmp_target"
+    camera = accepted_event(
+        1,
+        Operation.VIEW_ORBIT,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before=None,
+        after=rendered_state,
+    )
+    snapshot = accepted_event(
+        2,
+        Operation.SESSION_SNAPSHOT,
+        arguments={},
+        result={
+            "session": {
+                "state_sha256": rendered_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            }
+        },
+        before=rendered_state,
+        after=rendered_state,
+    )
+    render = accepted_event(
+        3,
+        Operation.RENDER_IMAGE,
+        arguments={},
+        result={"state_sha256": rendered_state},
+        before=rendered_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_DISPLAY,
+            component_role="target",
+            expected="shown",
+        ),
+    ]
+
+    assert oracles._transition_chain_satisfies_state_group(
+        [camera, snapshot, render], camera, requirements, {"target": target}
+    )
+
+
+def test_compact_state_chain_does_not_seed_from_render_manifest() -> None:
+    camera_state = "1" * 64
+    rendered_state = "2" * 64
+    target = "cmp_target"
+    camera = accepted_event(
+        1,
+        Operation.VIEW_ORBIT,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "camera": {"projection": {"mode": "orthographic"}},
+        },
+        before="0" * 64,
+        after=camera_state,
+    )
+    render = accepted_event(
+        2,
+        Operation.RENDER_IMAGE,
+        arguments={},
+        result={
+            "state_sha256": camera_state,
+            "session": {
+                "state_sha256": camera_state,
+                "camera": {"projection": {"mode": "orthographic"}},
+                "illumination": {"preset": "neutral_studio"},
+                "components": {target: {"display": "shown", "mark": "unmarked"}},
+            },
+        },
+        before=camera_state,
+        after=camera_state,
+    )
+    marked = accepted_event(
+        3,
+        Operation.COMPONENT_MARK,
+        arguments={},
+        result={
+            "state_sha256": rendered_state,
+            "components": {target: {"display": "shown", "mark": "highlighted"}},
+        },
+        before=camera_state,
+        after=rendered_state,
+    )
+    requirements = [
+        StateRequirement(
+            predicate=StatePredicate.PROJECTION_MODE,
+            expected="orthographic",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.ILLUMINATION_PRESET,
+            expected="neutral_studio",
+        ),
+        StateRequirement(
+            predicate=StatePredicate.COMPONENT_MARK,
+            component_role="target",
+            expected="highlighted",
+        ),
+    ]
+
+    assert not oracles._transition_chain_satisfies_state_group(
+        [camera, render, marked], marked, requirements, {"target": target}
     )
 
 
@@ -364,16 +1153,26 @@ def break_state_predicate(
     assert isinstance(payload, dict)
     broken = deepcopy(payload)
     if predicate is StatePredicate.PROJECTION_MODE:
+        if "camera" not in broken:
+            return payload
         broken["camera"]["projection"]["mode"] = "invalidated"
     elif predicate is StatePredicate.FOCAL_LENGTH_MM:
+        if "camera" not in broken:
+            return payload
         broken["camera"]["projection"]["focal_length_mm"] = 17.0
     elif predicate is StatePredicate.ILLUMINATION_PRESET:
+        if "illumination" not in broken:
+            return payload
         broken["illumination"]["preset"] = "invalidated"
     elif predicate is StatePredicate.COMPONENT_DISPLAY:
         assert component_id is not None
+        if component_id not in broken.get("components", {}):
+            return payload
         broken["components"][component_id]["display"] = "shown"
     elif predicate is StatePredicate.COMPONENT_MARK:
         assert component_id is not None
+        if component_id not in broken.get("components", {}):
+            return payload
         broken["components"][component_id]["mark"] = "unmarked"
     else:
         raise AssertionError(predicate)
@@ -439,54 +1238,109 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
         ),
         accepted_event(
             5,
-            "view.orbit",
-            arguments={},
-            result=perspective.session.model_dump(mode="json"),
+            "component.display",
+            arguments={"component_ids": [model.component_ids["cover"]], "mode": "hidden"},
+            result={
+                "components": {
+                    model.component_ids["cover"]: {"display": "hidden", "mark": "unmarked"}
+                },
+                "state_sha256": "1" * 64,
+            },
             before=initial_hash,
-            after=perspective.state_sha256,
+            after="1" * 64,
         ),
         accepted_event(
             6,
-            "illumination.set",
-            arguments={},
-            result=raking_left.session.model_dump(mode="json"),
-            before=perspective.state_sha256,
-            after=raking_left.state_sha256,
+            "component.mark",
+            arguments={"component_ids": [target], "mode": "highlighted"},
+            result={
+                "components": {target: {"display": "shown", "mark": "highlighted"}},
+                "state_sha256": "2" * 64,
+            },
+            before="1" * 64,
+            after="2" * 64,
         ),
         accepted_event(
             7,
-            "component.display",
-            arguments={"component_ids": [model.component_ids["arrow"]], "mode": "isolated"},
-            result=raking_left.session.model_dump(mode="json"),
-            before=raking_left.state_sha256,
+            "illumination.set",
+            arguments={},
+            result={
+                "illumination": perspective.session.illumination.model_dump(mode="json"),
+                "state_sha256": "3" * 64,
+            },
+            before="2" * 64,
             after="3" * 64,
         ),
         accepted_event(
             8,
-            "component.mark",
-            arguments={"component_ids": [target], "mode": "highlighted"},
-            result=perspective.session.model_dump(mode="json"),
+            "view.orbit",
+            arguments={},
+            result={
+                "camera": perspective.session.camera.model_dump(mode="json"),
+                "state_sha256": perspective.state_sha256,
+            },
             before="3" * 64,
-            after="4" * 64,
+            after=perspective.state_sha256,
         ),
         accepted_event(
             9,
-            "illumination.set",
+            "view.set",
             arguments={},
-            result=raking_right.session.model_dump(mode="json"),
-            before="4" * 64,
-            after=raking_right.state_sha256,
+            result={
+                "camera": raking_left.session.camera.model_dump(mode="json"),
+                "state_sha256": "4" * 64,
+            },
+            before=perspective.state_sha256,
+            after="4" * 64,
         ),
         accepted_event(
             10,
+            "component.display",
+            arguments={"component_ids": [model.component_ids["arrow"]], "mode": "isolated"},
+            result={
+                "components": {
+                    model.component_ids["arrow"]: {"display": "isolated", "mark": "unmarked"}
+                },
+                "state_sha256": "5" * 64,
+            },
+            before="4" * 64,
+            after="5" * 64,
+        ),
+        accepted_event(
+            11,
             "illumination.set",
             arguments={},
-            result=backlit.session.model_dump(mode="json"),
+            result={
+                "illumination": raking_left.session.illumination.model_dump(mode="json"),
+                "state_sha256": raking_left.state_sha256,
+            },
+            before="5" * 64,
+            after=raking_left.state_sha256,
+        ),
+        accepted_event(
+            12,
+            "illumination.set",
+            arguments={},
+            result={
+                "illumination": raking_right.session.illumination.model_dump(mode="json"),
+                "state_sha256": raking_right.state_sha256,
+            },
+            before=raking_left.state_sha256,
+            after=raking_right.state_sha256,
+        ),
+        accepted_event(
+            13,
+            "illumination.set",
+            arguments={},
+            result={
+                "illumination": backlit.session.illumination.model_dump(mode="json"),
+                "state_sha256": backlit.state_sha256,
+            },
             before=raking_right.state_sha256,
             after=backlit.state_sha256,
         ),
         accepted_event(
-            11,
+            14,
             "render.image",
             arguments={},
             result=perspective.model_dump(mode="json"),
@@ -494,7 +1348,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             after=perspective.state_sha256,
         ),
         accepted_event(
-            12,
+            15,
             "render.image",
             arguments={},
             result=raking_left.model_dump(mode="json"),
@@ -502,7 +1356,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             after=raking_left.state_sha256,
         ),
         accepted_event(
-            13,
+            16,
             "render.image",
             arguments={},
             result=raking_right.model_dump(mode="json"),
@@ -510,7 +1364,7 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             after=raking_right.state_sha256,
         ),
         accepted_event(
-            14,
+            17,
             "render.image",
             arguments={},
             result=backlit.model_dump(mode="json"),
@@ -633,6 +1487,8 @@ def test_private_masks_and_render_state_satisfy_evidence_gate(tmp_path: Path) ->
             else event
             for event in trace
         )
+        if broken_trace == trace:
+            continue
         broken_report = score_episode(
             OracleInputs(
                 spec=episode.spec,

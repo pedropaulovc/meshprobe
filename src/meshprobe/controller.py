@@ -42,12 +42,18 @@ from meshprobe.models import (
 )
 from meshprobe.protocol import (
     Command,
+    ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentInspectCommand,
+    ComponentMarkCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    ViewMoveCommand,
+    ViewOrbitCommand,
+    ViewRotateCommand,
+    ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex
 from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
@@ -336,11 +342,45 @@ class BlenderController:
             result = self.request(operation, **arguments)
         if operation == "session.reset":
             self._accepted_commands.clear()
-            return SessionSnapshot.model_validate(result)
+            snapshot = SessionSnapshot.model_validate(result)
+            return {"reset": True, "state_sha256": snapshot.state_sha256}
         if operation in STATE_OPERATIONS:
             self._accepted_commands.append((operation, arguments))
-            return SessionSnapshot.model_validate(result)
+            snapshot = SessionSnapshot.model_validate(result)
+            return self._state_operation_result(command, snapshot)
         return result
+
+    @staticmethod
+    def _state_operation_result(command: Command, snapshot: SessionSnapshot) -> dict[str, object]:
+        result: dict[str, object] = {"state_sha256": snapshot.state_sha256}
+        if isinstance(
+            command, (ViewSetCommand, ViewOrbitCommand, ViewMoveCommand, ViewRotateCommand)
+        ):
+            result["camera"] = snapshot.camera.model_dump(mode="json")
+            result["camera_diagnostics"] = snapshot.camera_diagnostics.model_dump(mode="json")
+            if not isinstance(command, (ViewMoveCommand, ViewRotateCommand)):
+                return result
+            if snapshot.camera_operation is None:
+                raise BlenderWorkerError(
+                    f"{command.op} response omitted its camera operation receipt"
+                )
+            result["camera_operation"] = snapshot.camera_operation.model_dump(mode="json")
+            return result
+        if isinstance(command, IlluminationSetCommand):
+            result["illumination"] = snapshot.illumination.model_dump(mode="json")
+            return result
+        if isinstance(command, (ComponentDisplayCommand, ComponentMarkCommand)):
+            component_ids = (
+                snapshot.components
+                if isinstance(command, ComponentDisplayCommand) and command.mode.value == "isolated"
+                else command.component_ids
+            )
+            result["components"] = {
+                component_id: snapshot.components[component_id].model_dump(mode="json")
+                for component_id in component_ids
+            }
+            return result
+        raise BlenderWorkerError(f"no compact result contract for state operation: {command.op}")
 
     @property
     def worker_pid(self) -> int | None:

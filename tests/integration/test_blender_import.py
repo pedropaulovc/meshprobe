@@ -22,6 +22,9 @@ from meshprobe.controller import (
 from meshprobe.models import (
     AreaLight,
     Camera,
+    CameraDiagnostics,
+    CameraRotationReceipt,
+    CameraTranslationReceipt,
     ContactSheetManifest,
     ContactSheetOrbit,
     ContactSheetPanelSpec,
@@ -685,6 +688,7 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
                 camera_delta_mm=(-25, 0, 50),
             )
         )
+        snapshot = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
 
     diagnostics = initial.camera_diagnostics
     expected_delta = tuple(
@@ -694,14 +698,21 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     expected_position = tuple(
         initial.camera.pose.position_mm[axis] + expected_delta[axis] for axis in range(3)
     )
-    assert isinstance(moved, SessionSnapshot)
-    assert moved.camera.pose.position_mm == pytest.approx(expected_position)
-    assert moved.camera.pose.orientation_xyzw == initial.camera.pose.orientation_xyzw
-    assert moved.camera.projection == initial.camera.projection
-    assert moved.camera_operation is not None
-    assert moved.camera_operation.requested_world_delta_mm == (0, 0, 100)
-    assert moved.camera_operation.requested_camera_delta_mm == (-25, 0, 50)
-    assert moved.camera_operation.resolved_world_delta_mm == pytest.approx(expected_delta)
+    moved_camera = Camera.model_validate(moved["camera"])
+    move_receipt = CameraTranslationReceipt.model_validate(moved["camera_operation"])
+    assert moved_camera.pose.position_mm == pytest.approx(expected_position)
+    assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
+    assert moved_camera.projection == initial.camera.projection
+    assert snapshot.camera_operation is not None
+    assert move_receipt.requested_world_delta_mm == (0, 0, 100)
+    assert move_receipt.requested_camera_delta_mm == (-25, 0, 50)
+    assert move_receipt.resolved_world_delta_mm == pytest.approx(expected_delta)
+    assert move_receipt.resulting_pose.position_mm == pytest.approx(
+        snapshot.camera_operation.resulting_pose.position_mm
+    )
+    assert snapshot.camera_operation.requested_world_delta_mm == (0, 0, 100)
+    assert snapshot.camera_operation.requested_camera_delta_mm == (-25, 0, 50)
+    assert snapshot.camera_operation.resolved_world_delta_mm == pytest.approx(expected_delta)
 
 
 def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> None:
@@ -759,17 +770,19 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     )
     assert manifest.root_bounds.frame == "world"
     assert all(component.local_bounds.frame == "component" for component in manifest.components)
-    assert isinstance(rotated, SessionSnapshot)
-    assert rotated.camera.pose.position_mm == pytest.approx((4_000, -5_000, 3_000))
-    assert rotated.camera_operation is not None
-    assert rotated.camera_operation.frame == "source"
-    assert rotated.camera_operation.axis_world == pytest.approx((0, 0, 1))
-    assert rotated.camera_operation.requested_visual_degrees == 90
-    assert rotated.camera_operation.applied_camera_orbit_degrees == -90
-    assert rotated.camera_operation.resulting_pose == rotated.camera.pose
-    assert isinstance(source_pose, SessionSnapshot)
-    assert source_pose.camera.pose.frame == "world"
-    assert source_pose.camera.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
+    assert isinstance(rotated, dict)
+    rotated_camera = Camera.model_validate(rotated["camera"])
+    rotation_receipt = CameraRotationReceipt.model_validate(rotated["camera_operation"])
+    assert rotated_camera.pose.position_mm == pytest.approx((4_000, -5_000, 3_000))
+    assert rotation_receipt.frame == "source"
+    assert rotation_receipt.axis_world == pytest.approx((0, 0, 1))
+    assert rotation_receipt.requested_visual_degrees == 90
+    assert rotation_receipt.applied_camera_orbit_degrees == -90
+    assert rotation_receipt.resulting_pose == rotated_camera.pose
+    assert isinstance(source_pose, dict)
+    resolved_source_pose = Camera.model_validate(source_pose["camera"])
+    assert resolved_source_pose.pose.frame == "world"
+    assert resolved_source_pose.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
 
 
 def test_obj_source_frame_matches_default_importer_axis_conversion(tmp_path: Path) -> None:
@@ -1059,7 +1072,10 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     rotated_receipt = manager.execute("review", command)
     rotated_envelope = manager.raw_result(rotated_receipt)
     assert isinstance(rotated_envelope, dict)
-    rotated = SessionSnapshot.model_validate(rotated_envelope["result"])
+    rotated_result = rotated_envelope["result"]
+    assert isinstance(rotated_result, dict)
+    rotated_camera = Camera.model_validate(rotated_result["camera"])
+    rotated_state_sha256 = rotated_result["state_sha256"]
     manager.close("review")
 
     checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
@@ -1078,12 +1094,12 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     assert isinstance(recovered_envelope, dict)
     recovered = SessionSnapshot.model_validate(recovered_envelope["result"]["session"])
 
-    assert recovered.camera.pose.position_mm == pytest.approx(rotated.camera.pose.position_mm)
+    assert recovered.camera.pose.position_mm == pytest.approx(rotated_camera.pose.position_mm)
     assert recovered.camera.pose.orientation_xyzw == pytest.approx(
-        rotated.camera.pose.orientation_xyzw
+        rotated_camera.pose.orientation_xyzw
     )
-    assert recovered.camera.projection == rotated.camera.projection
-    assert recovered.state_sha256 == rotated.state_sha256
+    assert recovered.camera.projection == rotated_camera.projection
+    assert recovered.state_sha256 == rotated_state_sha256
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     assert checkpoint["schema_version"] == 2
     assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
@@ -1098,10 +1114,11 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     )
     reapplied_envelope = recovered_manager.raw_result(reapplied_receipt)
     assert isinstance(reapplied_envelope, dict)
-    reapplied = SessionSnapshot.model_validate(reapplied_envelope["result"])
+    reapplied = reapplied_envelope["result"]
+    assert isinstance(reapplied, dict)
 
-    assert reapplied.camera == rotated.camera
-    assert reapplied.state_sha256 == rotated.state_sha256
+    assert Camera.model_validate(reapplied["camera"]) == rotated_camera
+    assert reapplied["state_sha256"] == rotated_state_sha256
     recovered_manager.shutdown()
 
 
@@ -1134,7 +1151,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                 )
             )
             if rotate_view:
-                snapshot = controller.execute(
+                controller.execute(
                     ViewRotateCommand(
                         request_id="visual-positive-source-y-145",
                         op="view.rotate",
@@ -1145,7 +1162,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                     )
                 )
             else:
-                snapshot = controller.execute(
+                controller.execute(
                     SessionResetCommand(request_id="positive-control", op="session.reset")
                 )
                 controller.execute(
@@ -1156,7 +1173,9 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                         mode=MarkMode.HIGHLIGHTED,
                     )
                 )
-            assert isinstance(snapshot, SessionSnapshot)
+            snapshot = SessionSnapshot.model_validate(
+                controller.request("session.snapshot")["session"]
+            )
             rendered = controller.render_image(
                 RenderImageCommand(
                     request_id="render-control",
@@ -1454,7 +1473,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 ),
             )
         )
-        assert isinstance(orthographic, SessionSnapshot)
+        assert isinstance(orthographic, dict)
+        assert orthographic["camera"]["projection"]["mode"] == "orthographic"
         runtime = controller.request("session.runtime")
         assert runtime["camera"]["type"] == "ORTHO"
         assert runtime["camera"]["ortho_scale_mm"] == pytest.approx(2_500)
@@ -1467,7 +1487,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 mode=DisplayMode.HIDDEN,
             )
         )
-        assert isinstance(hidden, SessionSnapshot)
+        assert isinstance(hidden, dict)
+        assert hidden["components"][target]["display"] == "hidden"
         assert controller.request("session.runtime")["components"][target]["hide_render"]
 
         ghosted = controller.execute(
@@ -1478,8 +1499,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 mode=DisplayMode.GHOSTED,
             )
         )
-        assert isinstance(ghosted, SessionSnapshot)
-        assert ghosted.components[target].display is DisplayMode.GHOSTED
+        assert isinstance(ghosted, dict)
+        assert ghosted["components"][target]["display"] == "ghosted"
         ghosted_runtime = controller.request("session.runtime")["components"]
         assert ghosted_runtime[target]["materials"] != ["MeshProbeGhost"]
         assert (
@@ -1494,8 +1515,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 mode=MarkMode.HIGHLIGHTED,
             )
         )
-        assert isinstance(marked, SessionSnapshot)
-        assert marked.components[target].mark is MarkMode.HIGHLIGHTED
+        assert isinstance(marked, dict)
+        assert marked["components"][target]["mark"] == "highlighted"
         marked_runtime = controller.request("session.runtime")["components"][target]
         assert marked_runtime["materials"] == ["MeshProbeMark-highlighted"]
 
@@ -1509,7 +1530,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         custom_mark_runtime = controller.request("session.runtime")["components"][target]
-        assert custom_mark.components[target].mark_color == "#ff00ff"
+        assert custom_mark["components"][target]["mark_color"] == "#ff00ff"
         assert custom_mark_runtime["materials"] == ["MeshProbeMark-highlighted-ff00ff"]
         assert custom_mark_runtime["material_colors"][0] == pytest.approx([1, 0, 1, 1])
         assert manifest.components[-1].materials.names != ("MeshProbeMark-highlighted-ff00ff",)
@@ -1541,7 +1562,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 mode=MarkMode.LABELED,
             )
         )
-        assert isinstance(labeled, SessionSnapshot)
+        assert isinstance(labeled, dict)
+        assert labeled["components"][target]["mark"] == "labeled"
         labeled_runtime = controller.request("session.runtime")["components"][target]
         assert labeled_runtime["materials"] == ["MeshProbeMark-labeled"]
         assert labeled_runtime["label"].startswith("MeshProbeLabel-")
@@ -1592,7 +1614,8 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 illumination=PresetIllumination(preset=IlluminationPreset.RAKING_LEFT),
             )
         )
-        assert isinstance(lit, SessionSnapshot)
+        assert isinstance(lit, dict)
+        assert lit["illumination"]["preset"] == "raking_left"
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-rake"]
 
         white_preset = controller.execute(
@@ -1606,9 +1629,9 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         white_preset_runtime = controller.request("session.runtime")
-        assert isinstance(white_preset.illumination, PresetIllumination)
-        assert white_preset.illumination.background_rgb == (1, 1, 1)
-        assert white_preset.illumination.background_strength == 1
+        white_illumination = PresetIllumination.model_validate(white_preset["illumination"])
+        assert white_illumination.background_rgb == (1, 1, 1)
+        assert white_illumination.background_strength == 1
         assert white_preset_runtime["lights"] == [
             "MeshProbe-fill",
             "MeshProbe-key",
@@ -1639,11 +1662,11 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 ),
             )
         )
-        assert isinstance(custom, SessionSnapshot)
+        assert isinstance(custom, dict)
+        custom_illumination = CustomIllumination.model_validate(custom["illumination"])
         custom_runtime = controller.request("session.runtime")
-        assert isinstance(custom.illumination, CustomIllumination)
-        assert custom.illumination.background_strength == pytest.approx(0.1)
-        assert custom.illumination.ambient_rgb == pytest.approx((0.01, 0.02, 0.03))
+        assert custom_illumination.background_strength == pytest.approx(0.1)
+        assert custom_illumination.ambient_rgb == pytest.approx((0.01, 0.02, 0.03))
         assert custom_runtime["lights"] == ["MeshProbe-inspection"]
         assert custom_runtime["world"]["background_rgb"] == pytest.approx([0.01, 0.02, 0.03])
         assert custom_runtime["world"]["background_strength"] == pytest.approx(0.1)
@@ -1682,14 +1705,13 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         runtime_world = controller.request("session.runtime")["world"]
-        assert isinstance(separated.illumination, CustomIllumination)
-        assert separated.illumination.background_rgb == (1, 1, 1)
-        assert separated.illumination.ambient_rgb == (0.1, 0.2, 0.3)
+        separated_illumination = CustomIllumination.model_validate(separated["illumination"])
+        assert separated_illumination.background_rgb == (1, 1, 1)
+        assert separated_illumination.ambient_rgb == (0.1, 0.2, 0.3)
         assert runtime_world["background_rgb"] == pytest.approx([1, 1, 1])
         assert runtime_world["background_strength"] == pytest.approx(1)
         assert runtime_world["ambient_rgb"] == pytest.approx([0.1, 0.2, 0.3])
         assert runtime_world["ambient_strength"] == pytest.approx(0.15)
-
         environment_lit = controller.execute(
             IlluminationSetCommand(
                 request_id="environment-light",
@@ -1706,13 +1728,12 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 ),
             )
         )
-        assert isinstance(environment_lit, SessionSnapshot)
-        assert isinstance(environment_lit.illumination, CustomIllumination)
-        assert (
-            environment_lit.illumination.visible_background_mode
-            is VisibleBackgroundMode.ENVIRONMENT
+        assert isinstance(environment_lit, dict)
+        environment_illumination = CustomIllumination.model_validate(
+            environment_lit["illumination"]
         )
-        cached_environment = environment_lit.illumination.environment_map
+        assert environment_illumination.visible_background_mode is VisibleBackgroundMode.ENVIRONMENT
+        cached_environment = environment_illumination.environment_map
         assert cached_environment is not None
         assert cached_environment.path != str(environment_path)
         environment_runtime = controller.request("session.runtime")["environment_map"]
@@ -1722,7 +1743,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert environment_world["visible_background_mode"] == "environment"
         assert environment_world["camera_background_source"] == "MeshProbeEnvironmentLighting"
 
-        raw_environment_spec = environment_lit.illumination.model_dump(mode="json")
+        raw_environment_spec = environment_illumination.model_dump(mode="json")
         raw_environment_spec.pop("visible_background_mode")
         raw_environment = SessionSnapshot.model_validate(
             controller.request("illumination.set", illumination=raw_environment_spec)
@@ -1860,12 +1881,12 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                 },
             )
         assert hashlib.sha256(environment_path.read_bytes()).hexdigest() == environment_hash
-        original_path_spec = environment_lit.illumination.model_dump(mode="json")
+        original_path_spec = environment_illumination.model_dump(mode="json")
         original_path_spec["environment_map"]["path"] = str(environment_path)
         same_content_state = SessionSnapshot.model_validate(
             controller.request("illumination.set", illumination=original_path_spec)
         )
-        assert same_content_state.state_sha256 == environment_lit.state_sha256
+        assert same_content_state.state_sha256 == environment_lit["state_sha256"]
 
         before_invalid_mode = controller.request("session.snapshot")["session"]
         with pytest.raises(BlenderWorkerError, match="unknown display mode"):
@@ -1890,7 +1911,11 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert controller.request("session.runtime")["render"]["use_freestyle"] is True
 
         reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
-        assert reset == initial
+        assert reset == {"reset": True, "state_sha256": initial.state_sha256}
+        assert (
+            SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+            == initial
+        )
         reset_runtime = controller.request("session.runtime")
         assert reset_runtime["render"]["use_freestyle"] is False
         assert (
@@ -1918,9 +1943,10 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
                 aspect_ratio=16 / 9,
             )
         )
-        assert isinstance(orbit, SessionSnapshot)
-        assert orbit.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
-        diagnostics = orbit.camera_diagnostics
+        assert isinstance(orbit, dict)
+        orbit_camera_state = Camera.model_validate(orbit["camera"])
+        assert orbit_camera_state.pose.position_mm == pytest.approx((2_000, 0, 0))
+        diagnostics = CameraDiagnostics.model_validate(orbit["camera_diagnostics"])
         assert diagnostics.aspect_ratio == pytest.approx(16 / 9)
         assert diagnostics.forward == pytest.approx((-1, 0, 0))
         assert diagnostics.target_depth_mm == pytest.approx(2_000)
@@ -1957,11 +1983,15 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
             )
         )
         runtime = controller.request("session.runtime")
+        recovered_state = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        )
 
-    assert isinstance(recovered, SessionSnapshot)
-    assert recovered.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
-    assert recovered.components[target].display is DisplayMode.HIDDEN
-    assert recovered.components[target].mark is MarkMode.SELECTED
+    assert isinstance(recovered, dict)
+    assert recovered["components"][target]["mark"] == "selected"
+    assert recovered_state.camera.pose.position_mm == pytest.approx((2_000, 0, 0))
+    assert recovered_state.components[target].display is DisplayMode.HIDDEN
+    assert recovered_state.components[target].mark is MarkMode.SELECTED
     assert runtime["components"][target]["hide_render"]
 
 
