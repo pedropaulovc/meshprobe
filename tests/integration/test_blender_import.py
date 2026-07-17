@@ -995,6 +995,30 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         assert isinstance(lit, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-rake"]
 
+        white_preset = controller.execute(
+            IlluminationSetCommand(
+                request_id="white-preset",
+                op="illumination.set",
+                illumination=PresetIllumination(
+                    preset=IlluminationPreset.NEUTRAL_STUDIO,
+                    background_rgb=(1, 1, 1),
+                ),
+            )
+        )
+        white_preset_runtime = controller.request("session.runtime")
+        assert isinstance(white_preset.illumination, PresetIllumination)
+        assert white_preset.illumination.background_rgb == (1, 1, 1)
+        assert white_preset.illumination.background_strength == 1
+        assert white_preset_runtime["lights"] == [
+            "MeshProbe-fill",
+            "MeshProbe-key",
+            "MeshProbe-rim",
+        ]
+        assert white_preset_runtime["world"]["background_rgb"] == pytest.approx([1, 1, 1])
+        assert white_preset_runtime["world"]["background_strength"] == pytest.approx(1)
+        assert white_preset_runtime["world"]["ambient_rgb"] == pytest.approx([0.03, 0.03, 0.03])
+        assert white_preset_runtime["world"]["ambient_strength"] == pytest.approx(0.15)
+
         custom = controller.execute(
             IlluminationSetCommand(
                 request_id="custom-light",
@@ -1017,6 +1041,27 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
         )
         assert isinstance(custom, SessionSnapshot)
         assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
+
+        separated = controller.execute(
+            IlluminationSetCommand(
+                request_id="separated-background",
+                op="illumination.set",
+                illumination=CustomIllumination(
+                    background_rgb=(1, 1, 1),
+                    background_strength=1,
+                    ambient_rgb=(0.1, 0.2, 0.3),
+                    ambient_strength=0.15,
+                ),
+            )
+        )
+        runtime_world = controller.request("session.runtime")["world"]
+        assert isinstance(separated.illumination, CustomIllumination)
+        assert separated.illumination.background_rgb == (1, 1, 1)
+        assert separated.illumination.ambient_rgb == (0.1, 0.2, 0.3)
+        assert runtime_world["background_rgb"] == pytest.approx([1, 1, 1])
+        assert runtime_world["background_strength"] == pytest.approx(1)
+        assert runtime_world["ambient_rgb"] == pytest.approx([0.1, 0.2, 0.3])
+        assert runtime_world["ambient_strength"] == pytest.approx(0.15)
 
         environment_lit = controller.execute(
             IlluminationSetCommand(

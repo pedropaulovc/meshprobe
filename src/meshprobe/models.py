@@ -299,6 +299,10 @@ class IlluminationPreset(StrEnum):
 
 class PresetIllumination(ContractModel):
     preset: IlluminationPreset
+    background_rgb: (
+        tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] | None
+    ) = None
+    background_strength: NonNegativeFiniteFloat | None = None
 
 
 class EnvironmentMap(ContractModel):
@@ -312,6 +316,12 @@ class EnvironmentMap(ContractModel):
 class CustomIllumination(ContractModel):
     preset: Literal["custom"] = "custom"
     background_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat]
+    background_strength: NonNegativeFiniteFloat = 1.0
+    ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
+        1.0,
+        1.0,
+        1.0,
+    )
     ambient_strength: NonNegativeFiniteFloat
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
@@ -326,14 +336,22 @@ class CustomIllumination(ContractModel):
 
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
-        background_contributes = self.ambient_strength > 0 and any(self.background_rgb)
+        background_contributes = self.background_strength > 0 and any(self.background_rgb)
+        ambient_contributes = self.ambient_strength > 0 and any(self.ambient_rgb)
         environment_contributes = self.environment_map is not None
         light_contributes = any(
             light.color_temperature_k is not None
             or (light.linear_rgb is not None and any(light.linear_rgb))
             for light in self.lights
         )
-        if not background_contributes and not light_contributes and not environment_contributes:
+        if not any(
+            (
+                background_contributes,
+                ambient_contributes,
+                light_contributes,
+                environment_contributes,
+            )
+        ):
             raise ValueError("custom illumination must have non-zero light output")
         return self
 

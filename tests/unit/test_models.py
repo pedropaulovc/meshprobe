@@ -179,10 +179,30 @@ def test_custom_illumination_accepts_effective_background() -> None:
     )
     illumination = CustomIllumination(
         background_rgb=(0.1, 0, 0),
-        ambient_strength=0.5,
+        background_strength=0.5,
+        ambient_strength=0,
         lights=(black_light,),
     )
-    assert illumination.ambient_strength == 0.5
+    assert illumination.background_strength == 0.5
+
+
+def test_custom_illumination_records_background_and_ambient_separately() -> None:
+    illumination = CustomIllumination(
+        background_rgb=(1, 1, 1),
+        background_strength=1,
+        ambient_rgb=(0.1, 0.2, 0.3),
+        ambient_strength=0.15,
+    )
+
+    assert illumination.model_dump(mode="json") == {
+        "preset": "custom",
+        "background_rgb": [1.0, 1.0, 1.0],
+        "background_strength": 1.0,
+        "ambient_rgb": [0.1, 0.2, 0.3],
+        "ambient_strength": 0.15,
+        "lights": [],
+        "environment_map": None,
+    }
 
 
 def test_custom_illumination_accepts_content_addressed_environment_only() -> None:
