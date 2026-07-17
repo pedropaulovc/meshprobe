@@ -60,6 +60,7 @@ COMPONENT_STATES: dict[str, dict[str, str]] = {}
 IMPORTED_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
+CURRENT_CAMERA_OPERATION: dict[str, Any] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
@@ -463,6 +464,8 @@ def apply_camera(
 
 
 def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
+    global CURRENT_CAMERA_OPERATION
+    CURRENT_CAMERA_OPERATION = None
     target = Vector(value / MILLIMETERS_PER_METER for value in command["target_mm"])
     azimuth = math.radians(command["azimuth_degrees"])
     elevation = math.radians(command["elevation_degrees"])
@@ -494,6 +497,40 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         command.get("focus_component_ids", ()),
         command.get("aspect_ratio", 1.0),
         command["target_mm"],
+    )
+
+
+def move_camera(command: dict[str, Any]) -> dict[str, Any]:
+    if CURRENT_CAMERA is None:
+        raise ValueError("session camera is not initialized")
+    previous_pose = deepcopy(CURRENT_CAMERA["pose"])
+    x, y, z, w = previous_pose["orientation_xyzw"]
+    orientation = Quaternion((w, x, y, z))
+    world_delta = Vector(command["world_delta_mm"])
+    right, up, forward = command["camera_delta_mm"]
+    world_delta += orientation @ Vector((right, up, -forward))
+    position = Vector(previous_pose["position_mm"]) + world_delta
+    resulting_pose = {
+        **previous_pose,
+        "position_mm": list(position),
+    }
+    camera = {
+        "pose": resulting_pose,
+        "projection": CURRENT_CAMERA["projection"],
+    }
+    global CURRENT_CAMERA_OPERATION
+    CURRENT_CAMERA_OPERATION = {
+        "operation": "move",
+        "requested_world_delta_mm": command["world_delta_mm"],
+        "requested_camera_delta_mm": command["camera_delta_mm"],
+        "resolved_world_delta_mm": list(world_delta),
+        "previous_pose": previous_pose,
+        "resulting_pose": resulting_pose,
+    }
+    return apply_camera(
+        camera,
+        command.get("focus_component_ids", ()),
+        command.get("aspect_ratio", 1.0),
     )
 
 
@@ -1078,12 +1115,15 @@ def session_snapshot() -> dict[str, Any]:
         **deepcopy(state),
         "camera_diagnostics": deepcopy(CURRENT_CAMERA_DIAGNOSTICS),
         "state_sha256": hashlib.sha256(canonical).hexdigest(),
+        "camera_operation": deepcopy(CURRENT_CAMERA_OPERATION),
     }
 
 
 def reset_session() -> dict[str, Any]:
     if IMPORTED_CAMERA is None or IMPORTED_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
+    global CURRENT_CAMERA_OPERATION
+    CURRENT_CAMERA_OPERATION = None
     for component_id, obj in COMPONENT_OBJECTS.items():
         restore_mesh(component_id)
         clear_component_label(component_id)
@@ -1672,7 +1712,7 @@ def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
 
 def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
-    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA
+    global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_OPERATION
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
     global OVERRIDE_MATERIALS, EMISSION_MATERIALS
 
@@ -1703,6 +1743,7 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
     }
     IMPORTED_CAMERA = deepcopy(manifest["imported_camera"])
     CURRENT_CAMERA = deepcopy(IMPORTED_CAMERA)
+    CURRENT_CAMERA_OPERATION = None
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
     MARK_OBJECTS = {}
@@ -2051,6 +2092,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
 def clear_session_state() -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
+    global CURRENT_CAMERA_OPERATION
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
     MANIFEST = None
     COMPONENT_OBJECTS = {}
@@ -2060,6 +2102,7 @@ def clear_session_state() -> None:
     IMPORTED_CAMERA = None
     CURRENT_CAMERA = None
     CURRENT_CAMERA_DIAGNOSTICS = None
+    CURRENT_CAMERA_OPERATION = None
     IMPORTED_ILLUMINATION = None
     CURRENT_ILLUMINATION = None
     MARK_OBJECTS = {}
@@ -2073,6 +2116,8 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
         return {"scene": require_session(), "session": session_snapshot()}
     if operation == "view.set":
         require_session()
+        global CURRENT_CAMERA_OPERATION
+        CURRENT_CAMERA_OPERATION = None
         return apply_camera(
             command["camera"],
             command.get("focus_component_ids", ()),
@@ -2081,6 +2126,9 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "view.orbit":
         require_session()
         return orbit_camera(command)
+    if operation == "view.move":
+        require_session()
+        return move_camera(command)
     if operation == "illumination.set":
         require_session()
         return apply_illumination(command["illumination"])

@@ -39,6 +39,7 @@ STATE_OPERATIONS = frozenset(
     {
         "view.set",
         "view.orbit",
+        "view.move",
         "illumination.set",
         "component.display",
         "component.mark",

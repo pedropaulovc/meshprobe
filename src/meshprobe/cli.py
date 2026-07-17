@@ -53,6 +53,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    ViewMoveCommand,
     ViewOrbitCommand,
     ViewSetCommand,
     command_json_schema,
@@ -740,6 +741,51 @@ def view_orbit(
             roll_degrees=roll,
             distance_mm=distance,
             projection=projection,
+            focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
+            aspect_ratio=aspect_ratio,
+        ),
+    )
+
+
+@app.command("view-move")
+def view_move(
+    ctx: typer.Context,
+    world_x: Annotated[
+        str | None, typer.Option("--world-x", help="World X delta (mm, cm, or m).")
+    ] = None,
+    world_y: Annotated[
+        str | None, typer.Option("--world-y", help="World Y delta (mm, cm, or m).")
+    ] = None,
+    world_z: Annotated[
+        str | None, typer.Option("--world-z", help="World Z delta (mm, cm, or m).")
+    ] = None,
+    right: Annotated[
+        str | None, typer.Option("--right", help="Camera-right delta (mm, cm, or m).")
+    ] = None,
+    up: Annotated[str | None, typer.Option("--up", help="Camera-up delta (mm, cm, or m).")] = None,
+    forward: Annotated[
+        str | None, typer.Option("--forward", help="Camera-forward delta (mm, cm, or m).")
+    ] = None,
+    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+) -> None:
+    """Move the current camera by world- and camera-frame deltas."""
+
+    _execute(
+        ctx,
+        ViewMoveCommand(
+            request_id=_request_id("view-move"),
+            op="view.move",
+            world_delta_mm=(
+                _distance_mm(world_x),
+                _distance_mm(world_y),
+                _distance_mm(world_z),
+            ),
+            camera_delta_mm=(
+                _distance_mm(right),
+                _distance_mm(up),
+                _distance_mm(forward),
+            ),
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),

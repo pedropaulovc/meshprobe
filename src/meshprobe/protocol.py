@@ -65,6 +65,20 @@ class ViewOrbitCommand(CommandModel):
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
+class ViewMoveCommand(CommandModel):
+    op: Literal["view.move"]
+    world_delta_mm: Vec3 = (0.0, 0.0, 0.0)
+    camera_delta_mm: Vec3 = (0.0, 0.0, 0.0)
+    focus_component_ids: tuple[str, ...] = ()
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+
+    @model_validator(mode="after")
+    def require_movement(self) -> Self:
+        if not any((*self.world_delta_mm, *self.camera_delta_mm)):
+            raise ValueError("view.move requires at least one non-zero delta")
+        return self
+
+
 class IlluminationSetCommand(CommandModel):
     op: Literal["illumination.set"]
     illumination: Illumination
@@ -135,6 +149,7 @@ type Command = Annotated[
     | ComponentInspectCommand
     | ViewSetCommand
     | ViewOrbitCommand
+    | ViewMoveCommand
     | IlluminationSetCommand
     | ComponentDisplayCommand
     | ComponentMarkCommand

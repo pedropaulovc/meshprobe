@@ -214,6 +214,15 @@ class CameraDiagnostics(ContractModel):
     projected_bounds: dict[Identifier, ProjectedComponentBounds]
 
 
+class CameraTranslationReceipt(ContractModel):
+    operation: Literal["move"] = "move"
+    requested_world_delta_mm: Vec3
+    requested_camera_delta_mm: Vec3
+    resolved_world_delta_mm: Vec3
+    previous_pose: Pose
+    resulting_pose: Pose
+
+
 class LightType(StrEnum):
     AREA = "area"
     POINT = "point"
@@ -371,6 +380,7 @@ class SessionSnapshot(ContractModel):
     illumination: Illumination
     components: dict[Identifier, ComponentVisualState]
     state_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    camera_operation: CameraTranslationReceipt | None = None
 
 
 class CapabilityWarning(ContractModel):
