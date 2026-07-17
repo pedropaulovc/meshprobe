@@ -870,7 +870,7 @@ def test_persistent_worker_imports_glb_without_source_changes(tmp_path: Path) ->
     before_stat = source.stat()
 
     with BlenderController(
-        timeout_seconds=30,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
@@ -915,7 +915,7 @@ def test_worker_rejects_unsupported_format(tmp_path: Path) -> None:
     source = tmp_path / "fixture.fbx"
     source.write_bytes(b"not an fbx")
     with (
-        BlenderController(timeout_seconds=30) as controller,
+        BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller,
         pytest.raises(BlenderWorkerError, match="unsupported source format"),
     ):
         controller.open_scene(source)
@@ -923,7 +923,7 @@ def test_worker_rejects_unsupported_format(tmp_path: Path) -> None:
 
 def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         result = controller.request("scene.open", source_path=str(source))
 
     manifest = SceneManifest.model_validate(result)
@@ -936,7 +936,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
     source = build_glb(tmp_path)
     enabled_path = tmp_path / "depth-of-field-enabled.png"
     disabled_path = tmp_path / "depth-of-field-disabled.png"
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         projection = manifest.imported_camera.projection
         assert isinstance(projection, PerspectiveProjection)
@@ -1009,7 +1009,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
 
 def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         moved = controller.execute(
@@ -1049,7 +1049,7 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
 
 def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         controller.open_scene(source)
         before = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
@@ -1069,7 +1069,7 @@ def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> Non
 
 def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         rotated = controller.execute(
             ViewRotateCommand(
@@ -1119,7 +1119,7 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
 
 def test_obj_source_frame_matches_default_importer_axis_conversion(tmp_path: Path) -> None:
     source = build_obj_axes(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         rotated = controller.request(
             "view.rotate",
@@ -1140,7 +1140,7 @@ def test_obj_source_frame_matches_default_importer_axis_conversion(tmp_path: Pat
 
 def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1178,7 +1178,7 @@ def test_rejected_raw_rotation_preserves_camera_state(tmp_path: Path) -> None:
 
 def test_rejected_raw_view_set_preserves_camera_operation(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1209,7 +1209,7 @@ def test_rejected_raw_view_set_preserves_camera_operation(tmp_path: Path) -> Non
 
 def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1254,7 +1254,7 @@ def test_rejected_raw_rotation_contract_preserves_camera_state(
     error: str,
 ) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1284,7 +1284,7 @@ def test_rejected_raw_rotation_contract_preserves_camera_state(
 
 def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1326,7 +1326,7 @@ def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> 
 
 def test_rejected_rotation_depth_of_field_preserves_camera_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = tuple(
             (minimum + maximum) / 2
@@ -1371,7 +1371,7 @@ def test_rejected_rotation_depth_of_field_preserves_camera_state(tmp_path: Path)
 
 def test_raw_world_camera_pose_has_one_canonical_hash(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         implicit_camera = manifest.imported_camera.model_dump(mode="json")
         implicit_camera["pose"].pop("frame")
@@ -1399,7 +1399,9 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
         degrees=90,
         frame="source",
     )
-    manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    manager = SessionManager(
+        root, blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
+    )
     manager.open("review", source)
     rotated_receipt = manager.execute("review", command)
     rotated_envelope = manager.raw_result(rotated_receipt)
@@ -1417,7 +1419,9 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     legacy_checkpoint["accepted_commands"][0]["degrees"] = -command.degrees
     checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
 
-    recovered_manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    recovered_manager = SessionManager(
+        root, blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
+    )
     recovered_receipt = recovered_manager.execute(
         "review",
         SessionSnapshotCommand(request_id="recovered", op="session.snapshot"),
@@ -1539,7 +1543,7 @@ def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) ->
     before = snapshot_source(source)
     assert len(before.assets) >= 2
 
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     assert manifest.source_format == "gltf"
@@ -1551,7 +1555,7 @@ def test_import_reports_animation_and_procedural_extension_limits(tmp_path: Path
     source = build_unverified_capabilities_gltf(tmp_path)
 
     with BlenderController(
-        timeout_seconds=30,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
@@ -1568,7 +1572,7 @@ def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
     tmp_path: Path,
 ) -> None:
     source = build_duplicate_name_gltf(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     matches = ComponentIndex(manifest).find(
@@ -1584,7 +1588,7 @@ def test_import_preserves_duplicate_source_names_and_reports_flattened_groups(
 
 def test_controller_restarts_after_worker_crash(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         expected = controller.open_scene(source)
         assert controller._process is not None
         controller._process.kill()
@@ -1726,7 +1730,7 @@ def test_cli_recovers_killed_session_and_preserves_source(tmp_path: Path) -> Non
 @pytest.mark.parametrize("source_format", ["obj", "stl"])
 def test_worker_imports_flat_mesh_formats(tmp_path: Path, source_format: str) -> None:
     source = build_flat_mesh(tmp_path, source_format)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     assert manifest.source_format == source_format
@@ -1738,7 +1742,7 @@ def test_worker_imports_flat_mesh_formats(tmp_path: Path, source_format: str) ->
 
 def test_generated_camera_far_clip_scales_with_large_scenes(tmp_path: Path) -> None:
     source = build_flat_mesh(tmp_path, "obj", cube_size=1_000.0)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     scene_span = max(
@@ -1763,7 +1767,7 @@ def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
 
 def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:
     source = build_zero_light_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     assert manifest.imported_illumination.preset == "neutral_studio"
@@ -1772,7 +1776,7 @@ def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:
 
 def test_component_paths_escape_separator_characters(tmp_path: Path) -> None:
     source = build_path_collision_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
 
     assert {component.path for component in manifest.components} == {"a%2Fb", "a/b"}
@@ -1783,7 +1787,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
     environment_path = build_environment_exr(tmp_path)
     environment_hash = hashlib.sha256(environment_path.read_bytes()).hexdigest()
     with BlenderController(
-        timeout_seconds=30,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
@@ -2258,7 +2262,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
 
 def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         camera_focus = manifest.components[0].id
@@ -2329,7 +2333,7 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
 
 def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         before = controller.request("session.runtime")
@@ -2345,7 +2349,7 @@ def test_worker_rejects_invalid_mark_without_mutation_and_still_renders(
 ) -> None:
     source = build_glb(tmp_path)
     output = tmp_path / "after-invalid-mark.png"
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         controller.open_scene(source)
         before = controller.request("session.snapshot")["session"]
         before_runtime = controller.request("session.runtime")
@@ -2388,7 +2392,7 @@ def test_failed_open_clears_previous_worker_session(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     corrupt = tmp_path / "corrupt.glb"
     corrupt.write_bytes(b"not a glb")
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         controller.open_scene(source)
         with pytest.raises(BlenderWorkerError):
             controller.open_scene(corrupt)
@@ -2699,7 +2703,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
     source = build_glb(tmp_path)
     output = tmp_path / "contact-sheet.png"
     edged_output = tmp_path / "shaded-edges.png"
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = manifest.components[-1].id
         initial = controller.request("session.snapshot")["session"]
@@ -2862,7 +2866,7 @@ def test_occlusion_query_uses_current_camera_and_leaves_no_artifact(tmp_path: Pa
 def test_occlusion_query_uses_recorded_aspect_for_off_frame_filtering(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(
-        timeout_seconds=30, artifact_cache_root=tmp_path / "cache"
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS, artifact_cache_root=tmp_path / "cache"
     ) as controller:
         manifest = controller.open_scene(source)
         target = next(
@@ -2914,7 +2918,7 @@ def test_occlusion_query_rejects_focus_outside_camera_clip_range(
     projection: PerspectiveProjection,
 ) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component for component in manifest.components if component.display_name == "target"
@@ -2949,7 +2953,7 @@ def test_occlusion_query_rejects_focus_outside_camera_clip_range(
 
 def test_occlusion_query_ignores_blockers_before_near_clip(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component for component in manifest.components if component.display_name == "target"
@@ -3013,7 +3017,7 @@ def test_occlusion_query_excludes_zero_distance_near_plane_samples(
     projection: PerspectiveProjection | OrthographicProjection,
 ) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component for component in manifest.components if component.display_name == "target"
@@ -3067,7 +3071,7 @@ def test_occlusion_query_excludes_focus_on_far_clip_plane(
     projection: PerspectiveProjection | OrthographicProjection,
 ) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")
@@ -3098,7 +3102,7 @@ def test_occlusion_query_excludes_focus_on_far_clip_plane(
 
 def test_occlusion_query_samples_focus_surface_crossing_frustum(tmp_path: Path) -> None:
     source = build_frustum_crossing_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component
@@ -3129,7 +3133,7 @@ def test_occlusion_query_samples_focus_surface_crossing_frustum(tmp_path: Path) 
 
 def test_occlusion_query_does_not_sample_hidden_focus(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component for component in manifest.components if component.display_name == "target"
@@ -3153,7 +3157,7 @@ def test_occlusion_surface_scan_is_budgeted_and_ignores_in_frame_object_origin(
     tmp_path: Path,
 ) -> None:
     source = build_dense_off_frame_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         target = next(
             component
@@ -3177,7 +3181,7 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
     source = build_glb(tmp_path)
     output = tmp_path / "custom-contact-sheet.png"
     with BlenderController(
-        timeout_seconds=30,
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         manifest = controller.open_scene(source)
@@ -3324,7 +3328,7 @@ def test_custom_contact_sheet_varies_projection_lighting_and_experiment(
 
 def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         visibility_before = controller.request(
@@ -3354,7 +3358,7 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
 
 def test_worker_traces_through_ghosted_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="ghosted")
@@ -3368,7 +3372,7 @@ def test_worker_traces_through_ghosted_occluders(tmp_path: Path) -> None:
 
 def test_worker_traces_through_alpha_blended_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3381,7 +3385,7 @@ def test_worker_traces_through_alpha_blended_occluders(tmp_path: Path) -> None:
 
 def test_worker_counts_alpha_blended_focus_hits(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3394,7 +3398,7 @@ def test_worker_counts_alpha_blended_focus_hits(tmp_path: Path) -> None:
 
 def test_worker_excludes_fully_transparent_focus_until_marked(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         blocker = by_name["blocker"]
@@ -3414,7 +3418,7 @@ def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
         blocker_alpha=0.2,
         mixed_blocker_materials=True,
     )
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3426,7 +3430,7 @@ def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
 
 def test_worker_treats_linked_alpha_as_opaque_without_a_hit_sample(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, linked_blocker_alpha=True)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3442,7 +3446,7 @@ def test_worker_respects_opaque_gltf_alpha_mode(tmp_path: Path) -> None:
         blocker_alpha=0.2,
         blocker_alpha_mode="OPAQUE",
     )
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3471,7 +3475,7 @@ def test_worker_respects_gltf_alpha_mask_cutoff(
         blocker_alpha_mode="MASK",
         blocker_alpha_cutoff=0.5,
     )
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3487,7 +3491,7 @@ def test_worker_respects_gltf_alpha_mask_cutoff(
 
 def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     source = build_label_occlusion_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
@@ -3505,7 +3509,7 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
 
 def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:
     source = build_multi_surface_occlusion_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         blocker = by_name["multi-surface-blocker"]
@@ -3521,7 +3525,7 @@ def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> No
 @pytest.mark.parametrize("back_facing", [False, True])
 def test_worker_respects_backface_culling(tmp_path: Path, back_facing: bool) -> None:
     source = build_backface_culling_glb(tmp_path, back_facing=back_facing)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
 
@@ -3538,7 +3542,7 @@ def test_worker_respects_backface_culling(tmp_path: Path, back_facing: bool) -> 
 
 def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
     source = build_backface_culling_glb(tmp_path, back_facing=True)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
@@ -3559,7 +3563,7 @@ def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
 
 def test_worker_budgets_only_rendered_focus_candidates(tmp_path: Path) -> None:
     source = build_mixed_culling_focus_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         focus = manifest.components[0].id
 
@@ -3577,7 +3581,7 @@ def test_worker_budgets_only_rendered_focus_candidates(tmp_path: Path) -> None:
 
 def test_worker_counts_ghosted_focus_hits(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["target"]], mode="ghosted")
@@ -3592,7 +3596,7 @@ def test_worker_counts_ghosted_focus_hits(tmp_path: Path) -> None:
 
 def test_worker_counts_marked_ghosted_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
-    with BlenderController(timeout_seconds=30) as controller:
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         by_name = {component.display_name: component.id for component in manifest.components}
         blocker = by_name["blocker"]
@@ -3645,7 +3649,7 @@ def test_worker_visibility_accepts_aspect_preserving_small_axis(
 def test_occlusion_evidence_steps_match_strict_blender_visibility_gain(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(
-        timeout_seconds=30, artifact_cache_root=tmp_path / "cache"
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS, artifact_cache_root=tmp_path / "cache"
     ) as controller:
         manifest = controller.open_scene(source)
         target = next(
