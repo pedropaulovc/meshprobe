@@ -67,6 +67,7 @@ STATE_OPERATIONS = {
     "view.set",
     "view.orbit",
     "view.move",
+    "view.rotate",
     "illumination.set",
     "component.display",
     "component.mark",

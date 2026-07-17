@@ -12,6 +12,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewMoveCommand,
+    ViewRotateCommand,
     command_json_schema,
     parse_command_json,
 )
@@ -46,6 +47,7 @@ def test_schema_contains_all_public_operations() -> None:
         "view.set",
         "view.orbit",
         "view.move",
+        "view.rotate",
         "illumination.set",
         "component.display",
         "component.mark",
@@ -88,6 +90,24 @@ def test_move_combines_world_and_camera_deltas() -> None:
     assert command.camera_delta_mm == (-25, 0, 50)
     with pytest.raises(ValidationError, match="non-zero"):
         COMMAND_ADAPTER.validate_python({"request_id": "stationary", "op": "view.move"})
+
+
+def test_rotate_accepts_source_axis_and_preserves_projection_by_default() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "rotate-source-y",
+            "op": "view.rotate",
+            "target_mm": [0, 10, 20],
+            "axis": "y",
+            "degrees": 145,
+            "frame": "source",
+        }
+    )
+
+    assert isinstance(command, ViewRotateCommand)
+    assert command.frame == "source"
+    assert command.axis == "y"
+    assert command.projection is None
 
 
 def test_render_command_bounds_engine_and_samples() -> None:

@@ -32,6 +32,7 @@ from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_sta
 from meshprobe.models import (
     Camera,
     ComponentFocus,
+    CoordinateFrame,
     DepthOfField,
     DepthOfFieldMode,
     DisplayMode,
@@ -55,6 +56,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
+    ViewRotateCommand,
     ViewSetCommand,
     command_json_schema,
 )
@@ -786,6 +788,62 @@ def view_move(
                 _distance_mm(up),
                 _distance_mm(forward),
             ),
+            focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
+            aspect_ratio=aspect_ratio,
+        ),
+    )
+
+
+@app.command("view-rotate")
+def view_rotate(
+    ctx: typer.Context,
+    target: Annotated[
+        tuple[float, float, float],
+        typer.Option("--target", help="Rotation center in the selected coordinate frame, in mm."),
+    ],
+    axis: Annotated[
+        str,
+        typer.Option("--axis", help="Positive X, Y, or Z axis in the selected frame."),
+    ],
+    degrees: Annotated[
+        float,
+        typer.Option("--degrees", help="Signed right-hand-rule rotation in degrees."),
+    ],
+    frame: Annotated[
+        CoordinateFrame,
+        typer.Option("--frame", help="Interpret target and axis in source or world coordinates."),
+    ] = CoordinateFrame.WORLD,
+    projection_json: Annotated[
+        str | None,
+        typer.Option(
+            "--projection-json", help="Optional replacement projection; current by default."
+        ),
+    ] = None,
+    focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
+    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+) -> None:
+    """Rotate the current camera about a source- or world-frame axis."""
+
+    if frame not in {CoordinateFrame.SOURCE, CoordinateFrame.WORLD}:
+        raise typer.BadParameter("--frame must be source or world")
+    normalized_axis = axis.casefold()
+    if normalized_axis not in {"x", "y", "z"}:
+        raise typer.BadParameter("--axis must be x, y, or z")
+    projection: Projection | None = None
+    if projection_json is not None:
+        from pydantic import TypeAdapter
+
+        projection = TypeAdapter(Projection).validate_json(projection_json)
+    _execute(
+        ctx,
+        ViewRotateCommand(
+            request_id=_request_id("view-rotate"),
+            op="view.rotate",
+            target_mm=target,
+            axis=normalized_axis,  # type: ignore[arg-type]
+            degrees=degrees,
+            frame=frame,  # type: ignore[arg-type]
+            projection=projection,
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),

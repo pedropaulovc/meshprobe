@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from meshprobe.models import (
     Camera,
     ContactSheetPanelSpec,
+    CoordinateFrame,
     DisplayMode,
     FiniteFloat,
     GraphicsPolicy,
@@ -78,6 +79,17 @@ class ViewMoveCommand(CommandModel):
         if not any((*self.world_delta_mm, *self.camera_delta_mm)):
             raise ValueError("view.move requires at least one non-zero delta")
         return self
+
+
+class ViewRotateCommand(CommandModel):
+    op: Literal["view.rotate"]
+    target_mm: Vec3
+    axis: Literal["x", "y", "z"]
+    degrees: FiniteFloat
+    frame: Literal[CoordinateFrame.SOURCE, CoordinateFrame.WORLD] = CoordinateFrame.WORLD
+    projection: Projection | None = None
+    focus_component_ids: tuple[str, ...] = ()
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 class IlluminationSetCommand(CommandModel):
@@ -158,6 +170,7 @@ type Command = Annotated[
     | ViewSetCommand
     | ViewOrbitCommand
     | ViewMoveCommand
+    | ViewRotateCommand
     | IlluminationSetCommand
     | ComponentDisplayCommand
     | ComponentMarkCommand

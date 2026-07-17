@@ -140,7 +140,11 @@ def bounds_of_points(points: list[Vector]) -> dict[str, list[float]]:
 def object_bounds(obj: bpy.types.Object) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
     local_points = [Vector(corner) for corner in obj.bound_box]
     world_points = [obj.matrix_world @ point for point in local_points]
-    return bounds_of_points(local_points), bounds_of_points(world_points)
+    local_bounds = bounds_of_points(local_points)
+    local_bounds["frame"] = "component"  # type: ignore[assignment]
+    world_bounds = bounds_of_points(world_points)
+    world_bounds["frame"] = "world"  # type: ignore[assignment]
+    return local_bounds, world_bounds
 
 
 def matrix_in_millimeters(obj: bpy.types.Object) -> list[float]:
@@ -425,8 +429,20 @@ def apply_camera(
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
     x, y, z, w = pose["orientation_xyzw"]
     rotation = Quaternion((w, x, y, z)).normalized()
+    resolved_camera = deepcopy(camera)
+    if pose.get("frame", "world") == "source":
+        source_to_world = source_to_world_matrix()
+        position = source_to_world @ position
+        rotation = source_to_world.to_quaternion() @ rotation
+        resolved_camera["pose"] = {
+            "position_mm": [value * MILLIMETERS_PER_METER for value in position],
+            "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+            "frame": "world",
+        }
+    elif pose.get("frame", "world") != "world":
+        raise ValueError("camera pose frame must be source or world")
     obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
-    projection = camera["projection"]
+    projection = resolved_camera["projection"]
     data = obj.data
     data.clip_start = projection["near_clip_mm"] / MILLIMETERS_PER_METER
     data.clip_end = projection["far_clip_mm"] / MILLIMETERS_PER_METER
@@ -462,7 +478,7 @@ def apply_camera(
                     depth_of_field["focus_distance_mm"] / MILLIMETERS_PER_METER
                 )
     global CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
-    CURRENT_CAMERA = deepcopy(camera)
+    CURRENT_CAMERA = resolved_camera
     CURRENT_CAMERA_DIAGNOSTICS = camera_diagnostics(
         obj,
         focus_component_ids,
@@ -544,6 +560,69 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
         camera,
         command.get("focus_component_ids", ()),
         command.get("aspect_ratio", 1.0),
+    )
+
+
+def source_to_world_matrix() -> Matrix:
+    frames = require_session()["coordinate_frames"]
+    rows = tuple(
+        tuple(frames["source_to_world"][row * 4 + column] for column in range(4))
+        for row in range(4)
+    )
+    return Matrix(rows)
+
+
+def transform_from_source(
+    values: list[float] | tuple[float, float, float], *, point: bool
+) -> Vector:
+    matrix = source_to_world_matrix()
+    vector = Vector(values)
+    return matrix @ vector if point else matrix.to_3x3() @ vector
+
+
+def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
+    if CURRENT_CAMERA is None:
+        raise ValueError("session camera is not initialized")
+    axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
+    axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
+    target = Vector(command["target_mm"])
+    if command["frame"] == "source":
+        axis = transform_from_source(axis, point=False)
+        target = transform_from_source(target, point=True)
+    axis.normalize()
+    rotation = Quaternion(axis, math.radians(command["degrees"]))
+    previous_pose = deepcopy(CURRENT_CAMERA["pose"])
+    position = Vector(previous_pose["position_mm"])
+    x, y, z, w = previous_pose["orientation_xyzw"]
+    orientation = rotation @ Quaternion((w, x, y, z))
+    resulting_pose = {
+        "position_mm": [round(value, 12) for value in target + rotation @ (position - target)],
+        "orientation_xyzw": [
+            round(value, 12)
+            for value in (orientation.x, orientation.y, orientation.z, orientation.w)
+        ],
+        "frame": "world",
+    }
+    camera = {
+        "pose": resulting_pose,
+        "projection": command.get("projection") or CURRENT_CAMERA["projection"],
+    }
+    global CURRENT_CAMERA_OPERATION
+    CURRENT_CAMERA_OPERATION = {
+        "operation": "rotate",
+        "frame": command["frame"],
+        "target_mm": command["target_mm"],
+        "axis": command["axis"],
+        "axis_world": list(axis),
+        "degrees": command["degrees"],
+        "previous_pose": previous_pose,
+        "resulting_pose": resulting_pose,
+    }
+    return apply_camera(
+        camera,
+        command.get("focus_component_ids", ()),
+        command.get("aspect_ratio", 1.0),
+        list(target),
     )
 
 
@@ -1927,6 +2006,66 @@ def import_source(path: Path) -> list[dict[str, Any]]:
     return warnings
 
 
+def coordinate_frames(source_format: str) -> dict[str, Any]:
+    identity = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    source_to_world = identity
+    source_name = f"{source_format}_z_up_assumed"
+    up_axis = "+z"
+    if source_format in {"glb", "gltf", "obj"}:
+        source_to_world = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+        source_name = "gltf_y_up" if source_format in {"glb", "gltf"} else "obj_y_up_assumed"
+        up_axis = "+y"
+    return {
+        "source": {
+            "name": source_name,
+            "frame": "source",
+            "handedness": "right",
+            "up_axis": up_axis,
+        },
+        "world": {
+            "name": "meshprobe_z_up",
+            "frame": "world",
+            "handedness": "right",
+            "up_axis": "+z",
+        },
+        "source_to_world": source_to_world,
+    }
+
+
 def build_manifest(
     source_path: Path, source_sha256: str, import_warnings: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1979,6 +2118,7 @@ def build_manifest(
                 "child_ids": sorted(children[obj]),
                 "mesh_hash": mesh_hash(obj.data),
                 "world_transform": matrix_in_millimeters(obj),
+                "world_transform_frame": "world",
                 "local_bounds": local_bounds,
                 "world_bounds": world_bounds,
                 "materials": materials,
@@ -1986,6 +2126,7 @@ def build_manifest(
         )
 
     root_bounds = bounds_of_points(all_world_points)
+    root_bounds["frame"] = "world"  # type: ignore[assignment]
     camera, camera_warning = imported_camera(root_bounds)
     illumination, illumination_warnings = imported_illumination()
     source_format = source_path.suffix.lower().removeprefix(".")
@@ -2080,6 +2221,7 @@ def build_manifest(
         "source_sha256": source_sha256,
         "source_format": source_format,
         "units": "millimeter",
+        "coordinate_frames": coordinate_frames(source_format),
         "root_bounds": root_bounds,
         "components": components,
         "imported_camera": camera,
@@ -2261,6 +2403,9 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "view.move":
         require_session()
         return move_camera(command)
+    if operation == "view.rotate":
+        require_session()
+        return rotate_camera(command)
     if operation == "illumination.set":
         require_session()
         return apply_illumination(command["illumination"])

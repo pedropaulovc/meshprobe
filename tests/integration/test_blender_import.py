@@ -47,12 +47,15 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SessionResetCommand,
+    SessionSnapshotCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
+    ViewRotateCommand,
     ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.sources import snapshot_source
+from meshprobe.workspace import SessionManager
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
 runner = CliRunner()
@@ -582,6 +585,110 @@ def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> Non
     assert after.camera == before.camera
     assert after.camera_operation == before.camera_operation
     assert after.state_sha256 == before.state_sha256
+
+
+def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        rotated = controller.execute(
+            ViewRotateCommand(
+                request_id="rotate-source-y",
+                op="view.rotate",
+                target_mm=(0, 0, 0),
+                axis="y",
+                degrees=90,
+                frame="source",
+            )
+        )
+        source_pose = controller.execute(
+            ViewSetCommand(
+                request_id="set-source-pose",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(1_000, 2_000, 3_000),
+                        orientation_xyzw=(0, 0, 0, 1),
+                        frame="source",
+                    ),
+                    projection=PerspectiveProjection(),
+                ),
+            )
+        )
+
+    assert manifest.coordinate_frames.source.name == "gltf_y_up"
+    assert manifest.coordinate_frames.source_to_world == pytest.approx(
+        (1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1)
+    )
+    assert manifest.root_bounds.frame == "world"
+    assert all(component.local_bounds.frame == "component" for component in manifest.components)
+    assert isinstance(rotated, SessionSnapshot)
+    assert rotated.camera.pose.position_mm == pytest.approx((-4_000, 5_000, 3_000))
+    assert rotated.camera_operation is not None
+    assert rotated.camera_operation.frame == "source"
+    assert rotated.camera_operation.axis_world == pytest.approx((0, 0, 1))
+    assert rotated.camera_operation.resulting_pose == rotated.camera.pose
+    assert isinstance(source_pose, SessionSnapshot)
+    assert source_pose.camera.pose.frame == "world"
+    assert source_pose.camera.pose.position_mm == pytest.approx((1_000, -3_000, 2_000))
+
+
+def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
+    tmp_path: Path,
+) -> None:
+    source = build_glb(tmp_path)
+    root = tmp_path / ".meshprobe"
+    command = ViewRotateCommand(
+        request_id="rotate-source-y",
+        op="view.rotate",
+        target_mm=(0, 0, 0),
+        axis="y",
+        degrees=90,
+        frame="source",
+    )
+    manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    manager.open("review", source)
+    rotated_receipt = manager.execute("review", command)
+    rotated_envelope = manager.raw_result(rotated_receipt)
+    assert isinstance(rotated_envelope, dict)
+    rotated = SessionSnapshot.model_validate(rotated_envelope["result"])
+    manager.close("review")
+
+    recovered_manager = SessionManager(root, blender="blender", timeout_seconds=30)
+    recovered_receipt = recovered_manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recovered", op="session.snapshot"),
+    )
+    recovered_envelope = recovered_manager.raw_result(recovered_receipt)
+    assert isinstance(recovered_envelope, dict)
+    recovered = SessionSnapshot.model_validate(recovered_envelope["result"]["session"])
+
+    assert recovered.camera.pose.position_mm == pytest.approx(rotated.camera.pose.position_mm)
+    assert recovered.camera.pose.orientation_xyzw == pytest.approx(
+        rotated.camera.pose.orientation_xyzw
+    )
+    assert recovered.camera.projection == rotated.camera.projection
+    assert recovered.state_sha256 == rotated.state_sha256
+    checkpoint = json.loads(
+        (root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
+
+    recovered_manager.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset"),
+    )
+    reapplied_receipt = recovered_manager.execute(
+        "review",
+        command.model_copy(update={"request_id": "rotate-source-y-again"}),
+    )
+    reapplied_envelope = recovered_manager.raw_result(reapplied_receipt)
+    assert isinstance(reapplied_envelope, dict)
+    reapplied = SessionSnapshot.model_validate(reapplied_envelope["result"])
+
+    assert reapplied.camera == rotated.camera
+    assert reapplied.state_sha256 == rotated.state_sha256
+    recovered_manager.shutdown()
 
 
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:

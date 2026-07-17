@@ -5,14 +5,19 @@ import hashlib
 import pytest
 
 from meshprobe.models import (
+    AxisDirection,
     Bounds,
     Camera,
     Component,
+    CoordinateFrame,
+    CoordinateSystem,
+    Handedness,
     IlluminationPreset,
     PerspectiveProjection,
     Pose,
     PresetIllumination,
     SceneCapabilities,
+    SceneCoordinateFrames,
     SceneManifest,
 )
 from meshprobe.selectors import stable_component_id
@@ -48,6 +53,32 @@ def scene_manifest() -> SceneManifest:
         source_sha256=source_hash,
         source_format="glb",
         units="millimeter",
+        coordinate_frames=SceneCoordinateFrames(
+            source=CoordinateSystem(
+                name="gltf_y_up",
+                frame=CoordinateFrame.SOURCE,
+                handedness=Handedness.RIGHT,
+                up_axis=AxisDirection.POSITIVE_Y,
+            ),
+            source_to_world=(
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                -1,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+            ),
+        ),
         root_bounds=bounds,
         components=(
             Component(

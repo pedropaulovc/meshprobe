@@ -23,6 +23,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionSnapshotCommand,
     ViewMoveCommand,
+    ViewRotateCommand,
     ViewSetCommand,
 )
 from meshprobe.workspace import OperationReceipt, ResolvedComponentReference
@@ -514,6 +515,39 @@ def test_view_move_parses_units_and_camera_axes(monkeypatch: pytest.MonkeyPatch)
     invalid = runner.invoke(app, ["view-move", "--up", "ten centimeters"])
     assert invalid.exit_code == 2
     assert "use mm, cm, or m" in invalid.output
+
+
+def test_view_rotate_exposes_source_frame_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-rotate",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--axis",
+            "y",
+            "--degrees",
+            "145",
+            "--frame",
+            "source",
+        ],
+    )
+
+    assert result.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, ViewRotateCommand)
+    assert command.frame == "source"
+    assert command.axis == "y"
+    assert command.degrees == 145
 
 
 def test_close_and_kill_have_distinct_selected_and_all_semantics(

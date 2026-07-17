@@ -406,6 +406,38 @@ def test_scene_rejects_noncanonical_source_metadata(
         SceneManifest.model_validate(payload)
 
 
+def test_scene_reports_source_and_world_coordinate_frames(
+    scene_manifest: SceneManifest,
+) -> None:
+    frames = scene_manifest.coordinate_frames
+
+    assert frames.source.name == "gltf_y_up"
+    assert frames.source.up_axis == "+y"
+    assert frames.source.handedness == "right"
+    assert frames.world.name == "meshprobe_z_up"
+    assert frames.source_to_world == (
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+    )
+    assert scene_manifest.root_bounds.frame == "world"
+    assert scene_manifest.components[0].world_transform_frame == "world"
+    assert scene_manifest.imported_camera.pose.frame == "world"
+
+
 def test_scene_rejects_warning_for_unknown_component(scene_manifest: SceneManifest) -> None:
     payload = scene_manifest.model_dump(mode="json")
     payload["warnings"].append(
