@@ -8,17 +8,28 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from meshprobe.models import (
     Camera,
+    CameraMotionResult,
+    CameraViewResult,
+    Component,
+    ComponentVisualStateResult,
+    ContactSheetManifest,
     ContactSheetPanelSpec,
     CoordinateFrame,
     DisplayMode,
     FiniteFloat,
     GraphicsPolicy,
     Illumination,
+    IlluminationResult,
     MarkMode,
+    OcclusionQueryResult,
     OrthonormalBasis,
     Projection,
     RenderEngine,
+    RenderManifest,
     RenderStyle,
+    SceneManifest,
+    SessionResetResult,
+    SessionSnapshotResult,
     ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
@@ -202,3 +213,27 @@ def parse_command_json(payload: str) -> Command:
 
 def command_json_schema() -> dict[str, object]:
     return COMMAND_ADAPTER.json_schema()
+
+
+_RESULT_MODELS: dict[str, object] = {
+    "scene.open": SceneManifest,
+    "session.snapshot": SessionSnapshotResult,
+    "component.find": list[Component],
+    "component.inspect": Component,
+    "component.occlusion": OcclusionQueryResult,
+    "view.set": CameraViewResult,
+    "view.orbit": CameraViewResult,
+    "view.move": CameraMotionResult,
+    "view.rotate": CameraMotionResult,
+    "illumination.set": IlluminationResult,
+    "component.display": ComponentVisualStateResult,
+    "component.mark": ComponentVisualStateResult,
+    "render.image": RenderManifest,
+    "render.contact_sheet": ContactSheetManifest,
+    "session.reset": SessionResetResult,
+}
+
+
+def command_result_json_schema() -> dict[str, object]:
+    """Describe the full result envelope each command op returns, keyed by op."""
+    return {op: TypeAdapter(model).json_schema() for op, model in _RESULT_MODELS.items()}

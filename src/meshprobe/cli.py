@@ -63,6 +63,7 @@ from meshprobe.protocol import (
     ViewRotateCommand,
     ViewSetCommand,
     command_json_schema,
+    command_result_json_schema,
 )
 from meshprobe.selectors import ComponentSelector, SelectorKind
 from meshprobe.service import MeshProbeService
@@ -135,6 +136,7 @@ class AgentAdapterKind(StrEnum):
 
 class SchemaKind(StrEnum):
     COMMANDS = "commands"
+    RESULTS = "results"
     STATE = "state"
     ALL = "all"
 
@@ -164,21 +166,35 @@ def schema(
     ctx: typer.Context,
     kind: Annotated[
         SchemaKind,
-        typer.Option("--kind", help="Show operation commands, durable state files, or both."),
+        typer.Option(
+            "--kind",
+            help="Show command inputs, command result envelopes, durable state files, or all.",
+        ),
     ] = SchemaKind.STATE,
     full: Annotated[
         bool,
         typer.Option("--full", help="Expand durable state fields into formal JSON Schemas."),
     ] = False,
 ) -> None:
-    """Print machine-readable schemas for commands or durable state files."""
+    """Print machine-readable schemas for command inputs, result envelopes, or durable state.
+
+    The ``results`` kind documents the full JSON shape each command returns — including
+    otherwise-undocumented fields such as render luminance, projected component bounds,
+    occlusion traces, and contact-sheet panel captions and callouts.
+    """
 
     payload: object = command_json_schema()
+    if kind is SchemaKind.RESULTS:
+        payload = command_result_json_schema()
     if kind is SchemaKind.STATE:
         payload = durable_state_json_schema() if full else durable_state_schema_summary()
     if kind is SchemaKind.ALL:
         state = durable_state_json_schema() if full else durable_state_schema_summary()
-        payload = {"commands": command_json_schema(), "state": state}
+        payload = {
+            "commands": command_json_schema(),
+            "results": command_result_json_schema(),
+            "state": state,
+        }
     if _options(ctx).output == "yaml":
         _emit_yaml(payload)
         return
@@ -755,7 +771,11 @@ def view_orbit(
     ],
     projection_json: Annotated[
         str,
-        typer.Option("--projection-json", help="Complete perspective or orthographic projection."),
+        typer.Option(
+            "--projection-json",
+            help="Complete perspective or orthographic projection, including camera intrinsics "
+            "(focal_length_mm, sensor_width_mm/sensor_height_mm, sensor_fit, depth_of_field).",
+        ),
     ],
     roll: Annotated[
         float,
@@ -775,7 +795,8 @@ def view_orbit(
     camera_orbit_angles (azimuth_degrees, elevation_degrees) from state.yml and pass
     them back here. Positive azimuth follows the right-hand rule around +Z. GLTF is
     right-handed and Y-up; scene.open reports the exact source_to_world mapping
-    (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y).
+    (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y). The result echoes the resolved camera
+    (including the intrinsics above) and its diagnostics; see `meshprobe schema --kind results`.
     """
 
     from pydantic import TypeAdapter
@@ -1096,7 +1117,12 @@ def render_image(
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
-    """Render the selected session to an image artifact."""
+    """Render the selected session to an image artifact.
+
+    The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
+    a too-dark or blown-out frame can be detected without inspecting pixels. See
+    `meshprobe schema --kind results` for the full render result shape.
+    """
 
     options = _options(ctx)
     destination = output or (
@@ -1149,7 +1175,12 @@ def render_sheet(
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
-    """Render a focused 3x3 sheet with automatic occlusion analysis."""
+    """Render a focused 3x3 sheet with automatic occlusion analysis.
+
+    Each panel result carries a structured `caption` and numbered `callouts` (with marker
+    positions), and the sheet carries the full occlusion-removal trace. See
+    `meshprobe schema --kind results` for the full contact-sheet result shape.
+    """
 
     options = _options(ctx)
     destination = output or (
@@ -1181,7 +1212,13 @@ def occlusion(
     focus: Annotated[list[str], typer.Argument()],
     max_samples: Annotated[int, typer.Option("--max-samples", min=1, max=4_096)] = 128,
 ) -> None:
-    """Measure focus visibility and blockers from the current session camera."""
+    """Measure focus visibility and blockers from the current session camera.
+
+    The result's `camera_diagnostics.projected_bounds` reports each focus component's
+    normalized frame coverage, and the `camera` block exposes the full camera intrinsics
+    (focal length, sensor size and fit). See `meshprobe schema --kind results` for the full
+    occlusion result shape.
+    """
 
     _execute(
         ctx,

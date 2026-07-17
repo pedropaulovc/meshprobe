@@ -38,6 +38,72 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def _property_description(schema: dict[str, object], model: str, field: str) -> str:
+    defs = schema.get("$defs", {})
+    assert isinstance(defs, dict)
+    properties = defs[model]["properties"]  # type: ignore[index]
+    return properties[field].get("description", "")
+
+
+def test_schema_results_kind_documents_result_envelope_fields() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "results"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+
+    # Every command op has a documented result shape.
+    assert {
+        "render.image",
+        "render.contact_sheet",
+        "component.occlusion",
+        "view.orbit",
+        "scene.open",
+    } <= payload.keys()
+
+    # Render luminance exposure block.
+    assert _property_description(payload["render.image"], "LuminanceSummary", "median").strip()
+
+    # Projected component frame bounds and camera intrinsics from an occlusion query.
+    occlusion = payload["component.occlusion"]
+    assert _property_description(occlusion, "CameraDiagnostics", "projected_bounds").strip()
+    assert _property_description(occlusion, "ProjectedComponentBounds", "minimum_image_xy").strip()
+    assert _property_description(occlusion, "PerspectiveProjection", "focal_length_mm").strip()
+
+    # Contact-sheet panel captions, callouts, and the occlusion-removal trace.
+    sheet = payload["render.contact_sheet"]
+    assert _property_description(sheet, "ContactSheetPanel", "caption").strip()
+    assert _property_description(sheet, "ContactSheetCallout", "image_xy").strip()
+    assert _property_description(sheet, "OccluderRemovalStep", "visible_fraction_after").strip()
+
+
+def test_schema_all_full_surfaces_result_envelope_fields() -> None:
+    result = runner.invoke(app, ["schema", "--kind", "all", "--full"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert set(payload) == {"commands", "results", "state"}
+
+    rendered = result.stdout
+    for field in ("luminance", "projected_bounds", "caption", "callouts", "image_xy"):
+        assert field in rendered
+
+
+def test_render_image_help_advertises_luminance() -> None:
+    result = runner.invoke(app, ["render-image", "--help"])
+    assert result.exit_code == 0
+    assert "luminance" in " ".join(unstyle(result.stdout).split())
+
+
+def test_occlusion_help_advertises_projected_bounds() -> None:
+    result = runner.invoke(app, ["occlusion", "--help"])
+    assert result.exit_code == 0
+    assert "projected_bounds" in " ".join(unstyle(result.stdout).split())
+
+
+def test_view_orbit_help_advertises_camera_intrinsics() -> None:
+    result = runner.invoke(app, ["view-orbit", "--help"])
+    assert result.exit_code == 0
+    assert "focal_length_mm" in " ".join(unstyle(result.stdout).replace("│", " ").split())
+
+
 def test_render_sheet_help_advertises_occlusion_analysis() -> None:
     result = runner.invoke(app, ["render-sheet", "--help"])
 

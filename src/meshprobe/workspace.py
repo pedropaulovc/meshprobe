@@ -271,6 +271,8 @@ def durable_state_schema_summary() -> dict[str, object]:
             "results/*.json": {
                 "purpose": "full operation result envelopes",
                 "fields": "request_id op result",
+                "result_shape": "the per-op shape of `result` is documented by "
+                "`meshprobe schema --kind results`",
             },
         },
         "full_schema": "meshprobe schema --kind state --full",
