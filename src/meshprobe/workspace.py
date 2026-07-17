@@ -34,6 +34,7 @@ from meshprobe.models import (
 )
 from meshprobe.protocol import (
     Command,
+    ComponentFindCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -207,6 +208,7 @@ class OperationReceipt(BaseModel):
     artifact_paths: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     components: tuple[ResolvedComponentReference, ...] = ()
+    match_count: int | None = None
 
 
 def durable_state_json_schema() -> dict[str, object]:
@@ -481,6 +483,11 @@ class SessionManager:
                 graphics = getattr(service, "graphics", None)
                 warnings = graphics.warnings if graphics is not None else ()
                 self._graphics_warned_worker_pids[name] = service.worker_pid
+            match_count = (
+                len(response.result)
+                if isinstance(command, ComponentFindCommand) and isinstance(response.result, list)
+                else None
+            )
             return self._receipt(
                 files,
                 command.op,
@@ -489,6 +496,7 @@ class SessionManager:
                 artifacts,
                 warnings=warnings,
                 components=self._component_references(files, command),
+                match_count=match_count,
             )
 
     def close(self, name: str) -> OperationReceipt:
@@ -857,6 +865,7 @@ class SessionManager:
         *,
         warnings: tuple[str, ...] = (),
         components: tuple[ResolvedComponentReference, ...] = (),
+        match_count: int | None = None,
     ) -> OperationReceipt:
         return OperationReceipt(
             session=files.name,
@@ -867,4 +876,5 @@ class SessionManager:
             artifact_paths=artifacts,
             warnings=warnings,
             components=components,
+            match_count=match_count,
         )
