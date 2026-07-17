@@ -14,6 +14,7 @@ from meshprobe.evals.generators import (
     publish_model,
 )
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     EpisodeClass,
     EvidenceKind,
@@ -63,7 +64,7 @@ def test_every_family_generates_four_operation_aware_episodes(
     assert len(episodes) == 4
     assert episodes[0].spec.family is TaskFamily.COMPONENT_DISCOVERY
     assert episodes[-1].spec.family is TaskFamily.FULL_INVESTIGATION
-    assert set(episodes[-1].spec.required_operations) == set(Operation)
+    assert set(episodes[-1].spec.required_operations) == set(EVALUATED_OPERATIONS)
     assert episodes[-1].ground_truth.state_requirements[-1].predicate == "reset_to_imported"
     for episode in episodes[1:]:
         assert {
@@ -232,7 +233,7 @@ def test_public_answer_schema_names_every_scored_field(tmp_path: Path) -> None:
 def test_every_operation_has_positive_negative_and_adversarial_episodes(
     tmp_path: Path,
 ) -> None:
-    coverage = {operation: set() for operation in Operation}
+    coverage = {operation: set() for operation in EVALUATED_OPERATIONS}
     for family in GeneratorFamily:
         for seed in (0, 1):
             model = publish_model(build_model(family, seed), tmp_path)
@@ -241,3 +242,4 @@ def test_every_operation_has_positive_negative_and_adversarial_episodes(
                     coverage[operation].add(episode.spec.episode_class)
 
     assert all(classes == set(EpisodeClass) for classes in coverage.values())
+    assert coverage[Operation.COMPONENT_OCCLUSION] == set(EpisodeClass)

@@ -27,7 +27,7 @@ from meshprobe.evals.harness.adapters import (
     ReferenceAgentAdapter,
 )
 from meshprobe.evals.harness.suite import run_tier
-from meshprobe.evals.migration import audit_migration, migrate_corpus_v2
+from meshprobe.evals.migration import audit_migration, migrate_corpus_v3
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import (
     Camera,
@@ -52,6 +52,7 @@ from meshprobe.protocol import (
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -212,7 +213,7 @@ def migrate_eval_corpus(
     """Migrate a schema-v1 corpus without regenerating models or task identities."""
 
     try:
-        build, audit = migrate_corpus_v2(
+        build, audit = migrate_corpus_v3(
             source,
             output_root,
             corpus_version=corpus_version,
@@ -1129,6 +1130,25 @@ def render_sheet(
             samples=samples,
             engine=engine,
             graphics_policy=graphics_policy,
+        ),
+    )
+
+
+@app.command("occlusion")
+def occlusion(
+    ctx: typer.Context,
+    focus: Annotated[list[str], typer.Argument()],
+    max_samples: Annotated[int, typer.Option("--max-samples", min=1, max=4_096)] = 128,
+) -> None:
+    """Measure focus visibility and blockers from the current session camera."""
+
+    _execute(
+        ctx,
+        ComponentOcclusionCommand(
+            request_id=_request_id("occlusion"),
+            op="component.occlusion",
+            component_ids=_component_ids(ctx, focus),
+            max_samples_per_component=max_samples,
         ),
     )
 

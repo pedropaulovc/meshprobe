@@ -13,8 +13,9 @@ from meshprobe.evals.ergonomics import ergonomics_report_markdown, select_paired
 from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.evals.migration import (
+    audit_migration,
     codify_opaque_family,
-    migrate_corpus_v2,
+    migrate_corpus_v3,
     restore_schema_v1_source,
 )
 from meshprobe.evals.schemas import (
@@ -27,9 +28,49 @@ from meshprobe.evals.schemas import (
     StructuredAnswer,
     TaskFamily,
 )
+from meshprobe.sources import sha256_file
 
 
-def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> None:
+def set_schema_v2_contract(
+    corpus_root: Path,
+    *,
+    spec_missing: tuple[str, ...],
+    truth_missing: tuple[str, ...] | None = None,
+) -> None:
+    truth_missing = spec_missing if truth_missing is None else truth_missing
+    episode_root = corpus_root / "public" / "episodes"
+    for path in episode_root.glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["schema_version"] = 2
+        required = payload.get("required_operations")
+        if isinstance(required, list):
+            payload["required_operations"] = [
+                operation for operation in required if operation not in spec_missing
+            ]
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for path in (corpus_root / "private" / "ground_truth").glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["schema_version"] = 2
+        required = payload.get("required_operations")
+        if isinstance(required, list):
+            payload["required_operations"] = [
+                operation for operation in required if operation not in truth_missing
+            ]
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path = corpus_root / "public" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 2
+    manifest["episode_sha256"] = {
+        episode_id: sha256_file(episode_root / f"{episode_id}.json")
+        for episode_id in manifest["episodes"]
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_v3_migration_preserves_model_and_episode_identity(tmp_path: Path) -> None:
     source = build_corpus(
         tmp_path,
         corpus_version="procedural-v5",
@@ -37,11 +78,11 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
         seeds=(0,),
     )
     restore_schema_v1_source(source.root, corpus_version="procedural-v5")
-    with pytest.raises(ValueError, match="migrate the corpus to schema version 2"):
+    with pytest.raises(ValueError, match="migrate the corpus to schema version 3"):
         validate_corpus(source.root)
 
     output_root = tmp_path / "brand-new" / "migrations"
-    migrated, audit = migrate_corpus_v2(
+    migrated, audit = migrate_corpus_v3(
         source.root,
         output_root,
         corpus_version="procedural-v6",
@@ -65,15 +106,257 @@ def test_v2_migration_preserves_model_and_episode_identity(tmp_path: Path) -> No
         )
     )
     assert Operation.VIEW_ROTATE in full_spec.required_operations
+    assert Operation.COMPONENT_OCCLUSION in full_spec.required_operations
     assert full_truth.required_operations == full_spec.required_operations
 
-    existing, repeated_audit = migrate_corpus_v2(
+    existing, repeated_audit = migrate_corpus_v3(
         source.root,
         output_root,
         corpus_version="procedural-v6",
     )
     assert existing.root == migrated.root
     assert repeated_audit == audit
+
+
+@pytest.mark.parametrize(
+    "missing_operations",
+    [
+        ("component.occlusion",),
+        ("component.occlusion", "view.rotate"),
+        ("component.occlusion", "view.move", "view.rotate"),
+    ],
+)
+def test_v3_migration_accepts_explicit_schema_v2_source(
+    tmp_path: Path,
+    missing_operations: tuple[str, ...],
+) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    set_schema_v2_contract(source.root, spec_missing=missing_operations)
+
+    migrated, audit = migrate_corpus_v3(
+        source.root,
+        tmp_path / "migrated",
+        corpus_version="procedural-v3",
+    )
+
+    assert audit.full_investigations_valid
+    assert migrated.manifest.schema_version == 3
+    full_spec = next(
+        EpisodeSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (migrated.root / "public" / "episodes").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["family"] == "full_investigation"
+    )
+    assert "component.occlusion" in full_spec.required_operations
+    assert "view.move" in full_spec.required_operations
+    assert "view.rotate" in full_spec.required_operations
+
+
+@pytest.mark.parametrize(
+    ("spec_missing", "truth_missing", "message"),
+    [
+        (
+            ("component.occlusion", "view.move"),
+            None,
+            "not valid for schema 2",
+        ),
+        (
+            ("component.occlusion", "component.find"),
+            None,
+            "not valid for schema 2",
+        ),
+        (
+            ("component.occlusion",),
+            ("component.occlusion", "view.rotate"),
+            "operation sets do not match",
+        ),
+    ],
+)
+def test_v3_migration_rejects_invalid_schema_v2_operation_contracts(
+    tmp_path: Path,
+    spec_missing: tuple[str, ...],
+    truth_missing: tuple[str, ...] | None,
+    message: str,
+) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    set_schema_v2_contract(
+        source.root,
+        spec_missing=spec_missing,
+        truth_missing=truth_missing,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        migrate_corpus_v3(
+            source.root,
+            tmp_path / "migrated",
+            corpus_version="procedural-v3",
+        )
+
+
+def test_v3_migration_rejects_payload_schema_mismatch(tmp_path: Path) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    set_schema_v2_contract(
+        source.root,
+        spec_missing=("component.occlusion",),
+    )
+    episode_path = next((source.root / "public" / "episodes").glob("*.json"))
+    episode = json.loads(episode_path.read_text(encoding="utf-8"))
+    episode["schema_version"] = 1
+    episode_path.write_text(
+        json.dumps(episode, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="schema does not match"):
+        migrate_corpus_v3(
+            source.root,
+            tmp_path / "migrated",
+            corpus_version="procedural-v3",
+        )
+
+
+def test_v3_migration_preserves_historical_operation_set_on_non_full_episode(
+    tmp_path: Path,
+) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    set_schema_v2_contract(
+        source.root,
+        spec_missing=("component.occlusion", "view.move", "view.rotate"),
+    )
+    episode_root = source.root / "public" / "episodes"
+    full_path = next(
+        path
+        for path in episode_root.glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["family"] == "full_investigation"
+    )
+    historical_operations = json.loads(full_path.read_text(encoding="utf-8"))["required_operations"]
+    non_full_path = next(
+        path
+        for path in episode_root.glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["family"] != "full_investigation"
+    )
+    non_full = json.loads(non_full_path.read_text(encoding="utf-8"))
+    non_full["required_operations"] = historical_operations
+    non_full_path.write_text(
+        json.dumps(non_full, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    truth_path = source.root / "private" / "ground_truth" / non_full_path.name
+    truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    truth["required_operations"] = historical_operations
+    truth_path.write_text(
+        json.dumps(truth, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = source.root / "public" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["episode_sha256"][non_full_path.stem] = sha256_file(non_full_path)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    migrated, _ = migrate_corpus_v3(
+        source.root,
+        tmp_path / "migrated",
+        corpus_version="procedural-v3",
+    )
+
+    migrated_spec = json.loads(
+        (migrated.root / "public" / "episodes" / non_full_path.name).read_text(encoding="utf-8")
+    )
+    migrated_truth = json.loads(
+        (migrated.root / "private" / "ground_truth" / non_full_path.name).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert migrated_spec["required_operations"] == historical_operations
+    assert migrated_truth["required_operations"] == historical_operations
+
+
+def test_v3_migration_audit_rejects_incomplete_private_operation_contract(
+    tmp_path: Path,
+) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    restore_schema_v1_source(source.root, corpus_version="procedural-v2")
+    migrated, _ = migrate_corpus_v3(
+        source.root,
+        tmp_path / "migrated",
+        corpus_version="procedural-v3",
+    )
+    full_spec_path = next(
+        path
+        for path in (migrated.root / "public" / "episodes").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["family"] == "full_investigation"
+    )
+    full_truth_path = migrated.root / "private" / "ground_truth" / full_spec_path.name
+    truth = json.loads(full_truth_path.read_text(encoding="utf-8"))
+    truth["required_operations"].remove("component.occlusion")
+    full_truth_path.write_text(
+        json.dumps(truth, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="invalid full-investigation operation set"):
+        audit_migration(source.root, migrated.root)
+
+
+@pytest.mark.parametrize("tamper", ["schema", "episode_hash"])
+def test_v3_migration_audit_validates_destination_corpus(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    source = build_corpus(
+        tmp_path,
+        corpus_version="procedural-v2",
+        families=(GeneratorFamily.HIDDEN_CLIP,),
+        seeds=(0,),
+    )
+    restore_schema_v1_source(source.root, corpus_version="procedural-v2")
+    migrated, _ = migrate_corpus_v3(
+        source.root,
+        tmp_path / "migrated",
+        corpus_version="procedural-v3",
+    )
+    manifest_path = migrated.root / "public" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if tamper == "schema":
+        manifest["schema_version"] = 2
+    else:
+        first_episode = manifest["episodes"][0]
+        manifest["episode_sha256"][first_episode] = "0" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    expected = "migrate the corpus" if tamper == "schema" else "episode hash mismatch"
+    with pytest.raises((ValueError, RuntimeError), match=expected):
+        audit_migration(source.root, migrated.root)
 
 
 def test_private_opaque_family_construction_is_a_production_step(tmp_path: Path) -> None:

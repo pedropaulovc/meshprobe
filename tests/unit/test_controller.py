@@ -42,6 +42,7 @@ from meshprobe.protocol import (
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -576,6 +577,133 @@ def test_focused_context_camera_stays_outside_scene_and_preserves_framing() -> N
     assert framed_distance == pytest.approx(distance)
     assert projection.focal_length_mm > 50
     assert projection.far_clip_mm > distance + context_radius
+
+
+def test_occlusion_query_reports_current_camera_samples_and_named_blockers(
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    snapshot = InspectionSession(scene_manifest).snapshot()
+    focus = scene_manifest.components[-1]
+    blocker = scene_manifest.components[-2]
+    query_diagnostics = snapshot.camera_diagnostics.model_copy(
+        update={"target_depth_mm": snapshot.camera_diagnostics.target_depth_mm + 100}
+    )
+
+    def request(operation: str, **arguments: object) -> dict[str, Any]:
+        if operation == "session.snapshot":
+            return {"session": snapshot.model_dump(mode="json")}
+        if operation == "component.occluders":
+            assert arguments["component_ids"] == [focus.id]
+            assert arguments["aspect_ratio"] == snapshot.camera_diagnostics.aspect_ratio
+            return {
+                "projection": snapshot.camera.projection.mode,
+                "aspect_ratio": snapshot.camera_diagnostics.aspect_ratio,
+                "sample_count": 9,
+                "visible_rays": 5,
+                "occluded_rays": 4,
+                "unresolved_rays": 0,
+                "camera_diagnostics": query_diagnostics.model_dump(mode="json"),
+                "occluders": [{"component_id": blocker.id, "blocked_rays": 4}],
+            }
+        raise AssertionError(f"unexpected operation: {operation}")
+
+    monkeypatch.setattr(controller, "request", request)
+    result = controller.execute(
+        ComponentOcclusionCommand(
+            request_id="occlusion",
+            op="component.occlusion",
+            component_ids=(focus.id,),
+            max_samples_per_component=64,
+        )
+    )
+
+    assert result.camera == snapshot.camera
+    assert result.camera_diagnostics == query_diagnostics
+    assert result.aspect_ratio == snapshot.camera_diagnostics.aspect_ratio
+    assert result.camera_source == "current_session"
+    assert result.state_sha256 == snapshot.state_sha256
+    assert result.visible_sample_count == 5
+    assert result.occluded_sample_count == 4
+    assert result.unresolved_sample_count == 0
+    assert result.visible_fraction == pytest.approx(5 / 9)
+    assert result.sample_count == 9
+    assert result.blockers[0].component_id == blocker.id
+    assert result.blockers[0].display_name == blocker.display_name
+    assert result.blockers[0].component_path == blocker.path
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"unresolved_rays": 1}, "inconsistent occlusion sample counts"),
+        ({"visible_rays": -1}, "invalid occlusion sample counts"),
+        ({"unresolved_rays": None}, "invalid occlusion sample counts"),
+        ({"occluders": []}, "blocker hit counts do not equal occluded rays"),
+        (
+            {"occluders": [{"blocked_rays": 0}]},
+            "invalid blocker hit count",
+        ),
+    ],
+)
+def test_occlusion_query_rejects_malformed_worker_accounting(
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    snapshot = InspectionSession(scene_manifest).snapshot()
+    focus = scene_manifest.components[-1]
+    blocker = scene_manifest.components[-2]
+    ranking: dict[str, object] = {
+        "projection": snapshot.camera.projection.mode,
+        "aspect_ratio": snapshot.camera_diagnostics.aspect_ratio,
+        "sample_count": 9,
+        "visible_rays": 5,
+        "occluded_rays": 4,
+        "unresolved_rays": 0,
+        "camera_diagnostics": snapshot.camera_diagnostics.model_dump(mode="json"),
+        "occluders": [{"component_id": blocker.id, "blocked_rays": 4}],
+    }
+    ranking.update(updates)
+    for item in ranking.get("occluders", []):  # type: ignore[union-attr]
+        item.setdefault("component_id", blocker.id)
+
+    def request(operation: str, **arguments: object) -> dict[str, Any]:
+        if operation == "session.snapshot":
+            return {"session": snapshot.model_dump(mode="json")}
+        if operation == "component.occluders":
+            return ranking
+        raise AssertionError(f"unexpected operation: {operation}")
+
+    monkeypatch.setattr(controller, "request", request)
+    command = ComponentOcclusionCommand(
+        request_id="malformed-occlusion",
+        op="component.occlusion",
+        component_ids=(focus.id,),
+    )
+
+    with pytest.raises(BlenderWorkerError, match=message):
+        controller.execute(command)
+
+
+def test_occlusion_query_validates_open_scene_and_focus(scene_manifest: SceneManifest) -> None:
+    command = ComponentOcclusionCommand(
+        request_id="occlusion",
+        op="component.occlusion",
+        component_ids=("missing",),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="before a scene is open"):
+        BlenderController().execute(command)
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    with pytest.raises(BlenderWorkerError, match="unknown component"):
+        controller.execute(command)
 
 
 def test_execute_routes_scene_open_through_checked_import(

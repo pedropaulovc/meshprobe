@@ -18,6 +18,7 @@ from meshprobe.evals.generators import (
 )
 from meshprobe.evals.oracles import OracleInputs, score_episode
 from meshprobe.evals.schemas import (
+    EVALUATED_OPERATIONS,
     AnswerStatus,
     EpisodeSubmission,
     EvidenceKind,
@@ -1599,7 +1600,7 @@ def test_full_investigation_coverage_fails_when_any_operation_is_removed(
     target = model.component_ids["idler"]
     events: list[TraceEvent] = []
     state = "0" * 64
-    for sequence, operation in enumerate(Operation, start=1):
+    for sequence, operation in enumerate(EVALUATED_OPERATIONS, start=1):
         arguments: object = {}
         result: object = {}
         before = state
@@ -1611,6 +1612,9 @@ def test_full_investigation_coverage_fails_when_any_operation_is_removed(
         if operation is Operation.COMPONENT_INSPECT:
             arguments = {"component_id": target}
             result = {"id": target}
+        if operation is Operation.COMPONENT_OCCLUSION:
+            arguments = {"component_ids": [target]}
+            result = {"focus_component_ids": [target], "sample_count": 0}
         if operation in {
             Operation.VIEW_SET,
             Operation.VIEW_ORBIT,
@@ -1653,7 +1657,7 @@ def test_full_investigation_coverage_fails_when_any_operation_is_removed(
         next(gate for gate in baseline.gates if gate.gate == "coverage").status is GateStatus.PASS
     )
 
-    for operation in Operation:
+    for operation in EVALUATED_OPERATIONS:
         reduced = tuple(event for event in events if event.operation is not operation)
         report = score_episode(replace(inputs, trace=reduced))
         coverage = next(gate for gate in report.gates if gate.gate == "coverage")

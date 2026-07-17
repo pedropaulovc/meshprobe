@@ -21,6 +21,7 @@ from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging
 from meshprobe.models import (
     Bounds,
     Camera,
+    CameraDiagnostics,
     Component,
     ContactSheetCallout,
     ContactSheetManifest,
@@ -33,7 +34,9 @@ from meshprobe.models import (
     IlluminationPreset,
     NormalizedGeometryArtifact,
     OccluderRemovalStep,
+    OcclusionBlocker,
     OcclusionEvidence,
+    OcclusionQueryResult,
     OrthographicProjection,
     PerspectiveProjection,
     PresetIllumination,
@@ -48,6 +51,7 @@ from meshprobe.protocol import (
     ComponentFindCommand,
     ComponentInspectCommand,
     ComponentMarkCommand,
+    ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -331,6 +335,12 @@ class BlenderController:
             return self.render_image(command)
         if isinstance(command, RenderContactSheetCommand):
             return self.render_contact_sheet(command)
+        if isinstance(command, ComponentOcclusionCommand):
+            try:
+                return self.query_occlusion(command)
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._recover_session()
+                return self.query_occlusion(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
         if isinstance(command, IlluminationSetCommand):
@@ -351,6 +361,80 @@ class BlenderController:
             snapshot = SessionSnapshot.model_validate(result)
             return self._state_operation_result(command, snapshot)
         return result
+
+    def query_occlusion(self, command: ComponentOcclusionCommand) -> OcclusionQueryResult:
+        if self._manifest is None:
+            raise BlenderWorkerError("cannot query occlusion before a scene is open")
+        focus_ids = tuple(dict.fromkeys(command.component_ids))
+        known_ids = {component.id for component in self._manifest.components}
+        unknown = set(focus_ids) - known_ids
+        if unknown:
+            raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
+        snapshot_result = self.request("session.snapshot")
+        snapshot = SessionSnapshot.model_validate(snapshot_result["session"])
+        ranking = self.request(
+            "component.occluders",
+            component_ids=list(focus_ids),
+            max_samples_per_component=command.max_samples_per_component,
+            aspect_ratio=snapshot.camera_diagnostics.aspect_ratio,
+        )
+        evaluated_aspect = float(ranking.get("aspect_ratio", 0))
+        if not math.isclose(
+            evaluated_aspect,
+            snapshot.camera_diagnostics.aspect_ratio,
+            abs_tol=1e-12,
+        ):
+            raise BlenderWorkerError("worker evaluated occlusion with the wrong camera aspect")
+        if ranking.get("projection") != snapshot.camera.projection.mode:
+            raise BlenderWorkerError("worker evaluated occlusion with the wrong projection")
+
+        def sample_count_field(name: str) -> int:
+            value = ranking.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise BlenderWorkerError("worker returned invalid occlusion sample counts")
+            return value
+
+        sample_count = sample_count_field("sample_count")
+        visible_samples = sample_count_field("visible_rays")
+        occluded_samples = sample_count_field("occluded_rays")
+        unresolved_samples = sample_count_field("unresolved_rays")
+        if visible_samples + occluded_samples + unresolved_samples != sample_count:
+            raise BlenderWorkerError("worker returned inconsistent occlusion sample counts")
+        raw_query_diagnostics = ranking.get("camera_diagnostics")
+        if raw_query_diagnostics is None:
+            raise BlenderWorkerError("worker omitted focus-specific camera diagnostics")
+        query_diagnostics = CameraDiagnostics.model_validate(raw_query_diagnostics)
+        blockers = tuple(self._occlusion_blocker(item) for item in ranking.get("occluders", []))
+        if sum(blocker.ray_hit_count for blocker in blockers) != occluded_samples:
+            raise BlenderWorkerError("worker blocker hit counts do not equal occluded rays")
+        return OcclusionQueryResult(
+            focus_component_ids=focus_ids,
+            camera=snapshot.camera,
+            camera_diagnostics=query_diagnostics,
+            aspect_ratio=evaluated_aspect,
+            projection_status="projected" if sample_count else "not_projected",
+            sample_count=sample_count,
+            visible_sample_count=visible_samples,
+            occluded_sample_count=occluded_samples,
+            unresolved_sample_count=unresolved_samples,
+            visible_fraction=visible_samples / sample_count if sample_count else 0.0,
+            blockers=blockers,
+            state_sha256=snapshot.state_sha256,
+        )
+
+    def _occlusion_blocker(self, raw: object) -> OcclusionBlocker:
+        if not isinstance(raw, dict):
+            raise BlenderWorkerError("worker returned an invalid occlusion blocker")
+        component = self._component(str(raw["component_id"]))
+        ray_hit_count = raw.get("blocked_rays")
+        if type(ray_hit_count) is not int or ray_hit_count <= 0:
+            raise BlenderWorkerError("worker returned an invalid blocker hit count")
+        return OcclusionBlocker(
+            component_id=component.id,
+            display_name=component.display_name,
+            component_path=component.path,
+            ray_hit_count=ray_hit_count,
+        )
 
     @staticmethod
     def _state_operation_result(command: Command, snapshot: SessionSnapshot) -> dict[str, object]:
@@ -912,6 +996,7 @@ class BlenderController:
                 ranking = self.request(
                     "component.occluders",
                     component_ids=list(focus_ids),
+                    aspect_ratio=command.panel_width / command.panel_height,
                 )
                 sample_count = max(sample_count, int(ranking.get("sample_count", 0)))
                 ranked = [

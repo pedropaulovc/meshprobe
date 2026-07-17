@@ -51,6 +51,12 @@ class ComponentInspectCommand(CommandModel):
     component_id: str
 
 
+class ComponentOcclusionCommand(CommandModel):
+    op: Literal["component.occlusion"]
+    component_ids: tuple[str, ...] = Field(min_length=1)
+    max_samples_per_component: Annotated[int, Field(ge=1, le=4_096)] = 128
+
+
 class ViewSetCommand(CommandModel):
     op: Literal["view.set"]
     camera: Camera
@@ -173,6 +179,7 @@ type Command = Annotated[
     | SessionSnapshotCommand
     | ComponentFindCommand
     | ComponentInspectCommand
+    | ComponentOcclusionCommand
     | ViewSetCommand
     | ViewOrbitCommand
     | ViewMoveCommand

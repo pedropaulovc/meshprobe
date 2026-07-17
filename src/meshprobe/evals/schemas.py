@@ -20,6 +20,7 @@ class Operation(StrEnum):
     SESSION_SNAPSHOT = "session.snapshot"
     COMPONENT_FIND = "component.find"
     COMPONENT_INSPECT = "component.inspect"
+    COMPONENT_OCCLUSION = "component.occlusion"
     VIEW_SET = "view.set"
     VIEW_ORBIT = "view.orbit"
     VIEW_MOVE = "view.move"
@@ -173,7 +174,7 @@ class StateRequirement(EvalModel):
 
 
 class EpisodeSpec(EvalModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     episode_id: OpaqueId
     model_file: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]+\.glb$")]
     model_sha256: Sha256
@@ -200,7 +201,7 @@ class EpisodeSpec(EvalModel):
 
 
 class EpisodeGroundTruth(EvalModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     episode_id: OpaqueId
     model_sha256: Sha256
     generator_family: str
@@ -283,7 +284,7 @@ class GateResult(EvalModel):
 
 
 class EpisodeReport(EvalModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     episode_id: OpaqueId
     family: TaskFamily
     episode_class: EpisodeClass
@@ -309,7 +310,7 @@ class CorpusTier(StrEnum):
 
 
 class CorpusManifest(EvalModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     corpus_version: str
     tier: CorpusTier
     generator_sha256: Sha256
@@ -351,7 +352,7 @@ class PassThresholds(EvalModel):
 
 
 class TierManifest(EvalModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     tier: CorpusTier
     corpus_version: str
     corpus_manifest_sha256: Sha256

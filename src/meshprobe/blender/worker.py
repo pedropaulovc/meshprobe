@@ -27,6 +27,7 @@ from typing import Any
 
 import bpy  # type: ignore[import-not-found]
 import gpu  # type: ignore[import-not-found]
+from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-not-found]
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
@@ -2177,41 +2178,426 @@ def export_normalized(command: dict[str, Any]) -> dict[str, Any]:
 
 def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
     focus_ids = selected_component_ids(command)
-    camera_origin = camera_object().matrix_world.translation
+    scene = bpy.context.scene
+    camera = camera_object()
+    camera_origin = camera.matrix_world.translation
+    camera_forward = camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+    camera_forward.normalize()
+    projection = "orthographic" if camera.data.type == "ORTHO" else "perspective"
     object_ids = {obj: component_id for component_id, obj in COMPONENT_OBJECTS.items()}
-    points: list[Vector] = []
-    for component_id in sorted(focus_ids):
-        obj = COMPONENT_OBJECTS[component_id]
-        vertices = obj.data.vertices
-        stride = max(1, len(vertices) // 128)
-        points.extend(
-            obj.matrix_world @ vertices[index].co for index in range(0, len(vertices), stride)
-        )
-        points.append(obj.matrix_world.translation.copy())
-    counts: dict[str, int] = {}
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    for point in points:
-        direction = point - camera_origin
-        distance = direction.length
-        if distance <= 1e-9:
-            continue
-        hit, _, _, _, hit_object, _ = bpy.context.scene.ray_cast(
-            depsgraph, camera_origin, direction.normalized(), distance=distance + 1e-6
+    points: list[tuple[str, Vector]] = []
+    max_samples = int(command.get("max_samples_per_component", 128))
+    if not 1 <= max_samples <= 4_096:
+        raise ValueError("component.occluders max_samples_per_component must be between 1 and 4096")
+    default_aspect = (
+        scene.render.resolution_x
+        * scene.render.pixel_aspect_x
+        / max(1e-12, scene.render.resolution_y * scene.render.pixel_aspect_y)
+    )
+    aspect_ratio = float(command.get("aspect_ratio", default_aspect))
+    if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
+        raise ValueError("component.occluders aspect_ratio must be between 0.01 and 100")
+    render_settings = (
+        scene.render.resolution_x,
+        scene.render.resolution_y,
+        scene.render.resolution_percentage,
+        scene.render.pixel_aspect_x,
+        scene.render.pixel_aspect_y,
+    )
+
+    def material_uses_transparency(material: Any) -> bool:
+        if not material.use_nodes or material.node_tree is None:
+            return bool(float(material.diffuse_color[3]) < 1 - 1e-6)
+        principled = material.node_tree.nodes.get("Principled BSDF")
+        if principled is None:
+            return False
+        alpha = principled.inputs.get("Alpha")
+        if alpha is None or alpha.is_linked:
+            return False
+        # Blender 5.2 resolves scalar glTF OPAQUE/MASK factors to 1/0 at import.
+        return bool(float(alpha.default_value) < 1 - 1e-6)
+
+    def hit_material(hit_object: Any, polygon_index: int) -> Any | None:
+        evaluated = hit_object.evaluated_get(depsgraph)
+        data = getattr(evaluated, "data", None)
+        polygons = getattr(data, "polygons", ())
+        if not 0 <= polygon_index < len(polygons):
+            return None
+        material_index = polygons[polygon_index].material_index
+        material_slots = getattr(evaluated, "material_slots", ())
+        if not 0 <= material_index < len(material_slots):
+            return None
+        return material_slots[material_index].material
+
+    def is_inside_camera_frustum(point: Vector) -> bool:
+        depth = (point - camera_origin).dot(camera_forward)
+        if depth - camera.data.clip_start <= 1e-6 or camera.data.clip_end - depth <= 1e-6:
+            return False
+        projected = world_to_camera_view(scene, camera, point)
+        if not 1e-9 < projected.x < 1 - 1e-9:
+            return False
+        return bool(1e-9 < projected.y < 1 - 1e-9)
+
+    def source_material(obj: Any, polygon_index: int) -> Any | None:
+        polygon = obj.data.polygons[polygon_index]
+        material_slots = obj.material_slots
+        if not 0 <= polygon.material_index < len(material_slots):
+            return None
+        return material_slots[polygon.material_index].material
+
+    def material_is_fully_transparent(material: Any) -> bool:
+        if not material.use_nodes or material.node_tree is None:
+            return bool(float(material.diffuse_color[3]) <= 1e-6)
+        principled = material.node_tree.nodes.get("Principled BSDF")
+        if principled is None:
+            return False
+        alpha = principled.inputs.get("Alpha")
+        return bool(alpha is not None and not alpha.is_linked and alpha.default_value <= 1e-6)
+
+    def polygon_renders_from_camera(obj: Any, polygon_index: int, point: Vector) -> bool:
+        material = source_material(obj, polygon_index)
+        if material is not None and material_is_fully_transparent(material):
+            return False
+        if material is None or not material.use_backface_culling:
+            return True
+        normal_matrix = obj.matrix_world.to_3x3().inverted().transposed()
+        world_normal = (normal_matrix @ obj.data.polygons[polygon_index].normal).normalized()
+        direction = camera_forward if projection == "orthographic" else (point - camera_origin)
+        if direction.length <= 1e-12:
+            return False
+        return bool(world_normal.dot(direction.normalized()) <= 1e-9)
+
+    def eligible_focus_point(
+        obj: Any,
+        point: Vector,
+        polygon_indices: tuple[int, ...],
+    ) -> bool:
+        if not is_inside_camera_frustum(point):
+            return False
+        return any(
+            polygon_renders_from_camera(obj, polygon_index, point)
+            for polygon_index in polygon_indices
         )
-        if not hit or hit_object is None:
+
+    def triangle_screen_sample(
+        triangle: tuple[Vector, Vector, Vector],
+        screen_x: float,
+        screen_y: float,
+    ) -> Vector | None:
+        projected = tuple(world_to_camera_view(scene, camera, point) for point in triangle)
+        denominator = (projected[1].y - projected[2].y) * (projected[0].x - projected[2].x) + (
+            projected[2].x - projected[1].x
+        ) * (projected[0].y - projected[2].y)
+        if abs(denominator) <= 1e-12:
+            return None
+        weights = (
+            (
+                (projected[1].y - projected[2].y) * (screen_x - projected[2].x)
+                + (projected[2].x - projected[1].x) * (screen_y - projected[2].y)
+            )
+            / denominator,
+            (
+                (projected[2].y - projected[0].y) * (screen_x - projected[2].x)
+                + (projected[0].x - projected[2].x) * (screen_y - projected[2].y)
+            )
+            / denominator,
+            0.0,
+        )
+        weights = (weights[0], weights[1], 1 - weights[0] - weights[1])
+        if min(weights) < -1e-9:
+            return None
+        if projection == "perspective":
+            depths = tuple((point - camera_origin).dot(camera_forward) for point in triangle)
+            if min(depths) <= 0:
+                return None
+            corrected = tuple(weight / depth for weight, depth in zip(weights, depths, strict=True))
+            total = sum(corrected)
+            weights = tuple(weight / total for weight in corrected)
+        point = triangle[0] * weights[0] + triangle[1] * weights[1] + triangle[2] * weights[2]
+        return point if is_inside_camera_frustum(point) else None
+
+    def edge_frustum_samples(start: Vector, end: Vector) -> list[Vector]:
+        samples: list[Vector] = []
+        start_projected = world_to_camera_view(scene, camera, start)
+        end_projected = world_to_camera_view(scene, camera, end)
+        for axis in ("x", "y"):
+            start_value = float(getattr(start_projected, axis))
+            end_value = float(getattr(end_projected, axis))
+            for boundary in (0.0, 1.0):
+                if (start_value - boundary) * (end_value - boundary) > 0:
+                    continue
+                if math.isclose(start_value, end_value, abs_tol=1e-12):
+                    continue
+                low = 0.0
+                high = 1.0
+                for _ in range(32):
+                    middle = (low + high) / 2
+                    point = start.lerp(end, middle)
+                    value = float(getattr(world_to_camera_view(scene, camera, point), axis))
+                    if (start_value - boundary) * (value - boundary) <= 0:
+                        high = middle
+                    else:
+                        low = middle
+                point = start.lerp(end, (low + high) / 2)
+                start_is_interior = (boundary == 0.0 and start_value > 0.0) or (
+                    boundary == 1.0 and start_value < 1.0
+                )
+                interior = start if start_is_interior else end
+                samples.append(point.lerp(interior, 1e-6))
+        start_depth = (start - camera_origin).dot(camera_forward)
+        end_depth = (end - camera_origin).dot(camera_forward)
+        for clip_depth in (camera.data.clip_start, camera.data.clip_end):
+            if (start_depth - clip_depth) * (end_depth - clip_depth) > 0:
+                continue
+            if math.isclose(start_depth, end_depth, abs_tol=1e-12):
+                continue
+            factor = (clip_depth - start_depth) / (end_depth - start_depth)
+            point = start.lerp(end, factor)
+            start_is_interior = (
+                clip_depth == camera.data.clip_start and start_depth > clip_depth
+            ) or (clip_depth == camera.data.clip_end and start_depth < clip_depth)
+            interior = start if start_is_interior else end
+            samples.append(point.lerp(interior, 1e-6))
+        return samples
+
+    surface_triangles_scanned = 0
+
+    def surface_frustum_samples(obj: Any, budget: int) -> list[Vector]:
+        nonlocal surface_triangles_scanned
+        if budget <= 0:
+            return []
+        samples: list[Vector] = []
+        triangle_weights = (
+            (1 / 3, 1 / 3, 1 / 3),
+            (0.8, 0.1, 0.1),
+            (0.1, 0.8, 0.1),
+            (0.1, 0.1, 0.8),
+            (0.45, 0.45, 0.1),
+            (0.45, 0.1, 0.45),
+            (0.1, 0.45, 0.45),
+        )
+        screen_samples = (
+            (0.5, 0.5),
+            (0.25, 0.25),
+            (0.75, 0.25),
+            (0.25, 0.75),
+            (0.75, 0.75),
+        )
+        obj.data.calc_loop_triangles()
+        triangles = obj.data.loop_triangles
+        triangle_scan_budget = max(8, budget * 8)
+        triangle_stride = max(1, math.ceil(len(triangles) / triangle_scan_budget))
+        triangle_start = min(len(triangles) - 1, triangle_stride // 2) if triangles else 0
+        for triangles_scanned, triangle_index in enumerate(
+            range(triangle_start, len(triangles), triangle_stride)
+        ):
+            if triangles_scanned >= triangle_scan_budget:
+                return samples
+            surface_triangles_scanned += 1
+            loop_triangle = triangles[triangle_index]
+            polygon_index = loop_triangle.polygon_index
+            triangle = tuple(
+                obj.matrix_world @ obj.data.vertices[vertex_index].co
+                for vertex_index in loop_triangle.vertices
+            )
+            for weights in triangle_weights:
+                point = (
+                    triangle[0] * weights[0] + triangle[1] * weights[1] + triangle[2] * weights[2]
+                )
+                if eligible_focus_point(obj, point, (polygon_index,)):
+                    samples.append(point)
+                if len(samples) >= budget:
+                    return samples
+            for screen_x, screen_y in screen_samples:
+                point = triangle_screen_sample(triangle, screen_x, screen_y)
+                if point is not None and eligible_focus_point(obj, point, (polygon_index,)):
+                    samples.append(point)
+                if len(samples) >= budget:
+                    return samples
+            for start, end in (
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ):
+                samples.extend(
+                    point
+                    for point in edge_frustum_samples(start, end)
+                    if eligible_focus_point(obj, point, (polygon_index,))
+                )
+                if len(samples) >= budget:
+                    return samples[:budget]
+        return samples
+
+    try:
+        scene.render.resolution_x = 1_000
+        scene.render.resolution_y = 1_000
+        scene.render.resolution_percentage = 100
+        scene.render.pixel_aspect_x = max(1.0, aspect_ratio)
+        scene.render.pixel_aspect_y = max(1.0, 1.0 / aspect_ratio)
+        for component_id in sorted(focus_ids):
+            if COMPONENT_STATES[component_id]["display"] == "hidden":
+                continue
+            obj = COMPONENT_OBJECTS[component_id].evaluated_get(depsgraph)
+            vertices = obj.data.vertices
+            vertex_polygons: list[list[int]] = [[] for _ in vertices]
+            for polygon in obj.data.polygons:
+                for vertex_index in polygon.vertices:
+                    vertex_polygons[vertex_index].append(polygon.index)
+            vertex_budget = max_samples
+            stride = max(1, math.ceil(len(vertices) / vertex_budget)) if vertex_budget else 1
+            indices = range(0, len(vertices), stride) if vertex_budget else ()
+            candidates = [
+                (
+                    obj.matrix_world @ vertices[index].co,
+                    tuple(vertex_polygons[index]),
+                )
+                for index in indices
+            ]
+            component_points = [
+                point
+                for point, polygon_indices in candidates
+                if eligible_focus_point(obj, point, polygon_indices)
+            ]
+            remaining_budget = max_samples - len(component_points)
+            component_points.extend(surface_frustum_samples(obj, remaining_budget))
+            points.extend((component_id, point) for point in component_points[:max_samples])
+    finally:
+        (
+            scene.render.resolution_x,
+            scene.render.resolution_y,
+            scene.render.resolution_percentage,
+            scene.render.pixel_aspect_x,
+            scene.render.pixel_aspect_y,
+        ) = render_settings
+    projected_points: dict[tuple[int, int], tuple[str, Vector, float]] = {}
+    for component_id, point in points:
+        projected = world_to_camera_view(scene, camera, point)
+        key = (round(float(projected.x) * 1e9), round(float(projected.y) * 1e9))
+        depth = (point - camera_origin).dot(camera_forward)
+        previous = projected_points.get(key)
+        if previous is None or depth < previous[2]:
+            projected_points[key] = (component_id, point, depth)
+    points = [(component_id, point) for component_id, point, _ in projected_points.values()]
+    counts: dict[str, int] = {}
+    visible_rays = 0
+    unresolved_rays = 0
+    annotation_objects = set(MARK_OBJECTS.values())
+    annotation_names = {obj.name for obj in annotation_objects}
+    for _sampled_component_id, point in points:
+        depth = (point - camera_origin).dot(camera_forward)
+        if projection == "orthographic":
+            ray_origin = point - camera_forward * depth
+            ray_origin += camera_forward * camera.data.clip_start
+            direction = camera_forward
+            distance = depth - camera.data.clip_start
+        else:
+            direction = point - camera_origin
+            full_distance = direction.length
+            near_fraction = camera.data.clip_start / depth
+            ray_origin = camera_origin + direction * near_fraction
+            distance = full_distance * (1 - near_fraction)
+        if distance <= 1e-9:
+            unresolved_rays += 1
             continue
-        original = hit_object.original if hasattr(hit_object, "original") else hit_object
-        hit_component_id = object_ids.get(original)
-        if hit_component_id is None or hit_component_id in focus_ids:
+        normalized_direction = direction.normalized()
+        remaining_distance = distance + 1e-6
+        hit_component_id = None
+        hit_resolved = False
+        while remaining_distance > 1e-9:
+            hit, hit_location, hit_normal, polygon_index, hit_object, _ = (
+                bpy.context.scene.ray_cast(
+                    depsgraph,
+                    ray_origin,
+                    normalized_direction,
+                    distance=remaining_distance,
+                )
+            )
+            if not hit or hit_object is None:
+                break
+            original = hit_object.original if hasattr(hit_object, "original") else hit_object
+            hit_component_id = object_ids.get(original)
+            if hit_component_id is None:
+                if original in annotation_objects or hit_object.name in annotation_names:
+                    traveled = (hit_location - ray_origin).length
+                    advance = traveled + 1e-6
+                    next_remaining_distance = remaining_distance - advance
+                    next_ray_origin = hit_location + normalized_direction * 1e-6
+                    if (
+                        next_remaining_distance >= remaining_distance
+                        or (next_ray_origin - ray_origin).length <= 1e-12
+                    ):
+                        break
+                    remaining_distance = next_remaining_distance
+                    ray_origin = next_ray_origin
+                    continue
+                hit_resolved = True
+                break
+            hit_state = COMPONENT_STATES[hit_component_id]
+            material = hit_material(hit_object, polygon_index)
+            backface_culled = bool(
+                material is not None
+                and material.use_backface_culling
+                and hit_normal.dot(normalized_direction) > 1e-9
+            )
+            if (
+                hit_component_id in focus_ids
+                and hit_state["display"] != "hidden"
+                and not backface_culled
+            ):
+                hit_resolved = True
+                break
+            transparent_hit = (
+                backface_culled
+                or hit_state["display"] == "hidden"
+                or (hit_state["display"] == "ghosted" and hit_state["mark"] == "unmarked")
+                or (
+                    hit_state["mark"] == "unmarked"
+                    and material is not None
+                    and material_uses_transparency(material)
+                )
+            )
+            if not transparent_hit:
+                hit_resolved = True
+                break
+            traveled = (hit_location - ray_origin).length
+            advance = traveled + 1e-6
+            next_remaining_distance = remaining_distance - advance
+            next_ray_origin = hit_location + normalized_direction * 1e-6
+            if (
+                next_remaining_distance >= remaining_distance
+                or (next_ray_origin - ray_origin).length <= 1e-12
+            ):
+                break
+            remaining_distance = next_remaining_distance
+            ray_origin = next_ray_origin
+        if not hit_resolved:
+            unresolved_rays += 1
             continue
-        if COMPONENT_STATES[hit_component_id]["display"] == "hidden":
+        if hit_component_id in focus_ids:
+            visible_rays += 1
+            continue
+        if hit_component_id is None:
+            unresolved_rays += 1
             continue
         counts[hit_component_id] = counts.get(hit_component_id, 0) + 1
-    sample_count = len(points)
+    sample_count = visible_rays + unresolved_rays + sum(counts.values())
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return {
         "focus_component_ids": sorted(focus_ids),
+        "projection": projection,
+        "aspect_ratio": aspect_ratio,
+        "camera_diagnostics": camera_diagnostics(
+            camera,
+            sorted(focus_ids),
+            aspect_ratio,
+            None,
+        ),
         "sample_count": sample_count,
+        "surface_triangles_scanned": surface_triangles_scanned,
+        "visible_rays": visible_rays,
+        "occluded_rays": sum(counts.values()),
+        "unresolved_rays": unresolved_rays,
         "occluders": [
             {
                 "component_id": component_id,
