@@ -410,6 +410,7 @@ def apply_camera(
     aspect_ratio: float = 1.0,
     target_mm: list[float] | tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
+    validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
     obj = camera_object()
     pose = camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
@@ -503,6 +504,9 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
 def move_camera(command: dict[str, Any]) -> dict[str, Any]:
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
+    validate_camera_diagnostics_inputs(
+        command.get("focus_component_ids", ()), command.get("aspect_ratio", 1.0)
+    )
     previous_pose = deepcopy(CURRENT_CAMERA["pose"])
     x, y, z, w = previous_pose["orientation_xyzw"]
     orientation = Quaternion((w, x, y, z))
@@ -534,12 +538,10 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def camera_diagnostics(
-    camera: bpy.types.Object,
+def validate_camera_diagnostics_inputs(
     focus_component_ids: list[str] | tuple[str, ...],
     aspect_ratio: float,
-    target_mm: list[float] | tuple[float, float, float] | None,
-) -> dict[str, Any]:
+) -> None:
     focus_ids = set(focus_component_ids)
     unknown = focus_ids - COMPONENT_OBJECTS.keys()
     if unknown:
@@ -547,6 +549,15 @@ def camera_diagnostics(
     if not math.isfinite(aspect_ratio) or not 0.01 <= aspect_ratio <= 100:
         raise ValueError("aspect_ratio must be between 0.01 and 100")
 
+
+def camera_diagnostics(
+    camera: bpy.types.Object,
+    focus_component_ids: list[str] | tuple[str, ...],
+    aspect_ratio: float,
+    target_mm: list[float] | tuple[float, float, float] | None,
+) -> dict[str, Any]:
+    validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
+    focus_ids = set(focus_component_ids)
     matrix = camera.matrix_world
     right = matrix.to_3x3().col[0].normalized()
     up = matrix.to_3x3().col[1].normalized()

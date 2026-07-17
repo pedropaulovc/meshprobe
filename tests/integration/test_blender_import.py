@@ -563,6 +563,26 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     assert moved.camera_operation.resolved_world_delta_mm == pytest.approx(expected_delta)
 
 
+def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        controller.open_scene(source)
+        before = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.move",
+                world_delta_mm=[100, 0, 0],
+                camera_delta_mm=[0, 0, 0],
+                focus_component_ids=["missing"],
+                aspect_ratio=1,
+            )
+        after = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
+
+    assert after.camera == before.camera
+    assert after.camera_operation == before.camera_operation
+    assert after.state_sha256 == before.state_sha256
+
+
 def test_worker_imports_external_gltf_as_one_immutable_bundle(tmp_path: Path) -> None:
     source = build_external_gltf(tmp_path)
     before = snapshot_source(source)

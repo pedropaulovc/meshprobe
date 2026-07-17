@@ -404,6 +404,14 @@ def _run_curated(
     extent = max(_bounds_size(target, "world_bounds"))
     if "view.set" in required:
         _set_preliminary_camera(client, manifest, target["id"])
+    if "view.move" in required:
+        client.call(
+            "view.move",
+            world_delta_mm=[max(extent * 0.01, 1), 0, 0],
+            camera_delta_mm=[0, 0, 0],
+            focus_component_ids=[target["id"]],
+            aspect_ratio=1,
+        )
     client.call("component.display", component_ids=[target["id"]], mode="isolated")
     client.call("component.mark", component_ids=[target["id"]], mode="highlighted")
     client.call("illumination.set", illumination={"preset": "neutral_studio"})
@@ -505,6 +513,14 @@ def _run_procedural(
         _set_preliminary_camera(client, manifest, target["id"])
 
     target_extent = max(_bounds_size(target, "world_bounds"))
+    if "view.move" in required:
+        client.call(
+            "view.move",
+            world_delta_mm=[max(target_extent * 0.01, 1), 0, 0],
+            camera_delta_mm=[0, 0, 0],
+            focus_component_ids=[target["id"]],
+            aspect_ratio=1,
+        )
     client.call(
         "component.display",
         component_ids=[
