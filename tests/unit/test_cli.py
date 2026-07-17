@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -734,6 +735,140 @@ def test_illumination_cli_accepts_custom_json_and_preset_background_override(
     assert isinstance(preset_command, IlluminationSetCommand)
     assert preset_command.illumination.preset == "neutral_studio"
     assert preset_command.illumination.background_rgb == (1, 1, 1)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"preset": "custom", "background_rgb": [1, 1, 1]},
+        {
+            "preset": "custom",
+            "background_rgb": [1, 1, 1],
+            "ambient_rgb": [0, 0, 0],
+            "ambient_strength": 0,
+        },
+    ],
+    ids=["missing-required-field", "zero-output"],
+)
+def test_illumination_cli_reports_invalid_custom_json_as_parameter_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    payload: dict[str, object],
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    illumination_path = tmp_path / "illumination.json"
+    illumination_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "custom", "--illumination-json", str(illumination_path)],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert client.commands == []
+
+
+def test_illumination_cli_reports_invalid_preset_override_as_parameter_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "neutral_studio", "--background-rgb", "-1", "0", "0"],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert "background_rgb" in result.output
+    assert client.commands == []
+
+
+def test_illumination_cli_resolves_relative_environment_from_json_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    specification_dir = tmp_path / "specification"
+    environment_dir = specification_dir / "environment"
+    environment_dir.mkdir(parents=True)
+    environment_path = environment_dir / "studio.hdr"
+    environment_bytes = b"environment-map"
+    environment_path.write_bytes(environment_bytes)
+    illumination_path = specification_dir / "illumination.json"
+    environment_hash = sha256(environment_bytes).hexdigest()
+    illumination_path.write_text(
+        json.dumps(
+            {
+                "preset": "custom",
+                "background_rgb": [0, 0, 0],
+                "ambient_strength": 0,
+                "environment_map": {
+                    "path": "environment/studio.hdr",
+                    "sha256": environment_hash,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    invocation_dir = tmp_path / "invocation"
+    invocation_dir.mkdir()
+    monkeypatch.chdir(invocation_dir)
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "custom", "--illumination-json", str(illumination_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[0]
+    assert isinstance(command, IlluminationSetCommand)
+    environment = command.illumination.environment_map  # type: ignore[union-attr]
+    assert environment is not None
+    assert environment.path == str(environment_path.resolve())
+    assert environment.sha256 == environment_hash
+
+
+def test_illumination_cli_keeps_absolute_environment_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    environment_path = tmp_path / "studio.hdr"
+    environment_bytes = b"absolute-environment-map"
+    environment_path.write_bytes(environment_bytes)
+    illumination_path = tmp_path / "illumination.json"
+    illumination_path.write_text(
+        json.dumps(
+            {
+                "preset": "custom",
+                "background_rgb": [0, 0, 0],
+                "ambient_strength": 0,
+                "environment_map": {
+                    "path": str(environment_path),
+                    "sha256": sha256(environment_bytes).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "custom", "--illumination-json", str(illumination_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[0]
+    assert isinstance(command, IlluminationSetCommand)
+    environment = command.illumination.environment_map  # type: ignore[union-attr]
+    assert environment is not None
+    assert environment.path == str(environment_path)
 
 
 def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch) -> None:

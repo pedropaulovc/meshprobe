@@ -813,21 +813,43 @@ def illumination_set(
 
     from pydantic import TypeAdapter
 
-    from meshprobe.models import CustomIllumination, Illumination, PresetIllumination
+    from meshprobe.models import (
+        CustomIllumination,
+        EnvironmentMap,
+        Illumination,
+        PresetIllumination,
+    )
 
     illumination: Illumination
     if preset == "custom":
         if illumination_json is None:
             raise typer.BadParameter("custom requires --illumination-json")
-        illumination = TypeAdapter(Illumination).validate_json(
-            illumination_json.read_text(encoding="utf-8")
-        )
+        try:
+            illumination = TypeAdapter(Illumination).validate_json(
+                illumination_json.read_text(encoding="utf-8")
+            )
+        except KeyError as error:
+            raise typer.BadParameter(f"missing required field: {error.args[0]}") from error
+        except (OSError, ValidationError) as error:
+            raise typer.BadParameter(str(error)) from error
         if not isinstance(illumination, CustomIllumination):
             raise typer.BadParameter("--illumination-json must declare preset 'custom'")
         if background_rgb is not None or background_strength is not None:
             raise typer.BadParameter(
                 "background overrides cannot be combined with --illumination-json"
             )
+        environment: EnvironmentMap | None = illumination.environment_map
+        if environment is not None:
+            environment_path = Path(environment.path).expanduser()
+            if not environment_path.is_absolute():
+                environment_path = (illumination_json.parent / environment_path).resolve()
+                illumination = illumination.model_copy(
+                    update={
+                        "environment_map": environment.model_copy(
+                            update={"path": str(environment_path)}
+                        )
+                    }
+                )
     else:
         if illumination_json is not None:
             raise typer.BadParameter("--illumination-json requires the custom preset")
@@ -836,11 +858,14 @@ def illumination_set(
         except ValueError as error:
             choices = ", ".join(item.value for item in IlluminationPreset)
             raise typer.BadParameter(f"preset must be one of: {choices}, custom") from error
-        illumination = PresetIllumination(
-            preset=named_preset,
-            background_rgb=background_rgb,
-            background_strength=background_strength,
-        )
+        try:
+            illumination = PresetIllumination(
+                preset=named_preset,
+                background_rgb=background_rgb,
+                background_strength=background_strength,
+            )
+        except ValidationError as error:
+            raise typer.BadParameter(str(error)) from error
 
     _execute(
         ctx,
