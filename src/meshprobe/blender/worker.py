@@ -585,6 +585,52 @@ def transform_from_source(
     return matrix @ vector if point else matrix.to_3x3() @ vector
 
 
+def validate_rotation_basis(value: Any) -> dict[str, list[float]]:
+    defaults = {
+        "x": [1.0, 0.0, 0.0],
+        "y": [0.0, 1.0, 0.0],
+        "z": [0.0, 0.0, 1.0],
+    }
+    if not isinstance(value, dict) or set(value) - defaults.keys():
+        raise ValueError("basis must contain only x, y, and z axes")
+
+    basis: dict[str, list[float]] = {}
+    for name, default in defaults.items():
+        axis = value.get(name, default)
+        if not isinstance(axis, (list, tuple)) or len(axis) != 3:
+            raise ValueError("basis axes must contain three finite numbers")
+        if any(
+            isinstance(component, bool)
+            or not isinstance(component, (int, float))
+            or not math.isfinite(component)
+            for component in axis
+        ):
+            raise ValueError("basis axes must contain three finite numbers")
+        basis[name] = [float(component) for component in axis]
+
+    axes = (basis["x"], basis["y"], basis["z"])
+    lengths = [math.sqrt(sum(component * component for component in axis)) for axis in axes]
+    if any(not math.isclose(length, 1.0, abs_tol=1e-6) for length in lengths):
+        raise ValueError("basis axes must have unit length")
+    dot_products = [
+        sum(left * right for left, right in zip(axes[first], axes[second], strict=True))
+        for first, second in ((0, 1), (0, 2), (1, 2))
+    ]
+    if any(not math.isclose(dot, 0.0, abs_tol=1e-6) for dot in dot_products):
+        raise ValueError("basis axes must be mutually perpendicular")
+    cross_xy = (
+        basis["x"][1] * basis["y"][2] - basis["x"][2] * basis["y"][1],
+        basis["x"][2] * basis["y"][0] - basis["x"][0] * basis["y"][2],
+        basis["x"][0] * basis["y"][1] - basis["x"][1] * basis["y"][0],
+    )
+    if any(
+        not math.isclose(actual, expected, abs_tol=1e-6)
+        for actual, expected in zip(cross_xy, basis["z"], strict=True)
+    ):
+        raise ValueError("basis must be right-handed (x cross y must equal z)")
+    return basis
+
+
 def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
@@ -599,9 +645,11 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("degrees must be finite")
     if not math.isfinite(degrees):
         raise ValueError("degrees must be finite")
-    basis = command.get(
-        "basis",
-        {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]},
+    basis = validate_rotation_basis(
+        command.get(
+            "basis",
+            {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]},
+        )
     )
     axis = Vector(basis[command["axis"]])
     target_mm = command["target_mm"]

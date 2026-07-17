@@ -895,6 +895,11 @@ def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
         ("degrees", math.inf, "degrees must be finite"),
         ("target_mm", (math.nan, 0, 0), "target_mm must contain three finite numbers"),
         ("target_mm", (0, math.inf, 0), "target_mm must contain three finite numbers"),
+        (
+            "basis",
+            {"x": [2, 0, 0], "y": [0, 1, 0], "z": [0, 0, 1]},
+            "basis axes must have unit length",
+        ),
     ],
 )
 def test_rejected_raw_rotation_contract_preserves_camera_state(
