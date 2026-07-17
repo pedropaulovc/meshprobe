@@ -1057,6 +1057,13 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     rotated = SessionSnapshot.model_validate(rotated_envelope["result"])
     manager.close("review")
 
+    checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
+    legacy_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert legacy_checkpoint["schema_version"] == 2
+    legacy_checkpoint["schema_version"] = 1
+    legacy_checkpoint["accepted_commands"][0]["degrees"] = -command.degrees
+    checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
+
     recovered_manager = SessionManager(root, blender="blender", timeout_seconds=30)
     recovered_receipt = recovered_manager.execute(
         "review",
@@ -1072,9 +1079,8 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     )
     assert recovered.camera.projection == rotated.camera.projection
     assert recovered.state_sha256 == rotated.state_sha256
-    checkpoint = json.loads(
-        (root / "sessions" / "review" / "checkpoint.json").read_text(encoding="utf-8")
-    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["schema_version"] == 2
     assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
 
     recovered_manager.execute(
