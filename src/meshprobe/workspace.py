@@ -349,6 +349,7 @@ class SessionManager:
         self.timeout_seconds = timeout_seconds
         self._service_factory = service_factory
         self._services: dict[str, SessionService] = {}
+        self._graphics_warned_worker_pids: dict[str, int | None] = {}
         self._lock = threading.RLock()
 
     def open(
@@ -408,6 +409,7 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             graphics = getattr(service, "graphics", None)
             warnings = graphics.warnings if graphics is not None else ()
+            self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 
     def execute(
@@ -454,9 +456,10 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             artifacts = self._artifact_paths(command.op, response.result)
             warnings: tuple[str, ...] = ()
-            if renderer_continuity is not RendererContinuity.PRESERVED:
+            if self._graphics_warned_worker_pids.get(name) != service.worker_pid:
                 graphics = getattr(service, "graphics", None)
                 warnings = graphics.warnings if graphics is not None else ()
+                self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(
                 files,
                 command.op,

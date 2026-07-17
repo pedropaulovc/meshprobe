@@ -282,6 +282,41 @@ def test_graphics_warning_resurfaces_when_the_worker_is_recreated(
     assert recreated_receipt.warnings == graphics.warnings
 
 
+def test_graphics_warning_resurfaces_after_a_recovered_workers_first_command_is_rejected(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    graphics = _fake_graphics_platform()
+
+    class RejectingFirstCommandService(FakeSessionService):
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "will-fail":
+                raise ValueError("rejected")
+            return super().execute(command)
+
+    def factory() -> RejectingFirstCommandService:
+        return RejectingFirstCommandService(scene_manifest, graphics=graphics)
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+
+    # A fresh manager with no in-memory service simulates a daemon restart: the
+    # next command recovers a brand-new worker before running the user's command.
+    recovered = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    with pytest.raises(ValueError):
+        recovered.execute(
+            "review",
+            SessionSnapshotCommand(request_id="will-fail", op="session.snapshot"),
+        )
+
+    receipt = recovered.execute(
+        "review",
+        SessionSnapshotCommand(request_id="now-succeeds", op="session.snapshot"),
+    )
+    assert receipt.warnings == graphics.warnings
+
+
 def test_recreated_worker_resets_durable_render_style(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
