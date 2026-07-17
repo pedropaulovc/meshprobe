@@ -16,6 +16,7 @@ from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -693,6 +694,46 @@ def test_mark_cli_reports_invalid_color_as_parameter_error(
     assert "Invalid value" in result.output
     assert "validation error for ComponentMarkCommand" in result.output
     assert client.commands == []
+
+
+def test_illumination_cli_accepts_custom_json_and_preset_background_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    illumination_path = tmp_path / "illumination.json"
+    illumination_path.write_text(
+        json.dumps(
+            {
+                "preset": "custom",
+                "background_rgb": [1, 1, 1],
+                "background_strength": 1,
+                "ambient_rgb": [0.1, 0.1, 0.1],
+                "ambient_strength": 0.15,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    custom = runner.invoke(
+        app,
+        ["illumination-set", "custom", "--illumination-json", str(illumination_path)],
+    )
+    preset = runner.invoke(
+        app,
+        ["illumination-set", "neutral_studio", "--background-rgb", "1", "1", "1"],
+    )
+
+    assert custom.exit_code == 0, custom.output
+    assert preset.exit_code == 0, preset.output
+    custom_command, preset_command = client.commands
+    assert isinstance(custom_command, IlluminationSetCommand)
+    assert custom_command.illumination.preset == "custom"
+    assert custom_command.illumination.background_rgb == (1, 1, 1)
+    assert isinstance(preset_command, IlluminationSetCommand)
+    assert preset_command.illumination.preset == "neutral_studio"
+    assert preset_command.illumination.background_rgb == (1, 1, 1)
 
 
 def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch) -> None:
