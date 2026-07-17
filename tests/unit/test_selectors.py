@@ -5,9 +5,26 @@ from meshprobe.selectors import (
     ComponentIndex,
     ComponentSelector,
     SelectorKind,
+    is_glob_pattern,
+    normalize_glob,
     path_glob_match,
     stable_component_id,
 )
+
+
+def test_is_glob_pattern_detects_metacharacters() -> None:
+    assert is_glob_pattern("**/idler")
+    assert is_glob_pattern("assembly/*")
+    assert is_glob_pattern("gear?")
+    assert is_glob_pattern("[abc]lip")
+    assert not is_glob_pattern("assembly/drive/idler")
+    assert not is_glob_pattern("c2")
+
+
+def test_normalize_glob_anchors_bare_patterns() -> None:
+    assert normalize_glob("idler") == "**/idler"
+    assert normalize_glob("i*") == "**/i*"
+    assert normalize_glob("assembly/**/idler") == "assembly/**/idler"
 
 
 def test_stable_component_id_depends_on_source_and_path() -> None:

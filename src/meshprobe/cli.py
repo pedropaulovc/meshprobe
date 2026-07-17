@@ -65,7 +65,12 @@ from meshprobe.protocol import (
     command_json_schema,
     command_result_json_schema,
 )
-from meshprobe.selectors import ComponentSelector, SelectorKind
+from meshprobe.selectors import (
+    ComponentSelector,
+    SelectorKind,
+    is_glob_pattern,
+    normalize_glob,
+)
 from meshprobe.service import MeshProbeService
 from meshprobe.workspace import (
     OperationReceipt,
@@ -603,11 +608,29 @@ def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None
 
 
 def _component_ids(ctx: typer.Context, components: list[str]) -> tuple[str, ...]:
+    """Resolve refs/IDs/names/paths and expand glob patterns, like `find`.
+
+    Each glob token fans out to every matching component; exact tokens resolve to
+    one. Order follows the arguments and, within a glob, component path; duplicates
+    are dropped so an overlapping glob and ref map to a single entry.
+    """
+
+    client = _client(ctx)
+    session = _options(ctx).session
+    resolved: dict[str, None] = {}
+    try:
+        for component in components:
+            for component_id in client.resolve_component_ids(session, component):
+                resolved[component_id] = None
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error)) from error
+    return tuple(resolved)
+
+
+def _component_id(ctx: typer.Context, value: str) -> str:
     client = _client(ctx)
     try:
-        return tuple(
-            client.resolve_component(_options(ctx).session, component) for component in components
-        )
+        return client.resolve_component(_options(ctx).session, value)
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
 
@@ -688,15 +711,15 @@ def _find_selector_options(
 
 def _find_selector(kind: FindKind, pattern: str) -> ComponentSelector:
     selector_kind = _find_selector_kind(kind, pattern)
-    if selector_kind is SelectorKind.GLOB and "/" not in pattern:
-        pattern = f"**/{pattern}"
+    if selector_kind is SelectorKind.GLOB:
+        pattern = normalize_glob(pattern)
     return ComponentSelector(kind=selector_kind, pattern=pattern)
 
 
 def _find_selector_kind(kind: FindKind, pattern: str) -> SelectorKind:
     if kind is not FindKind.AUTO:
         return SelectorKind(kind.value)
-    if any(character in pattern for character in "*?["):
+    if is_glob_pattern(pattern):
         return SelectorKind.GLOB
     if "/" in pattern:
         return SelectorKind.EXACT_PATH
@@ -707,7 +730,7 @@ def _find_selector_kind(kind: FindKind, pattern: str) -> SelectorKind:
 def inspect_component(ctx: typer.Context, component: Annotated[str, typer.Argument()]) -> None:
     """Inspect one component by ref, stable ID, exact display name, or exact path."""
 
-    component_id = _component_ids(ctx, [component])[0]
+    component_id = _component_id(ctx, component)
     _execute(
         ctx,
         ComponentInspectCommand(
@@ -724,7 +747,7 @@ def view_set(
     camera_json: Annotated[str, typer.Option("--camera-json")],
     focus: Annotated[
         list[str] | None,
-        typer.Option("--focus", help="Component ref, stable ID, exact name, or exact path."),
+        typer.Option("--focus", help="Component ref, stable ID, exact name, exact path, or glob."),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
     aperture_fstop: Annotated[float | None, typer.Option("--aperture-fstop", min=0.000001)] = None,
@@ -741,7 +764,7 @@ def view_set(
 
     camera = Camera.model_validate_json(camera_json)
     focus_component_id = (
-        _component_ids(ctx, [focus_component])[0] if focus_component is not None else None
+        _component_id(ctx, focus_component) if focus_component is not None else None
     )
     camera = _camera_with_depth_of_field(
         camera,
@@ -795,7 +818,7 @@ def view_orbit(
     ] = 0.0,
     focus: Annotated[
         list[str] | None,
-        typer.Option("--focus", help="Component ref, stable ID, exact name, or exact path."),
+        typer.Option("--focus", help="Component ref, stable ID, exact name, exact path, or glob."),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
@@ -1096,7 +1119,7 @@ def display_components(
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[DisplayMode, typer.Option("--mode")],
 ) -> None:
-    """Change visibility using refs, stable IDs, exact display names, or exact paths."""
+    """Change visibility using refs, stable IDs, exact names, exact paths, or globs."""
 
     _execute(
         ctx,
@@ -1119,7 +1142,7 @@ def mark_components(
         typer.Option("--color", help="sRGB highlight color in #RRGGBB form."),
     ] = None,
 ) -> None:
-    """Mark components using refs, stable IDs, exact display names, or exact paths."""
+    """Mark components using refs, stable IDs, exact names, exact paths, or globs."""
 
     try:
         command = ComponentMarkCommand(
@@ -1212,7 +1235,9 @@ def render_sheet(
     ctx: typer.Context,
     focus: Annotated[
         list[str],
-        typer.Argument(help="Component refs, stable IDs, exact names, or exact paths."),
+        typer.Argument(
+            help="Component refs, stable IDs, exact names, exact paths, or glob patterns."
+        ),
     ],
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
     panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 768,
@@ -1257,7 +1282,12 @@ def render_sheet(
 @app.command("occlusion")
 def occlusion(
     ctx: typer.Context,
-    focus: Annotated[list[str], typer.Argument()],
+    focus: Annotated[
+        list[str],
+        typer.Argument(
+            help="Component refs, stable IDs, exact names, exact paths, or glob patterns."
+        ),
+    ],
     max_samples: Annotated[int, typer.Option("--max-samples", min=1, max=4_096)] = 128,
 ) -> None:
     """Measure focus visibility and blockers from the current session camera.

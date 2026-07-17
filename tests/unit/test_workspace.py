@@ -819,6 +819,42 @@ def test_ambiguous_component_name_reports_matching_paths(
     assert "exact path or stable ID" in str(error.value)
 
 
+def test_resolve_component_ids_expands_globs_and_falls_back_to_exact(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    by_path = {component.path: component.id for component in scene_manifest.components}
+
+    # A bare glob is anchored like `find`, matches at any depth, and returns every
+    # match ordered by path.
+    assert manager.resolve_component_ids("review", "**/*") == (
+        by_path["assembly"],
+        by_path["assembly/cover/clip"],
+        by_path["assembly/drive/idler"],
+    )
+    assert manager.resolve_component_ids("review", "idler") == (by_path["assembly/drive/idler"],)
+    assert manager.resolve_component_ids("review", "assembly/*/clip") == (
+        by_path["assembly/cover/clip"],
+    )
+
+    # Non-glob tokens keep exact ref/ID/name/path resolution, one id each.
+    assert manager.resolve_component_ids("review", "c2") == (by_path["assembly/cover/clip"],)
+    assert manager.resolve_component_ids("review", "assembly/drive/idler") == (
+        by_path["assembly/drive/idler"],
+    )
+
+    with pytest.raises(ValueError, match="no components match glob pattern"):
+        manager.resolve_component_ids("review", "**/missing*")
+    with pytest.raises(ValueError, match="unknown component"):
+        manager.resolve_component_ids("review", "c999")
+
+
 def test_reset_clears_replay_and_artifact_detection_is_render_only(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:

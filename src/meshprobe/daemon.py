@@ -77,6 +77,12 @@ def dispatch(server: DaemonServer, request: dict[str, Any]) -> object:
         return server.manager.execute(session, command, blender=blender).model_dump(mode="json")
     if action == "resolve":
         return {"component_id": server.manager.resolve_component(session, str(request["value"]))}
+    if action == "resolve-ids":
+        return {
+            "component_ids": list(
+                server.manager.resolve_component_ids(session, str(request["value"]))
+            )
+        }
     if action == "list":
         return {"sessions": server.manager.list_sessions()}
     if action == "close":

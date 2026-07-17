@@ -41,6 +41,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
 )
+from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
 
 STATE_OPERATIONS = frozenset(
@@ -570,6 +571,21 @@ class SessionManager:
         raise ValueError(
             f"unknown component reference, stable ID, exact display name, or exact path: {value}"
         )
+
+    def resolve_component_ids(self, name: str, value: str) -> tuple[str, ...]:
+        if not is_glob_pattern(value):
+            return (self.resolve_component(name, value),)
+        files = self._require_files(name)
+        payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
+        components = payload.get("components", []) if isinstance(payload, dict) else []
+        pattern = normalize_glob(value)
+        matched = sorted(
+            (component for component in components if path_glob_match(component["path"], pattern)),
+            key=lambda component: str(component["path"]),
+        )
+        if not matched:
+            raise ValueError(f"no components match glob pattern: {value}")
+        return tuple(str(component["id"]) for component in matched)
 
     @staticmethod
     def _component_references(

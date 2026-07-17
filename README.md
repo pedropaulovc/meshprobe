@@ -43,7 +43,9 @@ add `--full` for formal JSON Schemas, or put global `--yaml` before `schema` for
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
 `--name NAME` for an exact display name and `--kind regex` only when regular-expression
-matching is intentional. Component paths remain
+matching is intentional. The same auto-detection resolves the component arguments of
+`display`, `mark`, `render-sheet`, and `occlusion`, so a glob there fans out to every
+match just as `find` does (`occlusion '**/*'` measures the whole scene). Component paths remain
 authoritative when `scene.json` reports `hierarchy: flattened`; intermediate non-mesh source
 nodes stay encoded in the path even though they are not separately addressable components.
 

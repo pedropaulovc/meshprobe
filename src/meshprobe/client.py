@@ -58,6 +58,10 @@ class MeshProbeClient:
         payload = self.request("resolve", session=session, value=value)
         return str(payload["component_id"])
 
+    def resolve_component_ids(self, session: str, value: str) -> tuple[str, ...]:
+        payload = self.request("resolve-ids", session=session, value=value)
+        return tuple(str(component_id) for component_id in payload["component_ids"])
+
     def list_sessions(self) -> list[dict[str, Any]]:
         metadata = self._metadata(optional=True)
         if metadata is None or not self._alive(metadata):
