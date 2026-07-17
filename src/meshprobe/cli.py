@@ -859,8 +859,15 @@ def view_rotate(
     ],
     frame: Annotated[
         CoordinateFrame,
-        typer.Option("--frame", help="Interpret target and axis in source or world coordinates."),
-    ] = CoordinateFrame.WORLD,
+        typer.Option(
+            "--frame",
+            help=(
+                "Interpret target and axis in source (the model's own axes, the default) "
+                "or world coordinates. A bare '--axis Y' therefore spins a Y-up glTF in "
+                "place; pass '--frame world' to address MeshProbe's Z-up world axes."
+            ),
+        ),
+    ] = CoordinateFrame.SOURCE,
     projection_json: Annotated[
         str | None,
         typer.Option(
@@ -877,7 +884,12 @@ def view_rotate(
     focus: Annotated[list[str] | None, typer.Option("--focus")] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
 ) -> None:
-    """Show the visual equivalent of rotating the model around a basis axis."""
+    """Show the visual equivalent of rotating the model around a basis axis.
+
+    The axis and target are read in the source model's own frame by default, so
+    '--axis Y' spins a Y-up glTF in place. Pass '--frame world' to address
+    MeshProbe's Z-up world axes instead.
+    """
 
     if frame not in {CoordinateFrame.SOURCE, CoordinateFrame.WORLD}:
         raise typer.BadParameter("--frame must be source or world")

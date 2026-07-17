@@ -632,6 +632,59 @@ def test_view_rotate_exposes_source_frame_semantics(
     assert "Angles are degrees, not relative deltas." in help_text
 
 
+def test_view_rotate_defaults_to_source_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-rotate",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--axis",
+            "y",
+            "--degrees",
+            "145",
+        ],
+    )
+
+    assert result.exit_code == 0
+    command = client.commands[-1]
+    assert isinstance(command, ViewRotateCommand)
+    assert command.frame == "source"
+
+    world = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-rotate",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--axis",
+            "y",
+            "--degrees",
+            "145",
+            "--frame",
+            "world",
+        ],
+    )
+    assert world.exit_code == 0
+    assert client.commands[-1].frame == "world"
+
+    help_result = runner.invoke(app, ["view-rotate", "--help"])
+    assert help_result.exit_code == 0
+    help_text = " ".join(unstyle(help_result.stdout).replace("│", " ").split())
+    assert "the model's own axes, the default" in help_text
+
+
 def test_close_and_kill_have_distinct_selected_and_all_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
