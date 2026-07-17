@@ -424,13 +424,13 @@ def apply_camera(
     target_mm: list[float] | tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
-    validate_camera_projection(camera["projection"])
+    resolved_camera = deepcopy(camera)
+    resolved_camera["projection"] = normalize_camera_projection(camera["projection"])
     obj = camera_object()
-    pose = camera["pose"]
+    pose = resolved_camera["pose"]
     position = Vector(value / MILLIMETERS_PER_METER for value in pose["position_mm"])
     x, y, z, w = pose["orientation_xyzw"]
     rotation = Quaternion((w, x, y, z)).normalized()
-    resolved_camera = deepcopy(camera)
     if pose.get("frame", "world") == "source":
         source_to_world = source_to_world_matrix()
         position = source_to_world @ position
@@ -590,6 +590,13 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     aspect_ratio = command.get("aspect_ratio", 1.0)
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
     frame = command.get("frame", "world")
+    if frame not in {"source", "world"}:
+        raise ValueError("camera rotation frame must be source or world")
+    degrees = command["degrees"]
+    if isinstance(degrees, bool) or not isinstance(degrees, (int, float)):
+        raise ValueError("degrees must be finite")
+    if not math.isfinite(degrees):
+        raise ValueError("degrees must be finite")
     axis_index = {"x": 0, "y": 1, "z": 2}[command["axis"]]
     axis = Vector(tuple(1.0 if index == axis_index else 0.0 for index in range(3)))
     target = Vector(command["target_mm"])
@@ -597,7 +604,7 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
     axis.normalize()
-    rotation = Quaternion(axis, math.radians(command["degrees"]))
+    rotation = Quaternion(axis, math.radians(degrees))
     previous_pose = deepcopy(CURRENT_CAMERA["pose"])
     position = Vector(previous_pose["position_mm"])
     x, y, z, w = previous_pose["orientation_xyzw"]
@@ -610,11 +617,16 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         ],
         "frame": "world",
     }
+    requested_projection = command.get("projection")
+    projection = (
+        CURRENT_CAMERA["projection"]
+        if requested_projection is None
+        else normalize_camera_projection(requested_projection)
+    )
     camera = {
         "pose": resulting_pose,
-        "projection": command.get("projection") or CURRENT_CAMERA["projection"],
+        "projection": projection,
     }
-    validate_camera_projection(camera["projection"])
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "rotate",
@@ -622,7 +634,7 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "target_mm": command["target_mm"],
         "axis": command["axis"],
         "axis_world": list(axis),
-        "degrees": command["degrees"],
+        "degrees": degrees,
         "previous_pose": previous_pose,
         "resulting_pose": resulting_pose,
     }
@@ -652,6 +664,41 @@ def validate_positive_projection_number(projection: dict[str, Any], key: str) ->
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{key} must be a positive finite number")
     return float(value)
+
+
+def normalize_camera_projection(projection: dict[str, Any]) -> dict[str, Any]:
+    mode = projection["mode"]
+    if mode == "orthographic":
+        normalized = {
+            "near_clip_mm": 0.5,
+            "far_clip_mm": 100_000.0,
+            **deepcopy(projection),
+        }
+        validate_camera_projection(normalized)
+        return normalized
+    if mode != "perspective":
+        raise ValueError(f"unknown projection mode: {mode}")
+
+    depth_of_field = {
+        "mode": "disabled",
+        "aperture_fstop": 2.8,
+        "focus_distance_mm": None,
+        "focus": None,
+        **deepcopy(projection.get("depth_of_field", {})),
+    }
+    normalized = {
+        "mode": "perspective",
+        "focal_length_mm": 50.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "sensor_fit": "auto",
+        "near_clip_mm": 0.5,
+        "far_clip_mm": 100_000.0,
+        **deepcopy(projection),
+        "depth_of_field": depth_of_field,
+    }
+    validate_camera_projection(normalized)
+    return normalized
 
 
 def validate_camera_projection(projection: dict[str, Any]) -> None:

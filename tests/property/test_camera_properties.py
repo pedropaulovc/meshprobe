@@ -7,7 +7,13 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from meshprobe.camera import _normalize, _quaternion_from_matrix, camera_diagnostics, orbit_camera
-from meshprobe.models import OrthographicProjection, PerspectiveProjection, Pose
+from meshprobe.models import (
+    Camera,
+    CameraPoseFrame,
+    OrthographicProjection,
+    PerspectiveProjection,
+    Pose,
+)
 
 finite = st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False)
 positive = st.floats(min_value=0.1, max_value=10_000, allow_nan=False, allow_infinity=False)
@@ -93,3 +99,17 @@ def test_camera_diagnostics_return_basis_frustum_and_target_depth(
     far_depths = [500 - corner[0] for corner in diagnostics.frustum_corners_mm[4:]]
     assert near_depths == pytest.approx([1] * 4)
     assert far_depths == pytest.approx([1_000] * 4)
+
+
+def test_camera_diagnostics_reject_source_frame_without_a_scene_transform() -> None:
+    camera = Camera(
+        pose=Pose(
+            position_mm=(1, 2, 3),
+            orientation_xyzw=(0, 0, 0, 1),
+            frame=CameraPoseFrame.SOURCE,
+        ),
+        projection=PerspectiveProjection(),
+    )
+
+    with pytest.raises(ValueError, match="world-frame pose"):
+        camera_diagnostics(camera, target_mm=(0, 0, 0))

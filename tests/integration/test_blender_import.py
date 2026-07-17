@@ -693,10 +693,55 @@ def test_raw_rotation_uses_world_frame_by_default(tmp_path: Path) -> None:
             target_mm=target,
             axis="z",
             degrees=15,
+            projection={"mode": "perspective"},
         )
 
     assert rotated["camera_operation"]["frame"] == "world"
     assert rotated["camera_operation"]["target_mm"] == list(target)
+    assert rotated["camera"]["projection"] == PerspectiveProjection().model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    ("invalid_field", "invalid_value", "error"),
+    [
+        ("frame", "component", "camera rotation frame must be source or world"),
+        ("degrees", math.nan, "degrees must be finite"),
+        ("degrees", math.inf, "degrees must be finite"),
+    ],
+)
+def test_rejected_raw_rotation_contract_preserves_camera_state(
+    tmp_path: Path,
+    invalid_field: str,
+    invalid_value: str | float,
+    error: str,
+) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=30) as controller:
+        manifest = controller.open_scene(source)
+        target = tuple(
+            (minimum + maximum) / 2
+            for minimum, maximum in zip(
+                manifest.root_bounds.minimum_mm,
+                manifest.root_bounds.maximum_mm,
+                strict=True,
+            )
+        )
+        before = controller.request("session.snapshot")["session"]
+        command: dict[str, object] = {
+            "target_mm": target,
+            "axis": "z",
+            "degrees": 30,
+            "frame": "world",
+        }
+        command[invalid_field] = invalid_value
+
+        with pytest.raises(BlenderWorkerError, match=error):
+            controller.request("view.rotate", **command)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after["camera"] == before["camera"]
+    assert after["camera_operation"] == before["camera_operation"]
+    assert after["state_sha256"] == before["state_sha256"]
 
 
 def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> None:
@@ -715,14 +760,12 @@ def test_rejected_rotation_projection_preserves_camera_state(tmp_path: Path) -> 
         projection = manifest.imported_camera.projection.model_dump(mode="json")
         unsupported_mode = {**projection, "mode": "fisheye"}
         bad_sensor_fit = {**projection, "sensor_fit": "diagonal"}
-        missing_near_clip = {
-            key: value for key, value in projection.items() if key != "near_clip_mm"
-        }
+        missing_orthographic_scale = {"mode": "orthographic"}
 
         for invalid_projection, error in (
             (unsupported_mode, "unknown projection mode"),
             (bad_sensor_fit, "unknown sensor fit"),
-            (missing_near_clip, "near_clip_mm"),
+            (missing_orthographic_scale, "scale_mm"),
         ):
             with pytest.raises(BlenderWorkerError, match=error):
                 controller.request(
