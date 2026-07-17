@@ -168,22 +168,24 @@ def test_custom_illumination_rejects_zero_effective_output() -> None:
         )
 
 
-def test_custom_illumination_accepts_effective_background() -> None:
-    black_light = AreaLight(
-        id="black",
-        position_mm=(1, 2, 3),
-        orientation_xyzw=(0, 0, 0, 1),
-        power_w=100,
-        size_mm=50,
-        linear_rgb=(0, 0, 0),
-    )
+def test_custom_illumination_rejects_camera_only_background() -> None:
+    with pytest.raises(ValidationError, match="non-zero light output"):
+        CustomIllumination(
+            background_rgb=(0.1, 0, 0),
+            background_strength=0.5,
+            ambient_rgb=(0, 0, 0),
+            ambient_strength=0,
+        )
+
+
+def test_custom_illumination_derives_omitted_split_fields() -> None:
     illumination = CustomIllumination(
-        background_rgb=(0.1, 0, 0),
-        background_strength=0.5,
-        ambient_strength=0,
-        lights=(black_light,),
+        background_rgb=(0.03, 0.03, 0.04),
+        ambient_strength=0.18,
     )
-    assert illumination.background_strength == 0.5
+
+    assert illumination.background_strength == 0.18
+    assert illumination.ambient_rgb == (0.03, 0.03, 0.04)
 
 
 def test_custom_illumination_records_background_and_ambient_separately() -> None:

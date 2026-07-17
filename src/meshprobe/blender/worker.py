@@ -966,8 +966,10 @@ def create_light(spec: dict[str, Any]) -> None:
 
 def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
     if illumination["preset"] == "custom":
-        runtime = illumination
         resolved = deepcopy(illumination)
+        resolved.setdefault("background_strength", resolved["ambient_strength"])
+        resolved.setdefault("ambient_rgb", deepcopy(resolved["background_rgb"]))
+        runtime = resolved
     else:
         runtime = preset_lights(illumination["preset"])
         background_override = illumination.get("background_rgb")

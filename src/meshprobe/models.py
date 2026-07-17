@@ -316,13 +316,13 @@ class EnvironmentMap(ContractModel):
 class CustomIllumination(ContractModel):
     preset: Literal["custom"] = "custom"
     background_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat]
-    background_strength: NonNegativeFiniteFloat = 1.0
-    ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
-        1.0,
-        1.0,
-        1.0,
-    )
     ambient_strength: NonNegativeFiniteFloat
+    background_strength: NonNegativeFiniteFloat = Field(
+        default_factory=lambda data: data["ambient_strength"]
+    )
+    ambient_rgb: tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] = (
+        Field(default_factory=lambda data: data["background_rgb"])
+    )
     lights: tuple[Light, ...] = Field(default=(), max_length=32)
     environment_map: EnvironmentMap | None = None
 
@@ -336,7 +336,6 @@ class CustomIllumination(ContractModel):
 
     @model_validator(mode="after")
     def require_effective_output(self) -> Self:
-        background_contributes = self.background_strength > 0 and any(self.background_rgb)
         ambient_contributes = self.ambient_strength > 0 and any(self.ambient_rgb)
         environment_contributes = self.environment_map is not None
         light_contributes = any(
@@ -346,7 +345,6 @@ class CustomIllumination(ContractModel):
         )
         if not any(
             (
-                background_contributes,
                 ambient_contributes,
                 light_contributes,
                 environment_contributes,

@@ -1040,7 +1040,36 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         assert isinstance(custom, SessionSnapshot)
-        assert controller.request("session.runtime")["lights"] == ["MeshProbe-inspection"]
+        custom_runtime = controller.request("session.runtime")
+        assert isinstance(custom.illumination, CustomIllumination)
+        assert custom.illumination.background_strength == pytest.approx(0.1)
+        assert custom.illumination.ambient_rgb == pytest.approx((0.01, 0.02, 0.03))
+        assert custom_runtime["lights"] == ["MeshProbe-inspection"]
+        assert custom_runtime["world"]["background_rgb"] == pytest.approx([0.01, 0.02, 0.03])
+        assert custom_runtime["world"]["background_strength"] == pytest.approx(0.1)
+        assert custom_runtime["world"]["ambient_rgb"] == pytest.approx([0.01, 0.02, 0.03])
+        assert custom_runtime["world"]["ambient_strength"] == pytest.approx(0.1)
+
+        raw_custom = SessionSnapshot.model_validate(
+            controller.request(
+                "illumination.set",
+                illumination={
+                    "preset": "custom",
+                    "background_rgb": [0.07, 0.08, 0.09],
+                    "ambient_strength": 0.23,
+                    "lights": [],
+                    "environment_map": None,
+                },
+            )
+        )
+        raw_runtime = controller.request("session.runtime")["world"]
+        assert isinstance(raw_custom.illumination, CustomIllumination)
+        assert raw_custom.illumination.background_strength == pytest.approx(0.23)
+        assert raw_custom.illumination.ambient_rgb == pytest.approx((0.07, 0.08, 0.09))
+        assert raw_runtime["background_rgb"] == pytest.approx([0.07, 0.08, 0.09])
+        assert raw_runtime["background_strength"] == pytest.approx(0.23)
+        assert raw_runtime["ambient_rgb"] == pytest.approx([0.07, 0.08, 0.09])
+        assert raw_runtime["ambient_strength"] == pytest.approx(0.23)
 
         separated = controller.execute(
             IlluminationSetCommand(
