@@ -185,6 +185,23 @@ def test_rotate_accepts_source_axis_and_preserves_projection_by_default() -> Non
     assert command.projection is None
 
 
+def test_rotate_accepts_camera_frame_but_not_component() -> None:
+    base = {
+        "request_id": "rotate-camera",
+        "op": "view.rotate",
+        "target_mm": [0, 0, 0],
+        "axis": "x",
+        "degrees": 15,
+    }
+
+    command = COMMAND_ADAPTER.validate_python({**base, "frame": "camera"})
+    assert isinstance(command, ViewRotateCommand)
+    assert command.frame == "camera"
+
+    with pytest.raises(ValidationError):
+        COMMAND_ADAPTER.validate_python({**base, "frame": "component"})
+
+
 def test_render_command_bounds_engine_and_samples() -> None:
     command = COMMAND_ADAPTER.validate_python(
         {

@@ -32,7 +32,6 @@ from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_sta
 from meshprobe.models import (
     Camera,
     ComponentFocus,
-    CoordinateFrame,
     DepthOfField,
     DepthOfFieldMode,
     DisplayMode,
@@ -44,6 +43,7 @@ from meshprobe.models import (
     Projection,
     RenderEngine,
     RenderStyle,
+    RotationFrame,
     ShadedEdgesStyle,
 )
 from meshprobe.protocol import (
@@ -899,16 +899,18 @@ def view_rotate(
         ),
     ],
     frame: Annotated[
-        CoordinateFrame,
+        RotationFrame,
         typer.Option(
             "--frame",
             help=(
-                "Interpret target and axis in source (the model's own axes, the default) "
-                "or world coordinates. A bare '--axis Y' therefore spins a Y-up glTF in "
-                "place; pass '--frame world' to address MeshProbe's Z-up world axes."
+                "Interpret target and axis in source (the model's own axes, the default), "
+                "world, or camera coordinates. A bare '--axis Y' spins a Y-up glTF in "
+                "place; '--frame world' addresses MeshProbe's Z-up world axes; "
+                "'--frame camera' rotates around the camera's own local axes, so the "
+                "on-screen effect stays the same regardless of which way the camera faces."
             ),
         ),
-    ] = CoordinateFrame.SOURCE,
+    ] = RotationFrame.SOURCE,
     projection_json: Annotated[
         str | None,
         typer.Option(
@@ -929,14 +931,14 @@ def view_rotate(
 
     The axis and target are read in the source model's own frame by default, so
     '--axis Y' spins a Y-up glTF in place. Pass '--frame world' to address
-    MeshProbe's Z-up world axes instead.
+    MeshProbe's Z-up world axes, or '--frame camera' to rotate around the camera's
+    own local axes — a direction-independent tilt/pan/roll whose sign does not flip
+    when the camera moves to the other side of the model.
 
     Cumulative: each rotation composes on top of the current pose, like view-move and
     unlike the absolute view-orbit (which replaces the pose wholesale).
     """
 
-    if frame not in {CoordinateFrame.SOURCE, CoordinateFrame.WORLD}:
-        raise typer.BadParameter("--frame must be source or world")
     normalized_axis = axis.casefold()
     if normalized_axis not in {"x", "y", "z"}:
         raise typer.BadParameter("--axis must be x, y, or z")

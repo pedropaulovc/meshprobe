@@ -7,9 +7,14 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from meshprobe.camera import (
+    _axis_angle,
+    _multiply_quaternions,
     _normalize,
     _quaternion_from_matrix,
+    _rotate_vector,
     camera_diagnostics,
+    camera_local_axis_world,
+    camera_local_point_world,
     orbit_angles_from_orientation,
     orbit_camera,
 )
@@ -102,6 +107,88 @@ def test_orbit_angles_are_target_and_distance_independent() -> None:
     assert orbit_angles_from_orientation(near.pose.orientation_xyzw) == pytest.approx(
         orbit_angles_from_orientation(far.pose.orientation_xyzw)
     )
+
+
+def _local_change(orientation, world_axis, angle):
+    world_rotation = _axis_angle(world_axis, angle)
+    rotated = _multiply_quaternions(world_rotation, orientation)
+    conjugate = (-orientation[0], -orientation[1], -orientation[2], orientation[3])
+    return _multiply_quaternions(conjugate, rotated)
+
+
+def test_camera_frame_rotation_is_direction_independent() -> None:
+    projection = PerspectiveProjection(focal_length_mm=50.0)
+    facing_front = orbit_camera(
+        target_mm=(0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=10.0,
+        roll_degrees=0.0,
+        distance_mm=500.0,
+        projection=projection,
+    ).pose.orientation_xyzw
+    facing_back = orbit_camera(
+        target_mm=(0.0, 0.0, 0.0),
+        azimuth_degrees=180.0,
+        elevation_degrees=10.0,
+        roll_degrees=0.0,
+        distance_mm=500.0,
+        projection=projection,
+    ).pose.orientation_xyzw
+
+    local_right = (1.0, 0.0, 0.0)
+    angle = math.radians(15.0)
+    probes = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+
+    # A camera-frame tilt induces the SAME change in the camera's own basis no matter
+    # which way it faces, and that change is exactly the local axis-angle rotation.
+    expected = _axis_angle(local_right, angle)
+    for orientation in (facing_front, facing_back):
+        axis_world = camera_local_axis_world(orientation, local_right)
+        change = _local_change(orientation, axis_world, angle)
+        for probe in probes:
+            assert _rotate_vector(change, probe) == pytest.approx(
+                _rotate_vector(expected, probe), abs=1e-9
+            )
+
+    # Contrast: a world-frame rotation about the same nominal axis is NOT invariant —
+    # front and back facings tilt oppositely. This is the exact pitfall #65 removes.
+    world_axis = (1.0, 0.0, 0.0)
+    front_change = _local_change(facing_front, world_axis, angle)
+    back_change = _local_change(facing_back, world_axis, angle)
+    assert any(
+        _rotate_vector(front_change, probe)
+        != pytest.approx(_rotate_vector(back_change, probe), abs=1e-6)
+        for probe in probes
+    )
+
+
+def test_camera_frame_pivot_resolves_through_the_pose() -> None:
+    camera = orbit_camera(
+        target_mm=(10.0, -5.0, 30.0),
+        azimuth_degrees=48.0,
+        elevation_degrees=15.0,
+        roll_degrees=0.0,
+        distance_mm=400.0,
+        projection=PerspectiveProjection(focal_length_mm=50.0),
+    )
+    position = camera.pose.position_mm
+    orientation = camera.pose.orientation_xyzw
+
+    # A zero camera-local pivot is the camera itself — the zero-radius tilt case.
+    assert camera_local_point_world(orientation, position, (0.0, 0.0, 0.0)) == pytest.approx(
+        position
+    )
+
+    # A non-zero camera-local pivot is offset by the orientation-rotated point, never the
+    # raw world coordinates (the bug: pivoting at world origin unless target is (0,0,0)).
+    local_point = (0.0, 0.0, -400.0)
+    resolved = camera_local_point_world(orientation, position, local_point)
+    expected = tuple(
+        origin + offset
+        for origin, offset in zip(position, _rotate_vector(orientation, local_point), strict=True)
+    )
+    assert resolved == pytest.approx(expected)
+    assert resolved != pytest.approx(local_point)
 
 
 def test_camera_math_covers_x_dominant_rotation_and_zero_vector() -> None:

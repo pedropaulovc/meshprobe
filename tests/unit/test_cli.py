@@ -777,6 +777,30 @@ def test_view_rotate_defaults_to_source_frame(monkeypatch: pytest.MonkeyPatch) -
     assert "the model's own axes, the default" in help_text
 
 
+def test_view_rotate_accepts_camera_frame_and_rejects_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    base = ["--session", "review", "view-rotate", "--target", "0", "0", "0", "--degrees", "15"]
+
+    camera = runner.invoke(app, [*base, "--axis", "x", "--frame", "camera"])
+    assert camera.exit_code == 0
+    assert client.commands[-1].frame == "camera"
+
+    component = runner.invoke(app, [*base, "--axis", "x", "--frame", "component"])
+    assert component.exit_code == 2
+    assert "component" in component.output
+
+    # --help advertises exactly the honored frames; it no longer promises component.
+    help_result = runner.invoke(app, ["view-rotate", "--help"])
+    help_text = " ".join(unstyle(help_result.stdout).replace("│", " ").split())
+    assert "camera" in help_text
+    assert "source|world|camera" in help_text
+    assert "component" not in help_text
+
+
 def test_close_and_kill_have_distinct_selected_and_all_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

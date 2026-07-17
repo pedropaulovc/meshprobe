@@ -77,6 +77,34 @@ def orbit_angles_from_orientation(orientation_xyzw: Quaternion) -> tuple[float, 
     return azimuth, elevation
 
 
+def camera_local_axis_world(orientation_xyzw: Quaternion, axis: Vec3) -> Vec3:
+    """World direction of a camera-local axis for a camera at the given orientation.
+
+    Rotating around this axis (the ``--frame camera`` path) is direction-independent:
+    because the axis is carried by the camera's own orientation, the rotation it induces
+    in the camera's local basis is identical no matter which way the camera currently
+    faces, so a calibrated sign never flips when the camera crosses to the far side of
+    the model. Mirrors the renderer's ``rotate_camera`` camera-frame branch.
+    """
+
+    return _normalize(_rotate_vector(orientation_xyzw, axis))
+
+
+def camera_local_point_world(orientation_xyzw: Quaternion, position_mm: Vec3, point: Vec3) -> Vec3:
+    """World position of a camera-local point for a camera at the given pose.
+
+    The ``--frame camera`` rotation pivot is expressed in camera-local coordinates, so a
+    zero point pivots at the camera itself. Mirrors the renderer's ``rotate_camera``
+    camera-frame target transform.
+    """
+
+    rotated = _rotate_vector(orientation_xyzw, point)
+    return cast(
+        Vec3,
+        tuple(origin + offset for origin, offset in zip(position_mm, rotated, strict=True)),
+    )
+
+
 def camera_diagnostics(
     camera: Camera,
     *,

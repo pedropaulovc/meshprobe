@@ -641,8 +641,8 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     aspect_ratio = command.get("aspect_ratio", 1.0)
     validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
     frame = command.get("frame", "source")
-    if frame not in {"source", "world"}:
-        raise ValueError("camera rotation frame must be source or world")
+    if frame not in {"source", "world", "camera"}:
+        raise ValueError("camera rotation frame must be source, world, or camera")
     degrees = command["degrees"]
     if isinstance(degrees, bool) or not isinstance(degrees, (int, float)):
         raise ValueError("degrees must be finite")
@@ -667,6 +667,13 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     if frame == "source":
         axis = transform_from_source(axis, point=False)
         target = transform_from_source(target, point=True)
+    elif frame == "camera":
+        cx, cy, cz, cw = CURRENT_CAMERA["pose"]["orientation_xyzw"]
+        camera_orientation = Quaternion((cw, cx, cy, cz))
+        axis = camera_orientation @ axis
+        # The pivot is a camera-local point: place it relative to the camera pose so that
+        # target (0, 0, 0) pivots at the camera itself (a zero-radius tilt/pan/roll).
+        target = Vector(CURRENT_CAMERA["pose"]["position_mm"]) + camera_orientation @ target
     axis.normalize()
     camera_orbit_degrees = -degrees
     rotation = Quaternion(axis, math.radians(camera_orbit_degrees))
