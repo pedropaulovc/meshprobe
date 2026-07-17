@@ -835,6 +835,10 @@ def mark_components(
     ctx: typer.Context,
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[MarkMode, typer.Option("--mode")],
+    color: Annotated[
+        str | None,
+        typer.Option("--color", help="sRGB highlight color in #RRGGBB form."),
+    ] = None,
 ) -> None:
     """Mark components using refs, stable IDs, exact display names, or exact paths."""
 
@@ -845,6 +849,7 @@ def mark_components(
             op="component.mark",
             component_ids=_component_ids(ctx, components),
             mode=mode,
+            color=color,
         ),
     )
 

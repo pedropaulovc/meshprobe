@@ -649,6 +649,30 @@ def test_flat_operation_commands_build_typed_protocol_calls(
     assert find.selector.kind.value == "glob"
 
 
+def test_mark_cli_accepts_srgb_highlight_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "mark",
+            "c2",
+            "--mode",
+            "highlighted",
+            "--color",
+            "#FF00ff",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[0]
+    assert command.op == "component.mark"
+    assert command.color == "#ff00ff"  # type: ignore[union-attr]
+
+
 def test_find_auto_detects_exact_names_and_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)

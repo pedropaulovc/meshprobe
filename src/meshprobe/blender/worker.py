@@ -31,6 +31,11 @@ MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
+MARK_COLORS = {
+    "selected": (0.05, 0.8, 1.0, 1.0),
+    "highlighted": (1.0, 0.2, 0.02, 1.0),
+    "labeled": (1.0, 0.85, 0.05, 1.0),
+}
 SUPPORTED_GLTF_EXTENSIONS = {
     "EXT_mesh_gpu_instancing",
     "KHR_draco_mesh_compression",
@@ -56,7 +61,7 @@ MANIFEST: dict[str, Any] | None = None
 COMPONENT_OBJECTS: dict[str, bpy.types.Object] = {}
 ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
 ORIGINAL_VISIBILITY: dict[str, tuple[bool, bool]] = {}
-COMPONENT_STATES: dict[str, dict[str, str]] = {}
+COMPONENT_STATES: dict[str, dict[str, Any]] = {}
 IMPORTED_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
@@ -1007,7 +1012,18 @@ def clear_component_label(component_id: str) -> None:
         bpy.data.curves.remove(data)
 
 
-def create_component_label(component_id: str) -> None:
+def mark_rgba(mode: str, color: str | None) -> tuple[float, float, float, float]:
+    if color is None:
+        return MARK_COLORS[mode]
+    return (
+        srgb_channel_to_linear(int(color[1:3], 16)),
+        srgb_channel_to_linear(int(color[3:5], 16)),
+        srgb_channel_to_linear(int(color[5:7], 16)),
+        1.0,
+    )
+
+
+def create_component_label(component_id: str, color: tuple[float, float, float, float]) -> None:
     component = next(item for item in require_session()["components"] if item["id"] == component_id)
     bounds = component["world_bounds"]
     minimum = bounds["minimum_mm"]
@@ -1028,7 +1044,11 @@ def create_component_label(component_id: str) -> None:
     )
     label.rotation_mode = "QUATERNION"
     label.rotation_quaternion = camera_object().matrix_world.to_quaternion()
-    data.materials.append(replacement_material("MeshProbeMark-labeled", (1.0, 0.85, 0.05, 1.0)))
+    color_suffix = COMPONENT_STATES[component_id]["mark_color"]
+    material_name = "MeshProbeMark-labeled"
+    if color_suffix is not None:
+        material_name = f"{material_name}-{color_suffix[1:]}"
+    data.materials.append(replacement_material(material_name, color))
     MARK_OBJECTS[component_id] = label
 
 
@@ -1046,16 +1066,13 @@ def refresh_component_appearance(component_id: str) -> None:
         return
     mark = state["mark"]
     if mark != "unmarked":
-        colors = {
-            "selected": (0.05, 0.8, 1.0, 1.0),
-            "highlighted": (1.0, 0.2, 0.02, 1.0),
-            "labeled": (1.0, 0.85, 0.05, 1.0),
-        }
-        replace_component_material(
-            component_id, replacement_material(f"MeshProbeMark-{mark}", colors[mark])
-        )
+        color = mark_rgba(mark, state["mark_color"])
+        material_name = f"MeshProbeMark-{mark}"
+        if state["mark_color"] is not None:
+            material_name = f"{material_name}-{state['mark_color'][1:]}"
+        replace_component_material(component_id, replacement_material(material_name, color))
         if mark == "labeled":
-            create_component_label(component_id)
+            create_component_label(component_id, color)
         return
     if state["display"] == "ghosted":
         replace_component_material(
@@ -1105,6 +1122,7 @@ def component_mark(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"unknown mark mode: {mode}")
     for component_id in selected:
         COMPONENT_STATES[component_id]["mark"] = mode
+        COMPONENT_STATES[component_id]["mark_color"] = command.get("color")
         refresh_component_appearance(component_id)
     return session_snapshot()
 
@@ -1144,6 +1162,7 @@ def reset_session() -> dict[str, Any]:
         COMPONENT_STATES[component_id] = {
             "display": "hidden" if hide_render else "shown",
             "mark": "unmarked",
+            "mark_color": None,
         }
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
@@ -1749,6 +1768,7 @@ def initialize_session(manifest: dict[str, Any], source_path: Path) -> None:
         component_id: {
             "display": "hidden" if obj.hide_render else "shown",
             "mark": "unmarked",
+            "mark_color": None,
         }
         for component_id, obj in COMPONENT_OBJECTS.items()
     }

@@ -16,6 +16,7 @@ from meshprobe.models import (
     MarkMode,
     Projection,
     RenderEngine,
+    SrgbHexColor,
     Vec3,
 )
 from meshprobe.selectors import ComponentSelector
@@ -94,6 +95,13 @@ class ComponentMarkCommand(CommandModel):
     op: Literal["component.mark"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     mode: MarkMode
+    color: SrgbHexColor | None = None
+
+    @model_validator(mode="after")
+    def reject_color_without_mark(self) -> Self:
+        if self.mode is MarkMode.UNMARKED and self.color is not None:
+            raise ValueError("color requires a visible mark mode")
+        return self
 
 
 class RenderImageCommand(CommandModel):

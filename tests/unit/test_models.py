@@ -9,9 +9,11 @@ from meshprobe.identity import stable_component_id
 from meshprobe.models import (
     AreaLight,
     Bounds,
+    ComponentVisualState,
     CustomIllumination,
     DepthOfField,
     EnvironmentMap,
+    MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
@@ -60,6 +62,14 @@ def test_pose_rejects_zero_quaternion() -> None:
 def test_bounds_reject_inverted_axis() -> None:
     with pytest.raises(ValidationError, match="minimum_mm"):
         Bounds(minimum_mm=(2, 0, 0), maximum_mm=(1, 1, 1))
+
+
+def test_component_mark_color_is_canonical_and_requires_a_mark() -> None:
+    marked = ComponentVisualState(mark=MarkMode.HIGHLIGHTED, mark_color="#FF00aA")
+
+    assert marked.mark_color == "#ff00aa"
+    with pytest.raises(ValidationError, match="requires a visible mark"):
+        ComponentVisualState(mark_color="#ff00aa")
 
 
 def test_perspective_reports_field_of_view() -> None:

@@ -37,6 +37,11 @@ def normalize_quaternion(value: Quaternion) -> Quaternion:
 
 
 type UnitQuaternion = Annotated[Quaternion, AfterValidator(normalize_quaternion)]
+type SrgbHexColor = Annotated[
+    str,
+    StringConstraints(pattern=r"^#[0-9A-Fa-f]{6}$"),
+    AfterValidator(str.lower),
+]
 type Matrix4x4 = tuple[
     FiniteFloat,
     FiniteFloat,
@@ -372,6 +377,13 @@ class Component(ContractModel):
 class ComponentVisualState(ContractModel):
     display: DisplayMode = DisplayMode.SHOWN
     mark: MarkMode = MarkMode.UNMARKED
+    mark_color: SrgbHexColor | None = None
+
+    @model_validator(mode="after")
+    def reject_color_without_mark(self) -> Self:
+        if self.mark is MarkMode.UNMARKED and self.mark_color is not None:
+            raise ValueError("mark_color requires a visible mark mode")
+        return self
 
 
 class SessionSnapshot(ContractModel):
