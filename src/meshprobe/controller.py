@@ -475,7 +475,12 @@ class BlenderController:
     ) -> tuple[Projection, float]:
         if isinstance(projection, OrthographicProjection):
             distance = max(span, 1.0)
-            projection = projection.model_copy(update={"scale_mm": span * margin})
+            # scale_mm is the vertical extent; for portrait aspect ratios the horizontal
+            # extent shrinks to scale_mm * aspect_ratio, so divide it back out to keep the
+            # bounds framed (matches the contact-sheet orthographic panels).
+            projection = projection.model_copy(
+                update={"scale_mm": span * margin / min(aspect_ratio, 1.0)}
+            )
         else:
             framing_fov = min(
                 projection.horizontal_fov_degrees(aspect_ratio),

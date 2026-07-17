@@ -250,6 +250,7 @@ _COMPACT_STATE_OPERATIONS = frozenset(
     {
         Operation.VIEW_SET,
         Operation.VIEW_ORBIT,
+        Operation.VIEW_FRAME,
         Operation.VIEW_MOVE,
         Operation.VIEW_ROTATE,
         Operation.ILLUMINATION_SET,
@@ -606,6 +607,7 @@ def _coverage_gate(inputs: OracleInputs) -> GateResult:
         if operation in {
             Operation.VIEW_SET,
             Operation.VIEW_ORBIT,
+            Operation.VIEW_FRAME,
             Operation.VIEW_MOVE,
             Operation.VIEW_ROTATE,
             Operation.ILLUMINATION_SET,

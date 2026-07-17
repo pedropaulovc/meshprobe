@@ -665,6 +665,23 @@ def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
     assert ortho_distance == pytest.approx(span)
 
 
+def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> None:
+    span = 40.0
+    landscape, _ = BlenderController._frame_camera(
+        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=1.6, margin=1.2
+    )
+    portrait, _ = BlenderController._frame_camera(
+        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=0.5, margin=1.2
+    )
+    assert isinstance(landscape, OrthographicProjection)
+    assert isinstance(portrait, OrthographicProjection)
+    # Landscape/square frames the vertical extent directly; portrait must enlarge scale_mm so
+    # the horizontal extent (scale_mm * aspect_ratio) still covers the bounds.
+    assert landscape.scale_mm == pytest.approx(span * 1.2)
+    assert portrait.scale_mm == pytest.approx(span * 1.2 / 0.5)
+    assert portrait.scale_mm * 0.5 == pytest.approx(span * 1.2)
+
+
 def test_occlusion_query_reports_current_camera_samples_and_named_blockers(
     scene_manifest: SceneManifest,
     monkeypatch: pytest.MonkeyPatch,

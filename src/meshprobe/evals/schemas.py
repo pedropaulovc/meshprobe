@@ -23,6 +23,7 @@ class Operation(StrEnum):
     COMPONENT_OCCLUSION = "component.occlusion"
     VIEW_SET = "view.set"
     VIEW_ORBIT = "view.orbit"
+    VIEW_FRAME = "view.frame"
     VIEW_MOVE = "view.move"
     VIEW_ROTATE = "view.rotate"
     ILLUMINATION_SET = "illumination.set"
@@ -33,7 +34,13 @@ class Operation(StrEnum):
     SESSION_RESET = "session.reset"
 
 
-EVALUATED_OPERATIONS: tuple[Operation, ...] = tuple(Operation)
+# view.frame is a camera convenience that the controller resolves to a concrete view.orbit.
+# Agents may call it (so it is a valid Operation the broker can trace), but episodes are
+# neither generated nor scored against it, so it stays out of the evaluated set — keeping it
+# in would force generator coverage over it and shift every corpus digest.
+EVALUATED_OPERATIONS: tuple[Operation, ...] = tuple(
+    operation for operation in Operation if operation is not Operation.VIEW_FRAME
+)
 
 
 class TaskFamily(StrEnum):
