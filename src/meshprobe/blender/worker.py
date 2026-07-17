@@ -1330,6 +1330,11 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
                 "background_rgb": None,
                 "background_strength": None,
             }
+    # Normalize away an absent-vs-explicit-null difference: an imported preset omits the
+    # key, an explicitly re-applied one carries background_srgb=None. Drop the null so both
+    # hash to the same state_sha256 in session_snapshot.
+    if resolved.get("background_srgb") is None:
+        resolved.pop("background_srgb", None)
     clear_lights()
     configure_world(
         runtime["background_rgb"],

@@ -1429,6 +1429,24 @@ def test_raw_world_camera_pose_has_one_canonical_hash(tmp_path: Path) -> None:
     assert implicit["state_sha256"] == explicit["state_sha256"]
 
 
+def test_preset_background_srgb_absent_and_null_have_one_canonical_hash(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        absent = controller.request("illumination.set", illumination={"preset": "neutral_studio"})
+        explicit_null = controller.request(
+            "illumination.set",
+            illumination={
+                "preset": "neutral_studio",
+                "background_rgb": None,
+                "background_strength": None,
+                "background_srgb": None,
+            },
+        )
+
+    assert absent["state_sha256"] == explicit_null["state_sha256"]
+
+
 def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     tmp_path: Path,
 ) -> None:
