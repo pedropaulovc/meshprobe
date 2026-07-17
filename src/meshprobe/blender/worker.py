@@ -1407,6 +1407,7 @@ def component_visibility(command: dict[str, Any]) -> dict[str, Any]:
             "width": width,
             "height": height,
             "samples": 1,
+            "graphics_policy": command.get("graphics_policy", "software_allowed"),
         }
     )
     colors = component_pass_colors()

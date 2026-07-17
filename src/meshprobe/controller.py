@@ -774,6 +774,7 @@ class BlenderController:
                 component_ids=list(focus_ids),
                 width=width,
                 height=height,
+                graphics_policy=command.graphics_policy.value,
             )
 
         initial = measure()
