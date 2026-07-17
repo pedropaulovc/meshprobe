@@ -332,7 +332,7 @@ def schema(
 @eval_app.command("generate")
 def generate_eval_corpus(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v6",
+    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v7",
     families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
     seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
     seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
@@ -406,7 +406,7 @@ def generate_curated_eval_corpus(
     work_root: Annotated[Path, typer.Argument(file_okay=False)],
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     build_version: Annotated[str, typer.Option("--build-version")] = "curated-v2",
-    corpus_version: Annotated[str, typer.Option("--corpus-version")] = "curated-tasks-v6",
+    corpus_version: Annotated[str, typer.Option("--corpus-version")] = "curated-tasks-v7",
     blender: Annotated[str, typer.Option("--blender")] = "blender",
     workers: Annotated[int, typer.Option("--workers", min=1, max=64)] = 8,
 ) -> None:
@@ -437,7 +437,7 @@ def generate_curated_eval_corpus(
 def merge_eval_corpora(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v7",
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v8",
 ) -> None:
     """Combine validated procedural and curated corpora without rewriting artifacts."""
 

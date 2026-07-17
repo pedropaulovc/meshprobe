@@ -14,6 +14,20 @@ def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
 
 
+_MAX_CAPTION_LINES = 3
+
+
+def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
+    """Bound how many lines a caption band contributes, so an arbitrarily long
+    component display name or callout legend cannot grow the composed sheet past
+    its intended size."""
+    if len(lines) <= limit:
+        return lines
+    truncated = list(lines[:limit])
+    truncated[-1] = f"{truncated[-1].rstrip()}…"
+    return tuple(truncated)
+
+
 def _wrap_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -60,11 +74,12 @@ def compose_contact_sheet(
         numbered_caption = f"{panel_index + 1}. {caption}"
         caption_lines = _wrap_text(measuring_draw, numbered_caption, font, panel_width - 12)
         lines = list(caption_lines)
-        panel_caption_line_counts.append(len(caption_lines))
         if callouts:
             legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
             lines.extend(_wrap_text(measuring_draw, legend, font, panel_width - 12))
-        panel_lines.append(tuple(lines))
+        capped_lines = _cap_lines(tuple(lines), _MAX_CAPTION_LINES)
+        panel_caption_line_counts.append(min(len(caption_lines), len(capped_lines)))
+        panel_lines.append(capped_lines)
     row_caption_heights = tuple(
         max(
             minimum_caption_height,

@@ -7,6 +7,7 @@ from PIL import Image
 
 from meshprobe.contact_sheet import compose_contact_sheet
 from meshprobe.models import ContactSheetCallout
+from meshprobe.protocol import RenderContactSheetCommand
 
 
 def test_compose_contact_sheet_builds_captioned_grid(tmp_path: Path) -> None:
@@ -93,6 +94,32 @@ def test_compose_contact_sheet_wraps_long_single_line_caption(tmp_path: Path) ->
     compose_contact_sheet(tuple(panels), output, 80, 60)
 
     assert Image.open(output).height > 324
+
+
+def test_compose_contact_sheet_caps_caption_growth_at_default_panel_size(tmp_path: Path) -> None:
+    long_label = "selected-component-" + "x" * 230
+    callouts = tuple(
+        ContactSheetCallout(
+            number=number,
+            component_id=f"cmp_{number}",
+            label=long_label,
+            image_xy=(0.5, 0.5),
+        )
+        for number in range(1, 4)
+    )
+    panels = []
+    default_panel = RenderContactSheetCommand.model_fields["panel_width"].default
+    for index in range(9):
+        path = tmp_path / f"budget-panel-{index}.png"
+        Image.new("RGB", (8, 8), "black").save(path)
+        panels.append((path, long_label if index == 0 else "Panel", callouts if index == 0 else ()))
+
+    output = tmp_path / "budget-sheet.png"
+    compose_contact_sheet(tuple(panels), output, default_panel, default_panel)
+
+    # An arbitrarily long display name / callout legend must not grow the composed
+    # sheet past the ~4K long-edge budget the default panel size was chosen for.
+    assert Image.open(output).height <= 4_096
 
 
 def test_compose_contact_sheet_bounds_font_for_tall_narrow_panels(tmp_path: Path) -> None:
