@@ -577,6 +577,24 @@ class BlenderController:
                 )
             )
 
+            focus_bounds = self._focus_bounds(focus_ids)
+            focus_center, focus_span = self._bounds_center_span(focus_bounds)
+            focus_projection, focus_distance = self._focused_context_camera(
+                self._manifest.root_bounds,
+                focus_center,
+                focus_span,
+                panel_aspect,
+            )
+            self._set_orbit(
+                focus_center,
+                focus_span * 4.0,
+                45,
+                30,
+                focus_projection,
+                panel_aspect,
+                focus_ids,
+                minimum_distance_mm=focus_distance,
+            )
             self._mark_focus_components(focus_ids, "highlighted", mark_colors)
             panels.append(
                 self._render_contact_panel(
@@ -593,15 +611,16 @@ class BlenderController:
             third_caption = self._removed_occluder_caption(occlusion.steps)
             if not removed_occluders:
                 self._set_orbit(
-                    scene_center,
-                    scene_span,
+                    focus_center,
+                    focus_span * 4.0,
                     -45,
                     20,
-                    PerspectiveProjection(),
+                    focus_projection,
                     panel_aspect,
                     focus_ids,
+                    minimum_distance_mm=focus_distance,
                 )
-                third_caption = "Alternate context"
+                third_caption = self._empty_occlusion_caption(occlusion.stop_reason)
             panels.append(
                 self._render_contact_panel(
                     command,
@@ -614,8 +633,6 @@ class BlenderController:
 
             self.request("illumination.set", illumination={"preset": "flat_diagnostic"})
             self.request("component.display", component_ids=list(focus_ids), mode="isolated")
-            focus_bounds = self._focus_bounds(focus_ids)
-            focus_center, focus_span = self._bounds_center_span(focus_bounds)
             directions = (
                 (0.0, 0.0, "+X"),
                 (180.0, 0.0, "-X"),
@@ -941,6 +958,62 @@ class BlenderController:
         )
 
     @staticmethod
+    def _empty_occlusion_caption(
+        stop_reason: Literal[
+            "threshold_met_initial",
+            "threshold_met",
+            "budget_exhausted",
+            "no_blockers",
+            "focus_not_projected",
+        ],
+    ) -> str:
+        detail = {
+            "threshold_met_initial": "visibility threshold already met",
+            "threshold_met": "visibility threshold met",
+            "budget_exhausted": "no occluders removed within budget",
+            "no_blockers": "no blocking components ranked",
+            "focus_not_projected": "focus not projected",
+        }[stop_reason]
+        return f"Alternate focused context; previous focused view: {detail}"
+
+    @staticmethod
+    def _focused_context_camera(
+        scene_bounds: Bounds,
+        focus_center: tuple[float, float, float],
+        focus_span: float,
+        aspect_ratio: float,
+    ) -> tuple[PerspectiveProjection, float]:
+        minimum = scene_bounds.minimum_mm
+        maximum = scene_bounds.maximum_mm
+        context_radius = math.sqrt(
+            sum(
+                max(abs(low - center), abs(high - center)) ** 2
+                for low, high, center in zip(minimum, maximum, focus_center, strict=True)
+            )
+        )
+        minimum_distance = max(context_radius * 1.05, 1.0)
+        framed_span = focus_span * 4.0
+        projection = PerspectiveProjection()
+        framing_fov = min(
+            projection.horizontal_fov_degrees(aspect_ratio),
+            projection.vertical_fov_degrees(aspect_ratio),
+        )
+        framing_distance = (framed_span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
+        camera_distance = max(framing_distance, minimum_distance)
+        if camera_distance > framing_distance:
+            projection = projection.model_copy(
+                update={
+                    "focal_length_mm": (
+                        projection.focal_length_mm * camera_distance / framing_distance
+                    )
+                }
+            )
+        required_far_clip_mm = camera_distance + context_radius * 1.05
+        if projection.far_clip_mm <= required_far_clip_mm:
+            projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
+        return projection, camera_distance
+
+    @staticmethod
     def _visibility_dimensions(width: int, height: int) -> tuple[int, int]:
         scale = min(1.0, 256 / max(width, height))
         return max(64, round(width * scale)), max(64, round(height * scale))
@@ -1038,8 +1111,9 @@ class BlenderController:
         projection: Projection,
         aspect_ratio: float,
         focus_component_ids: tuple[str, ...] = (),
+        minimum_distance_mm: float = 100.0,
     ) -> None:
-        distance = max(span * 2, 100.0)
+        distance = max(span * 2, minimum_distance_mm)
         if isinstance(projection, PerspectiveProjection):
             framing_fov = min(
                 projection.horizontal_fov_degrees(aspect_ratio),
@@ -1047,8 +1121,13 @@ class BlenderController:
             )
             distance = max(
                 (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25,
-                100.0,
+                minimum_distance_mm,
             )
+            required_far_clip_mm = distance + span
+            if projection.far_clip_mm <= required_far_clip_mm:
+                projection = projection.model_copy(
+                    update={"far_clip_mm": required_far_clip_mm * 1.1}
+                )
         self.request(
             "view.orbit",
             target_mm=list(target),
