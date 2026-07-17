@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -171,7 +172,12 @@ def _state_gate(inputs: OracleInputs) -> GateResult:
             )
     for group_name, requirements in grouped.items():
         if any(
-            _event_satisfies_state_group(event, requirements, inputs.truth.component_roles)
+            _transition_chain_satisfies_state_group(
+                accepted,
+                event,
+                requirements,
+                inputs.truth.component_roles,
+            )
             and event.state_after_sha256 in rendered_state_hashes
             and _render_satisfies_state_group(
                 renders_by_state[event.state_after_sha256],
@@ -192,16 +198,42 @@ def _state_gate(inputs: OracleInputs) -> GateResult:
     return _pass("state", "every required scene transition is present in accepted results")
 
 
-def _event_satisfies_state_group(
-    event: TraceEvent,
+def _transition_chain_satisfies_state_group(
+    events: list[TraceEvent],
+    target: TraceEvent,
     requirements: list[StateRequirement],
     component_roles: dict[str, str],
 ) -> bool:
-    if event.state_before_sha256 == event.state_after_sha256:
+    replay = _CompactStateReplay()
+    target_reached = False
+    for event in events:
+        replay.observe_snapshot(event)
+        if target_reached:
+            if event.operation is Operation.RENDER_IMAGE:
+                break
+            if event.operation in _COMPACT_STATE_OPERATIONS:
+                break
+            continue
+        if event.operation not in _COMPACT_STATE_OPERATIONS:
+            continue
+        if not replay.apply(event):
+            return False
+        target_reached = event is target
+    if not target_reached:
         return False
-    return all(
-        _event_satisfies_state(
-            event,
+    snapshot = TraceEvent.model_construct(operation=target.operation, result=replay.state)
+    return replay.saw_transition and all(
+        _state_delta_contains_requirement(
+            replay.state,
+            requirement.predicate,
+            (
+                component_roles[requirement.component_role]
+                if requirement.component_role is not None
+                else None
+            ),
+        )
+        and _event_satisfies_state(
+            snapshot,
             requirement.predicate,
             requirement.expected,
             (
@@ -212,6 +244,125 @@ def _event_satisfies_state_group(
         )
         for requirement in requirements
     )
+
+
+_COMPACT_STATE_OPERATIONS = frozenset(
+    {
+        Operation.VIEW_SET,
+        Operation.VIEW_ORBIT,
+        Operation.VIEW_MOVE,
+        Operation.VIEW_ROTATE,
+        Operation.ILLUMINATION_SET,
+        Operation.COMPONENT_DISPLAY,
+        Operation.COMPONENT_MARK,
+        Operation.SESSION_RESET,
+    }
+)
+
+
+@dataclass
+class _CompactStateReplay:
+    state: dict[str, JsonValue] = field(default_factory=lambda: {"components": {}})
+    current_state_sha256: str | None = None
+    chain_started: bool = False
+    saw_transition: bool = False
+    known_snapshots: dict[str, dict[str, JsonValue]] = field(default_factory=dict)
+
+    def observe_snapshot(self, event: TraceEvent) -> None:
+        snapshot = _replayable_session_state(event)
+        if snapshot is None or event.state_after_sha256 is None:
+            return
+        if event.state_before_sha256 is None and (self.chain_started or self.known_snapshots):
+            return
+        self.known_snapshots[event.state_after_sha256] = snapshot
+        if self.chain_started and event.state_after_sha256 == self.current_state_sha256:
+            self.state = deepcopy(snapshot)
+
+    def apply(self, event: TraceEvent) -> bool:
+        if not isinstance(event.result, dict):
+            return False
+        if not self.chain_started:
+            self.chain_started = True
+            self.current_state_sha256 = event.state_before_sha256
+            if self.current_state_sha256 is not None:
+                initial = self.known_snapshots.get(self.current_state_sha256)
+                if initial is not None:
+                    self.state = deepcopy(initial)
+        elif event.state_before_sha256 != self.current_state_sha256:
+            return False
+        if not _event_proves_state_hash(event):
+            return False
+        assert event.state_after_sha256 is not None
+        self.current_state_sha256 = event.state_after_sha256
+        self.saw_transition |= event.state_before_sha256 != event.state_after_sha256
+        if event.operation is Operation.SESSION_RESET:
+            reset = self.known_snapshots.get(event.state_after_sha256, {"components": {}})
+            self.state = deepcopy(reset)
+        for key in ("camera", "illumination"):
+            value = event.result.get(key)
+            if isinstance(value, dict):
+                self.state[key] = deepcopy(value)
+        components = event.result.get("components")
+        if isinstance(components, dict):
+            accumulated = self.state.setdefault("components", {})
+            if isinstance(accumulated, dict):
+                accumulated.update(deepcopy(components))
+        return True
+
+
+def _replayable_session_state(event: TraceEvent) -> dict[str, JsonValue] | None:
+    if event.operation is not Operation.SESSION_SNAPSHOT:
+        return None
+    if not isinstance(event.result, dict):
+        return None
+    session = event.result.get("session")
+    if (
+        event.state_after_sha256 is None
+        or (
+            event.state_before_sha256 is not None
+            and event.state_before_sha256 != event.state_after_sha256
+        )
+        or not isinstance(session, dict)
+        or session.get("state_sha256") != event.state_after_sha256
+    ):
+        return None
+    camera = session.get("camera")
+    illumination = session.get("illumination")
+    components = session.get("components")
+    if not all(isinstance(value, dict) for value in (camera, illumination, components)):
+        return None
+    return {
+        "camera": deepcopy(camera),
+        "illumination": deepcopy(illumination),
+        "components": deepcopy(components),
+    }
+
+
+def _event_proves_state_hash(event: TraceEvent) -> bool:
+    if event.state_after_sha256 is None or not isinstance(event.result, dict):
+        return False
+    return event.result.get("state_sha256") == event.state_after_sha256
+
+
+def _state_delta_contains_requirement(
+    state: dict[str, JsonValue],
+    predicate: StatePredicate,
+    component_id: str | None,
+) -> bool:
+    if predicate is StatePredicate.RESET_TO_IMPORTED:
+        return True
+    if predicate in {StatePredicate.PROJECTION_MODE, StatePredicate.FOCAL_LENGTH_MM}:
+        return isinstance(state.get("camera"), dict)
+    if predicate is StatePredicate.ILLUMINATION_PRESET:
+        return isinstance(state.get("illumination"), dict)
+    components = state.get("components")
+    if component_id is None or not isinstance(components, dict):
+        return False
+    component = components.get(component_id)
+    if not isinstance(component, dict):
+        return False
+    key = "display" if predicate is StatePredicate.COMPONENT_DISPLAY else "mark"
+    return key in component
 
 
 def _render_satisfies_state_group(
