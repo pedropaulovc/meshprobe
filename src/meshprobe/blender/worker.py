@@ -2154,9 +2154,20 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
         buffer = np.empty(width * height * 4, dtype=np.float32)
         image.pixels.foreach_get(buffer)
         pixels = buffer.reshape(-1, 4)
-        alpha = pixels[:, 3:4]
+        rgb = pixels[:, :3]
+        alpha = pixels[:, 3]
         background = np.asarray(background_srgb, dtype=np.float32)
-        pixels[:, :3] = np.clip(pixels[:, :3] * alpha + background * (1.0 - alpha), 0.0, 1.0)
+        # Composite one channel at a time, in place: `rgb * alpha + background * (1 - alpha)`
+        # computed directly allocates several full (width*height, 3) float32 temporaries (each
+        # ~3 GiB at the 16,384x16,384 limit), which can OOM despite the buffer already being
+        # float32. Per-channel (width*height,) temporaries keep peak extra memory two orders of
+        # magnitude smaller.
+        one_minus_alpha = 1.0 - alpha
+        for channel in range(3):
+            channel_view = rgb[:, channel]
+            channel_view *= alpha
+            channel_view += background[channel] * one_minus_alpha
+        np.clip(rgb, 0.0, 1.0, out=rgb)
         pixels[:, 3] = 1.0
         image.pixels.foreach_set(buffer)
         image.file_format = "PNG"
