@@ -10,6 +10,7 @@ from meshprobe.models import (
     AreaLight,
     Bounds,
     CustomIllumination,
+    DepthOfField,
     EnvironmentMap,
     OrthographicProjection,
     PerspectiveProjection,
@@ -65,6 +66,29 @@ def test_perspective_reports_field_of_view() -> None:
     projection = PerspectiveProjection(focal_length_mm=50, sensor_width_mm=36)
     assert projection.horizontal_fov_degrees(16 / 9) == pytest.approx(39.5978, rel=1e-4)
     assert projection.vertical_fov_degrees(16 / 9) == pytest.approx(22.8952, rel=1e-4)
+
+
+def test_perspective_depth_of_field_requires_one_focus_source() -> None:
+    projection = PerspectiveProjection.model_validate(
+        {
+            "focal_length_mm": 20,
+            "depth_of_field": {
+                "mode": "enabled",
+                "aperture_fstop": 3.8,
+                "focus": {"component_id": "cmp_focus"},
+            },
+        }
+    )
+    assert projection.depth_of_field.aperture_fstop == 3.8
+    assert projection.depth_of_field.focus is not None
+    assert projection.depth_of_field.focus.component_id == "cmp_focus"
+
+    exact = DepthOfField(mode="enabled", aperture_fstop=3.8, focus_distance_mm=750)
+    assert exact.focus_distance_mm == 750
+    with pytest.raises(ValidationError, match="exactly one focus"):
+        DepthOfField(mode="enabled", aperture_fstop=3.8)
+    with pytest.raises(ValidationError, match="cannot declare"):
+        DepthOfField(mode="disabled", focus_distance_mm=100)
 
 
 def test_perspective_respects_vertical_and_automatic_sensor_fit() -> None:

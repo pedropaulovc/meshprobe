@@ -85,6 +85,31 @@ class SensorFit(StrEnum):
     VERTICAL = "vertical"
 
 
+class DepthOfFieldMode(StrEnum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+class ComponentFocus(ContractModel):
+    component_id: Identifier
+
+
+class DepthOfField(ContractModel):
+    mode: DepthOfFieldMode = DepthOfFieldMode.DISABLED
+    aperture_fstop: PositiveFiniteFloat = 2.8
+    focus_distance_mm: PositiveFiniteFloat | None = None
+    focus: ComponentFocus | None = None
+
+    @model_validator(mode="after")
+    def validate_focus(self) -> Self:
+        focus_sources = int(self.focus_distance_mm is not None) + int(self.focus is not None)
+        if self.mode is DepthOfFieldMode.ENABLED and focus_sources != 1:
+            raise ValueError("enabled depth of field requires exactly one focus target")
+        if self.mode is DepthOfFieldMode.DISABLED and focus_sources:
+            raise ValueError("disabled depth of field cannot declare a focus target")
+        return self
+
+
 class PerspectiveProjection(ContractModel):
     mode: Literal["perspective"] = "perspective"
     focal_length_mm: PositiveFiniteFloat = 50.0
@@ -93,6 +118,7 @@ class PerspectiveProjection(ContractModel):
     sensor_fit: SensorFit = SensorFit.AUTO
     near_clip_mm: PositiveFiniteFloat = 0.5
     far_clip_mm: PositiveFiniteFloat = 100_000.0
+    depth_of_field: DepthOfField = DepthOfField()
 
     @model_validator(mode="after")
     def validate_clip_range(self) -> Self:
@@ -531,6 +557,11 @@ class EvaluatorPasses(ContractModel):
         return colors
 
 
+class ResolvedDepthOfField(ContractModel):
+    aperture_fstop: PositiveFiniteFloat
+    focus_distance_mm: PositiveFiniteFloat
+
+
 class RenderManifest(ContractModel):
     schema_version: Literal[1] = 1
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -547,6 +578,7 @@ class RenderManifest(ContractModel):
     color: ImageArtifact
     evaluator: EvaluatorPasses | None = None
     luminance: LuminanceSummary
+    resolved_depth_of_field: ResolvedDepthOfField | None = None
 
     @model_validator(mode="after")
     def validate_session_hash(self) -> Self:
