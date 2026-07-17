@@ -377,6 +377,7 @@ class FakeClient:
         self.closed: list[str] = []
         self.killed: list[str] = []
         self.match_count: int | None = None
+        self.find_results: list[object] | None = None
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
         self.commands.append(command)
@@ -398,6 +399,8 @@ class FakeClient:
         }[value]
 
     def read_result(self, receipt: OperationReceipt) -> object:
+        if receipt.op == "component.find" and self.find_results is not None:
+            return {"result": self.find_results}
         return {"result": {"op": receipt.op}}
 
     def close(self, session: str) -> OperationReceipt:
@@ -1206,6 +1209,29 @@ def test_find_receipt_distinguishes_zero_matches_from_hits(
     assert "matches=0" in miss.stdout
     assert "warning: no components matched" in miss.stderr
     assert unstyle(miss.stdout) != unstyle(hit.stdout)
+
+
+def test_find_derives_match_count_from_result_when_daemon_omits_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    # A daemon still running the pre-upgrade protocol never sets match_count on the
+    # receipt at all, so the CLI must fall back to the persisted result file.
+    client.match_count = None
+    client.find_results = []
+    miss = runner.invoke(app, ["find", "nonexistent-widget-xyz"])
+    client.find_results = ["component-id"]
+    hit = runner.invoke(app, ["find", "*idler*", "--kind", "glob"])
+
+    assert miss.exit_code == 0
+    assert "matches=0" in miss.stdout
+    assert "warning: no components matched" in miss.stderr
+
+    assert hit.exit_code == 0
+    assert "matches=1" in hit.stdout
+    assert "no components matched" not in hit.output
 
 
 def test_find_zero_matches_machine_readable_modes_expose_count(

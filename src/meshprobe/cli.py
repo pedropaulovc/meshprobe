@@ -542,9 +542,17 @@ def _emit_receipt(
         result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
         return
+    match_count = receipt.match_count
+    if match_count is None and receipt.op == "component.find" and receipt.result_path:
+        # A daemon still running the pre-upgrade protocol omits match_count entirely; derive
+        # it from the persisted result so the zero-match warning survives without a restart.
+        envelope = client.read_result(receipt)
+        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        if isinstance(result, list):
+            match_count = len(result)
     fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
-    if receipt.match_count is not None:
-        fields.append(f"matches={receipt.match_count}")
+    if match_count is not None:
+        fields.append(f"matches={match_count}")
     if receipt.result_path:
         fields.append(f"result={receipt.result_path}")
     if receipt.state_path:
@@ -552,7 +560,7 @@ def _emit_receipt(
     if receipt.artifact_paths:
         fields.append(f"artifacts={','.join(receipt.artifact_paths)}")
     typer.echo(" ".join(fields))
-    if receipt.match_count == 0:
+    if match_count == 0:
         typer.echo("warning: no components matched", err=True)
     for warning in receipt.warnings:
         typer.echo(f"warning: {warning}", err=True)
