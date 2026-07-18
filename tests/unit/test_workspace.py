@@ -419,6 +419,73 @@ def test_graphics_warning_resurfaces_after_a_recovered_workers_first_command_is_
     assert receipt.warnings == graphics.warnings
 
 
+def test_render_image_warns_when_requested_aspect_diverges_from_the_framed_camera(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    # FakeSessionService/InspectionSession compute camera_diagnostics with the default
+    # aspect ratio of 1.0 (no orbit/frame command overrides it here), so a square render
+    # matches that framing and a wide render diverges from it.
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+
+    matched = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matched",
+            op="render.image",
+            output_path=str(tmp_path / "matched.png"),
+            width=512,
+            height=512,
+        ),
+    )
+    assert matched.warnings == ()
+
+    mismatched = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="mismatched",
+            op="render.image",
+            output_path=str(tmp_path / "mismatched.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+    assert len(mismatched.warnings) == 1
+    assert "requested 1024x512" in mismatched.warnings[0]
+    assert "aspect ratio 2" in mismatched.warnings[0]
+    assert "framed for aspect ratio 1" in mismatched.warnings[0]
+
+
+def test_render_image_does_not_warn_within_the_aspect_ratio_tolerance(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+
+    # 1.005 is within the 1% relative tolerance of the framed 1.0 aspect ratio.
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="within-tolerance",
+            op="render.image",
+            output_path=str(tmp_path / "within-tolerance.png"),
+            width=1005,
+            height=1000,
+        ),
+    )
+    assert receipt.warnings == ()
+
+
 def test_recreated_worker_resets_durable_render_style(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:

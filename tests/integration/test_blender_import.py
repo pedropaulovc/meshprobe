@@ -2601,6 +2601,68 @@ def test_cli_view_orbit_without_projection_flags_reuses_session_camera(tmp_path:
     assert bare_camera.pose.position_mm != pytest.approx(established.pose.position_mm)
 
 
+def test_render_image_warns_when_width_height_diverges_from_the_orbited_aspect(
+    tmp_path: Path,
+) -> None:
+    """render.image's width/height and view.orbit's aspect_ratio encode the same fact
+    (the render's aspect ratio) independently: view.orbit uses it to compute FOV and
+    framing, render.image uses width/height to set the actual output resolution.
+    Blender derives the real, rendered FOV from the resolution, not the aspect the
+    camera was framed with, so a mismatch silently reframes the shot rather than
+    stretching or erroring. See GitHub issue #99.
+    """
+    source = build_glb(tmp_path)
+    manager = SessionManager(
+        tmp_path / ".meshprobe", blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
+    )
+    try:
+        manager.open("review", source)
+        manager.execute(
+            "review",
+            ViewOrbitCommand(
+                request_id="orbit-wide",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=30,
+                elevation_degrees=20,
+                distance_mm=6_000,
+                projection=PerspectiveProjection(),
+                aspect_ratio=2.0,
+            ),
+        )
+        matched = manager.execute(
+            "review",
+            RenderImageCommand(
+                request_id="matched",
+                op="render.image",
+                output_path=str(tmp_path / "matched.png"),
+                width=512,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            ),
+        )
+        mismatched = manager.execute(
+            "review",
+            RenderImageCommand(
+                request_id="mismatched",
+                op="render.image",
+                output_path=str(tmp_path / "mismatched.png"),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            ),
+        )
+    finally:
+        manager.shutdown()
+
+    assert matched.warnings == ()
+    assert len(mismatched.warnings) == 1
+    assert "requested 256x256" in mismatched.warnings[0]
+    assert "framed for aspect ratio 2" in mismatched.warnings[0]
+
+
 def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
