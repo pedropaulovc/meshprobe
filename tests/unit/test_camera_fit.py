@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
@@ -39,7 +40,7 @@ def test_fit_distance_frames_limiting_axis_exactly_at_full_fill() -> None:
 
 
 def test_smaller_fill_pushes_the_camera_back_for_margin() -> None:
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         minimum_mm=(-100.0, -50.0, -200.0),
         maximum_mm=(100.0, 50.0, 200.0),
         forward=FORWARD,

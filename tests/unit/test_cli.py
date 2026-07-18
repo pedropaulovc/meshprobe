@@ -34,6 +34,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    SessionResetCommand,
     SessionSnapshotCommand,
     ViewFrameCommand,
     ViewMoveCommand,
@@ -640,6 +641,7 @@ def test_open_omits_aspect_ratio_unless_explicitly_provided(
     # Omitting --aspect-ratio must leave the field unset so the client filters it out
     # of the wire payload — an older daemon validating with extra="forbid" still accepts.
     assert "aspect_ratio" not in default_command.model_fields_set
+    assert isinstance(explicit_command, SceneOpenCommand)
     assert "aspect_ratio" in explicit_command.model_fields_set
     assert explicit_command.aspect_ratio == 2.0
 
@@ -657,6 +659,7 @@ def test_reset_omits_aspect_ratio_unless_explicitly_provided(
     assert explicit_reset.exit_code == 0
     default_command, explicit_command = client.commands
     assert "aspect_ratio" not in default_command.model_fields_set
+    assert isinstance(explicit_command, SessionResetCommand)
     assert "aspect_ratio" in explicit_command.model_fields_set
     assert explicit_command.aspect_ratio == 0.5
 
