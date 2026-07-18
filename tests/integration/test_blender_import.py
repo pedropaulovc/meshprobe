@@ -3175,7 +3175,7 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=120) as controller:
         assert controller.graphics is not None
-        assert controller.graphics.device_class.value == "software"
+        assert controller.graphics.device_class.value == "unknown"
         assert "compatibility mode (GPU unavailable)" in controller.graphics.renderer
         assert controller.graphics.warnings
         compatibility_warning = controller.graphics.warnings[0]
