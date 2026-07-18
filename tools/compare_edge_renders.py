@@ -82,15 +82,24 @@ def difference_overlay(
 
 
 def labeled_overlay(overlay: Image.Image) -> Image.Image:
-    canvas = Image.new("RGB", (overlay.width, overlay.height + LABEL_HEIGHT), "#181818")
-    canvas.paste(overlay, (0, LABEL_HEIGHT))
-    draw = ImageDraw.Draw(canvas)
-    label_font = font(15)
     entries = (
         ("both", SHARED),
         ("Freestyle only", FREESTYLE_ONLY),
         ("screen only", SCREEN_ONLY),
     )
+    compact = overlay.width < 500
+    label_height = 82 if compact else LABEL_HEIGHT
+    canvas = Image.new("RGB", (overlay.width, overlay.height + label_height), "#181818")
+    canvas.paste(overlay, (0, label_height))
+    draw = ImageDraw.Draw(canvas)
+    label_font = font(15)
+    if compact:
+        for row, (label, color) in enumerate(entries):
+            y = 8 + row * 24
+            draw.rectangle((12, y + 3, 26, y + 17), fill=color)
+            draw.text((32, y), label, fill="white", font=label_font)
+        return canvas
+
     x = 12
     for label, color in entries:
         draw.rectangle((x, 17, x + 14, 31), fill=color)
