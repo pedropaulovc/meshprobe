@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -1046,6 +1048,33 @@ def test_version_flag_takes_precedence_over_a_subcommand() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.startswith("meshprobe ")
+
+
+def test_python_dash_m_meshprobe_matches_the_console_script() -> None:
+    """`python -m meshprobe` must work like `meshprobe` (issue #94)."""
+
+    module_result = subprocess.run(
+        [sys.executable, "-m", "meshprobe", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    console_result = subprocess.run(
+        ["meshprobe", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert module_result.returncode == 0
+    assert console_result.returncode == 0
+
+    def _without_usage_line(stdout: str) -> list[str]:
+        # The usage line's program name differs (`python -m meshprobe` vs
+        # `meshprobe`); everything else about the rendered help text is identical.
+        return [line for line in stdout.splitlines() if "Usage:" not in line]
+
+    assert _without_usage_line(module_result.stdout) == _without_usage_line(console_result.stdout)
 
 
 def test_flat_operation_commands_build_typed_protocol_calls(
