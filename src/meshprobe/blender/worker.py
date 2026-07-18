@@ -2157,16 +2157,21 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
         rgb = pixels[:, :3]
         alpha = pixels[:, 3]
         background = np.asarray(background_srgb, dtype=np.float32)
-        # Composite one channel at a time, in place: `rgb * alpha + background * (1 - alpha)`
-        # computed directly allocates several full (width*height, 3) float32 temporaries (each
-        # ~3 GiB at the 16,384x16,384 limit), which can OOM despite the buffer already being
-        # float32. Per-channel (width*height,) temporaries keep peak extra memory two orders of
-        # magnitude smaller.
-        one_minus_alpha = 1.0 - alpha
+        # Composite one channel at a time, using `out=` to write into two reused
+        # (width*height,) scratch buffers instead of `rgb * alpha + background * (1 - alpha)`
+        # computed directly, which allocates several full (width*height, 3) float32
+        # temporaries (each ~3 GiB at the 16,384x16,384 limit) — or per-channel scratch
+        # allocated fresh on every loop iteration, which still peaks at ~1 GiB per
+        # temporary. Two reused (width*height,) buffers keep the composite's extra
+        # memory bounded regardless of how many channels it runs over.
+        one_minus_alpha = np.empty_like(alpha)
+        np.subtract(1.0, alpha, out=one_minus_alpha)
+        scaled_background = np.empty_like(alpha)
         for channel in range(3):
             channel_view = rgb[:, channel]
             channel_view *= alpha
-            channel_view += background[channel] * one_minus_alpha
+            np.multiply(one_minus_alpha, background[channel], out=scaled_background)
+            channel_view += scaled_background
         np.clip(rgb, 0.0, 1.0, out=rgb)
         pixels[:, 3] = 1.0
         image.pixels.foreach_set(buffer)
