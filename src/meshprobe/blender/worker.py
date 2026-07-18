@@ -31,6 +31,7 @@ from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
+MINIMUM_BLENDER_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
@@ -1741,6 +1742,30 @@ def configure_render_style(command: dict[str, Any]) -> None:
     line_style.thickness = settings["line_width"]
 
 
+def require_supported_blender_version(version: tuple[int, int, int]) -> None:
+    """Raise ``RuntimeError`` with a clear message if ``version`` is too old.
+
+    ``version`` is the tuple Blender exposes as ``bpy.app.version``, e.g.
+    ``(5, 1, 2)``. Only the major/minor components are compared against
+    :data:`MINIMUM_BLENDER_VERSION`; the patch component is ignored. Pure
+    function (no ``bpy``/``gpu`` access) so it stays unit-testable outside a
+    real Blender process — see ``tests/unit/test_blender_worker.py``.
+
+    Call this before touching any version-sensitive Blender API (e.g.
+    ``gpu.init()``, added in Blender 5.2 — see issue #93): an unsupported
+    Blender otherwise fails deep inside a call like that with a raw
+    ``AttributeError`` and no hint that the Blender version is the problem.
+    """
+    if version[:2] >= MINIMUM_BLENDER_VERSION:
+        return
+    detected = ".".join(str(component) for component in version)
+    minimum = ".".join(str(component) for component in MINIMUM_BLENDER_VERSION)
+    raise RuntimeError(
+        f"Blender {detected} is unsupported — MeshProbe requires Blender >= {minimum}. "
+        "Install Blender 5.2 LTS or newer."
+    )
+
+
 def graphics_platform() -> dict[str, Any]:
     if GPU_PLATFORM is None:
         raise RuntimeError("graphics platform is not initialized")
@@ -1748,6 +1773,7 @@ def graphics_platform() -> dict[str, Any]:
 
 
 def initialize_graphics_platform() -> dict[str, Any]:
+    require_supported_blender_version(bpy.app.version)
     gpu.init()
     vendor = str(gpu.platform.vendor_get())
     renderer = str(gpu.platform.renderer_get())
