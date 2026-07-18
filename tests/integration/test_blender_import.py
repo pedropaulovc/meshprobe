@@ -3205,7 +3205,17 @@ def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspect
         )
     assert isinstance(result, dict)
     camera = Camera.model_validate(result["camera"])
-    assert camera.projection == PerspectiveProjection()
+    projection = camera.projection
+    assert isinstance(projection, PerspectiveProjection)
+    # Auto-framing the default view (issue #56) fits the perspective clip planes to
+    # the scene on scene.open, and a bare orbit inherits that framed perspective
+    # rather than restating a projection. Every other intrinsic still lands on the
+    # standard perspective default; only the clip planes are geometry-derived.
+    assert (
+        projection.model_copy(update={"near_clip_mm": 0.5, "far_clip_mm": 100000.0})
+        == PerspectiveProjection()
+    )
+    assert 0.0 < projection.near_clip_mm < projection.far_clip_mm
 
 
 def _cli_orbit_camera(workspace: Path, request_id: str, *extra: str) -> Camera:
