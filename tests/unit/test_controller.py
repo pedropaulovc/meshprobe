@@ -28,13 +28,16 @@ from meshprobe.models import (
     CameraTranslationReceipt,
     CameraViewResult,
     ComponentVisualStateResult,
+    CoordinateFrame,
     CustomIllumination,
     DisplayMode,
     EnvironmentMap,
     IlluminationResult,
     MarkMode,
     OccluderRemovalStep,
+    OcclusionQueryResult,
     OrthographicProjection,
+    OrthonormalBasis,
     PerspectiveProjection,
     PresetIllumination,
     RenderManifest,
@@ -381,10 +384,10 @@ def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> N
     )
     moved_snapshot = snapshot.model_copy(update={"camera_operation": move_receipt})
     rotation_receipt = CameraRotationReceipt(
-        frame="world",
+        frame=CoordinateFrame.WORLD,
         target_mm=(0, 0, 0),
         axis="z",
-        basis={"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)},
+        basis=OrthonormalBasis(x=(1, 0, 0), y=(0, 1, 0), z=(0, 0, 1)),
         axis_world=(0, 0, 1),
         requested_visual_degrees=90,
         applied_camera_orbit_degrees=-90,
@@ -424,7 +427,7 @@ def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> N
             target_mm=(0, 0, 0),
             axis="z",
             degrees=90,
-            frame="world",
+            frame=CoordinateFrame.WORLD,
         )
     )
     illumination = controller.execute(
@@ -651,6 +654,7 @@ def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
     perspective, distance = BlenderController._frame_camera(
         PerspectiveProjection(), span, aspect_ratio=1.0, margin=1.25
     )
+    assert isinstance(perspective, PerspectiveProjection)
     framing_fov = min(
         perspective.horizontal_fov_degrees(1.0),
         perspective.vertical_fov_degrees(1.0),
@@ -687,6 +691,7 @@ def test_frame_camera_keeps_wide_fov_camera_outside_bounds() -> None:
     projection, distance = BlenderController._frame_camera(
         PerspectiveProjection(focal_length_mm=1.0), span, aspect_ratio=1.0, margin=1.25
     )
+    assert isinstance(projection, PerspectiveProjection)
     framing_fov = min(
         projection.horizontal_fov_degrees(1.0),
         projection.vertical_fov_degrees(1.0),
@@ -755,6 +760,7 @@ def test_occlusion_query_reports_current_camera_samples_and_named_blockers(
         )
     )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.camera == snapshot.camera
     assert result.camera_diagnostics == query_diagnostics
     assert result.aspect_ratio == snapshot.camera_diagnostics.aspect_ratio
@@ -805,7 +811,10 @@ def test_occlusion_query_rejects_malformed_worker_accounting(
         "occluders": [{"component_id": blocker.id, "blocked_rays": 4}],
     }
     ranking.update(updates)
-    for item in ranking.get("occluders", []):  # type: ignore[union-attr]
+    occluders = ranking.get("occluders", [])
+    assert isinstance(occluders, list)
+    for item in occluders:
+        assert isinstance(item, dict)
         item.setdefault("component_id", blocker.id)
 
     def request(operation: str, **arguments: object) -> dict[str, Any]:

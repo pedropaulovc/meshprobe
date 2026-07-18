@@ -6,11 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from meshprobe.artifacts import ArtifactCache
+from meshprobe.artifacts import ArtifactCache, JsonValue
 
 SOURCE_HASH = "a" * 64
 IMPORTER_VERSION = "blender-5.2.0+meshprobe-worker-deadbeef"
-PARAMETERS = {"format": "glb", "units": "millimeter", "merge_vertices": False}
+PARAMETERS: dict[str, JsonValue] = {
+    "format": "glb",
+    "units": "millimeter",
+    "merge_vertices": False,
+}
 
 
 def write_geometry(payload: Path, content: bytes = b"normalized geometry") -> None:
