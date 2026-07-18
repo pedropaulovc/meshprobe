@@ -31,6 +31,9 @@ from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
+# ``gpu.init()`` is load-bearing for graphics platform probing below and is absent
+# before Blender 5.2. Do not lower this floor without making that initialization
+# optional and adding CI coverage for the proposed older Blender LTS.
 MINIMUM_BLENDER_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0

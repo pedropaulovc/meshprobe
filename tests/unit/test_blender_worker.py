@@ -111,5 +111,6 @@ def test_initialize_graphics_platform_checks_version_before_gpu_init(
     inside gpu.init() (issue #93).
     """
     worker_module.bpy.app = types.SimpleNamespace(version=(5, 1, 2))
+    worker_module.gpu.init = pytest.fail
     with pytest.raises(RuntimeError, match=r"Blender 5\.1\.2 is unsupported"):
         worker_module.initialize_graphics_platform()
