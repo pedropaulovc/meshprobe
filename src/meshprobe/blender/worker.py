@@ -1849,7 +1849,10 @@ def render_still(path: Path) -> None:
 
 
 @contextmanager
-def temporary_screen_edge_compositor(path: Path, settings: dict[str, Any]) -> Iterator[str]:
+def temporary_screen_edge_compositor(
+    path: Path,
+    settings: dict[str, Any],
+) -> Iterator[str]:
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     original_group = scene.compositing_node_group
@@ -1928,7 +1931,7 @@ def configure_screen_edge_nodes(
 
     opacity = group.nodes.new("ShaderNodeMath")
     opacity.operation = "MULTIPLY"
-    opacity.inputs[1].default_value = 0.75
+    opacity.inputs[1].default_value = 0.85
     group.links.new(mask_output, opacity.inputs[0])
     mask_output = opacity.outputs["Value"]
 
@@ -1953,35 +1956,31 @@ def configure_screen_edge_nodes(
     group.links.new(mix.outputs[2], file_output.inputs["Image"])
 
 
-def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
+def render_screen_edges(
+    path: Path,
+    settings: dict[str, Any],
+) -> None:
     """Render an experimental GPU compositor depth/normal edge pass."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    prefix = f"{path.stem}.screen-edges"
-    before = {
-        candidate: file_version(candidate) for candidate in path.parent.glob(f"{prefix}*.exr")
-    }
-    with temporary_screen_edge_compositor(path, settings) as configured_prefix:
-        if configured_prefix != prefix:
-            raise RuntimeError(f"unexpected screen-edge output prefix: {configured_prefix}")
-        bpy.ops.render.render()
-    candidates = [
-        candidate
-        for candidate in path.parent.glob(f"{prefix}*.exr")
-        if candidate not in before or file_version(candidate) != before[candidate]
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError(
-            f"expected one fresh screen-edge output for {prefix}, found "
-            f"{sorted(candidate.name for candidate in candidates)}"
-        )
-    composited = bpy.data.images.load(str(candidates[0]), check_existing=False)
-    try:
-        composited.save_render(str(path), scene=bpy.context.scene)
-    finally:
-        bpy.data.images.remove(composited)
-        candidates[0].unlink(missing_ok=True)
-
+    with tempfile.TemporaryDirectory(prefix="meshprobe-screen-edges-") as temporary_directory:
+        temporary_path = Path(temporary_directory) / path.name
+        prefix = f"{temporary_path.stem}.screen-edges"
+        with temporary_screen_edge_compositor(temporary_path, settings) as configured_prefix:
+            if configured_prefix != prefix:
+                raise RuntimeError(f"unexpected screen-edge output prefix: {configured_prefix}")
+            bpy.ops.render.render()
+        candidates = list(temporary_path.parent.glob(f"{prefix}*.exr"))
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"expected one screen-edge output for {prefix}, found "
+                f"{sorted(candidate.name for candidate in candidates)}"
+            )
+        composited = bpy.data.images.load(str(candidates[0]), check_existing=False)
+        try:
+            composited.save_render(str(path), scene=bpy.context.scene)
+        finally:
+            bpy.data.images.remove(composited)
 
 def luminance_summary(path: Path) -> dict[str, float]:
     image = bpy.data.images.load(str(path), check_existing=False)

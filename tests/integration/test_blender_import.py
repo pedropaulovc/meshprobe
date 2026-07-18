@@ -2535,6 +2535,8 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     plain_output = tmp_path / "plain.png"
     edge_output = tmp_path / "shaded-edges.png"
     screen_edge_output = tmp_path / "screen-edges.png"
+    colliding_screen_edge_sidecar = tmp_path / "screen-edges.screen-edges.exr"
+    colliding_screen_edge_sidecar.write_bytes(b"source-sidecar-must-survive")
     evaluator_dir = tmp_path / "plain-evaluator"
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
@@ -2622,10 +2624,34 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
             )
         )
         screen_edge_runtime = controller.request("session.runtime")
+        failed_screen_command = RenderImageCommand(
+            request_id="render-screen-edges-invalid-setup",
+            op="render.image",
+            output_path=str(tmp_path / "screen-edges-invalid-setup.png"),
+            width=320,
+            height=240,
+            samples=1,
+            style=RenderStyle.SCREEN_EDGES,
+        ).model_dump(mode="json", exclude={"request_id", "op"})
+        failed_screen_command["shaded_edges"]["line_color"] = "invalid"
+        with pytest.raises(BlenderWorkerError, match="invalid literal for int"):
+            controller.request("render.image", **failed_screen_command)
+        recovered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-after-screen-edge-setup-failure",
+                op="render.image",
+                output_path=str(tmp_path / "recovered-after-screen-edge-failure.png"),
+                width=320,
+                height=240,
+                samples=1,
+            )
+        )
+        recovered_runtime = controller.request("session.runtime")
 
     assert plain.evaluator is not None
     assert plain.session.state_sha256 == edged.session.state_sha256
     assert plain.session.state_sha256 == screen_edged.session.state_sha256
+    assert plain.session.state_sha256 == recovered.session.state_sha256
     assert plain.session.camera == edged.session.camera
     assert plain.session.camera == screen_edged.session.camera
     assert edged.style is RenderStyle.SHADED_EDGES
@@ -2633,6 +2659,8 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     assert edged.shaded_edges == ShadedEdgesStyle()
     assert edge_runtime["render"]["use_freestyle"] is True
     assert screen_edge_runtime["render"]["use_freestyle"] is False
+    assert recovered_runtime["render"]["use_freestyle"] is False
+    assert colliding_screen_edge_sidecar.read_bytes() == b"source-sidecar-must-survive"
 
     plain_image = Image.open(plain.color.path).convert("RGB")
     edge_image = Image.open(edged.color.path).convert("RGB")

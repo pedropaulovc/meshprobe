@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -12,11 +13,15 @@ SCREEN_ONLY = (0, 220, 255)
 SHARED = (255, 255, 255)
 
 
+def image_pixels(image: Image.Image) -> list[tuple[int, ...]]:
+    return cast(list[tuple[int, ...]], list(image.convert("RGB").get_flattened_data()))
+
+
 def changed_pixels(base: Image.Image, candidate: Image.Image, threshold: int) -> set[int]:
     return {
         index
         for index, (left, right) in enumerate(
-            zip(base.get_flattened_data(), candidate.get_flattened_data(), strict=True)
+            zip(image_pixels(base), image_pixels(candidate), strict=True)
         )
         if max(abs(a - b) for a, b in zip(left, right, strict=True)) >= threshold
     }
@@ -68,6 +73,7 @@ def difference_overlay(
 ) -> Image.Image:
     dimmed = ImageOps.grayscale(base).point(lambda value: value // 4).convert("RGB")
     pixels = dimmed.load()
+    assert pixels is not None
     width = dimmed.width
     for index in freestyle | screen:
         coordinate = index % width, index // width
@@ -141,7 +147,10 @@ def main() -> None:
     labeled_pair(images["freestyle"], images["screen"], left_label, right_label).save(
         output / "side-by-side.png"
     )
-    crop = edge_bounds(union, images["shaded"].width, images["shaded"].height)
+    full_frame = (0, 0, images["shaded"].width, images["shaded"].height)
+    crop = (
+        edge_bounds(union, images["shaded"].width, images["shaded"].height) if union else full_frame
+    )
     labeled_pair(
         images["freestyle"].crop(crop),
         images["screen"].crop(crop),
@@ -161,8 +170,8 @@ def main() -> None:
         "shared_changed_pixels": len(shared),
         "freestyle_only_pixels": len(freestyle - screen),
         "screen_only_pixels": len(screen - freestyle),
-        "intersection_over_union": len(shared) / len(union),
-        "freestyle_pixels_recalled_by_screen": len(shared) / len(freestyle),
+        "intersection_over_union": len(shared) / len(union) if union else 0.0,
+        "freestyle_pixels_recalled_by_screen": len(shared) / len(freestyle) if freestyle else 0.0,
         "freestyle_seconds": args.freestyle_seconds,
         "screen_seconds": args.screen_seconds,
         "speedup": args.freestyle_seconds / args.screen_seconds,

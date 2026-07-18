@@ -1,20 +1,20 @@
 {
   "crop": [
     372,
-    164,
+    165,
     650,
     860
   ],
   "freestyle_changed_pixels": 14970,
-  "freestyle_only_pixels": 1767,
-  "freestyle_pixels_recalled_by_screen": 0.8819639278557114,
+  "freestyle_only_pixels": 949,
+  "freestyle_pixels_recalled_by_screen": 0.9366065464261857,
   "freestyle_seconds": 50.71,
-  "intersection_over_union": 0.4514463516378308,
-  "screen_changed_pixels": 27479,
-  "screen_only_pixels": 14276,
-  "screen_seconds": 10.06,
-  "shared_changed_pixels": 13203,
-  "speedup": 5.040755467196819,
+  "intersection_over_union": 0.4595994361949716,
+  "screen_changed_pixels": 29558,
+  "screen_only_pixels": 15537,
+  "screen_seconds": 10.0,
+  "shared_changed_pixels": 14021,
+  "speedup": 5.071,
   "threshold": 24,
   "total_pixels": 1048576
 }
