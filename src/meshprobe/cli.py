@@ -871,6 +871,16 @@ def open_scene(
     ctx: typer.Context,
     source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
+    unit_scale: Annotated[
+        float,
+        typer.Option(
+            "--unit-scale",
+            min=0.000001,
+            help="Multiplier applied to the imported geometry before bounds/units checks run. "
+            "Use 0.001 to correct a millimeter-authored asset a buggy exporter reported as "
+            "meters, or 1000 for the opposite mistake.",
+        ),
+    ] = 1.0,
 ) -> None:
     """Open a model in the selected durable session."""
 
@@ -882,6 +892,7 @@ def open_scene(
             request_id=_request_id("open"),
             op="scene.open",
             source_path=str(source.expanduser().resolve(strict=True)),
+            unit_scale=unit_scale,
         ),
         blender=blender,
     )

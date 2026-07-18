@@ -345,6 +345,36 @@ bpy.context.object.name = 'fixture-component'
     return output
 
 
+def build_scaled_glb(tmp_path: Path, cube_size: float) -> Path:
+    """A single-cube GLB whose root bounds equal `cube_size` meters on every axis.
+
+    Used to simulate a source authored at the wrong scale: glTF's spec unit is meters, so a
+    CAD tool that forgets to convert its native millimeter coordinates before export produces
+    exactly this shape — plausible-looking numbers that are 1000x too large (or, for the
+    mirror mistake, too small).
+    """
+    output = tmp_path / "scaled.glb"
+    script = tmp_path / "build_scaled.py"
+    script.write_text(
+        f"""
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size={cube_size})
+bpy.context.object.name = 'fixture-component'
+bpy.ops.export_scene.gltf(filepath={json.dumps(str(output))}, export_format='GLB')
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_external_gltf(tmp_path: Path) -> Path:
     output = tmp_path / "external.gltf"
     script = tmp_path / "build_external_gltf.py"
@@ -1834,6 +1864,81 @@ def test_generated_camera_far_clip_scales_with_large_scenes(tmp_path: Path) -> N
         )
     )
     assert manifest.imported_camera.projection.far_clip_mm > scene_span
+
+
+def test_oversized_scene_warns_source_may_be_authored_in_millimeters(tmp_path: Path) -> None:
+    # 600 m is comfortably past the 50 m plausibility threshold — the classic signature of a
+    # CAD tool exporting millimeter coordinates without converting to glTF's spec meters.
+    source = build_scaled_glb(tmp_path, 600.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_millimeters"
+    )
+    assert "600.0 m" in warning.message
+    assert "--unit-scale 0.001" in warning.message
+
+
+def test_tiny_scene_warns_source_may_be_authored_in_meters(tmp_path: Path) -> None:
+    # 0.5 mm is well under the 1 mm floor — the mirror mistake, e.g. a meters-authored
+    # source unintentionally scaled down.
+    source = build_scaled_glb(tmp_path, 0.0005)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_meters"
+    )
+    assert "--unit-scale 1000" in warning.message
+
+
+def test_unit_scale_corrects_millimeter_source_and_suppresses_warning(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    assert any(warning.code == "units.suspected_millimeters" for warning in unscaled.warnings)
+    assert not any(
+        warning.code in {"units.suspected_millimeters", "units.suspected_meters"}
+        for warning in corrected.warnings
+    )
+    scene_span = max(
+        high - low
+        for low, high in zip(
+            corrected.root_bounds.minimum_mm,
+            corrected.root_bounds.maximum_mm,
+            strict=True,
+        )
+    )
+    assert scene_span == pytest.approx(600.0, rel=1e-3)  # 600 m * 0.001 -> 0.6 m -> 600 mm
+
+
+def test_unit_scale_cli_option_reaches_the_worker(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "--raw", "open", str(source), "--unit-scale", "0.001"],
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert result.exit_code == 0
+    assert stopped.exit_code == 0
+    payload = json.loads(result.stdout)
+    warning_codes = {warning["code"] for warning in payload["warnings"]}
+    assert "units.suspected_millimeters" not in warning_codes
+    assert "units.suspected_meters" not in warning_codes
+    scene_span = max(
+        high - low
+        for low, high in zip(
+            payload["root_bounds"]["minimum_mm"],
+            payload["root_bounds"]["maximum_mm"],
+            strict=True,
+        )
+    )
+    assert scene_span == pytest.approx(600.0, rel=1e-3)
 
 
 def test_import_prefers_source_active_camera(tmp_path: Path) -> None:

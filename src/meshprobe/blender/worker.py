@@ -34,6 +34,21 @@ PROTOCOL_VERSION = 2
 MINIMUM_BLENDER_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
+# The classic CAD-export bug: glTF's spec unit is meters, but a source authored in
+# millimeters (nearly every mechanical CAD package's native unit) gets exported without
+# converting the numbers, so a real 0.5 m part shows up 1000x too large. The tools this
+# package inspects — machines, assemblies, individual mechanical parts — essentially never
+# exceed a few meters; 50 m is already an enormous machine (a large industrial press, a
+# small building), comfortably clearing legitimate large assemblies while still catching
+# the mm/m mixup long before it reaches the absurd 100s-of-meters range issue #100 reported.
+PLAUSIBLE_MAX_SPAN_METERS = 50.0
+# The mirror mistake — meters authored, millimeters assumed — would show up as a
+# suspiciously TINY scene. This tool is also used to inspect genuinely small mechanical
+# parts (fasteners, connector pins, watch components) that can legitimately span a few
+# millimeters, so the floor sits at 1 mm: a whole asset's bounding box below that is well
+# under anything meaningful to inspect standalone here, and far more likely a units (or a
+# wrong --unit-scale) mistake than a real part.
+PLAUSIBLE_MIN_SPAN_METERS = 0.001
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -141,6 +156,38 @@ def bounds_of_points(points: list[Vector]) -> dict[str, list[float]]:
             max(point[axis] for point in points) * MILLIMETERS_PER_METER for axis in range(3)
         ],
     }
+
+
+def plausibility_warning(root_bounds: dict[str, list[float]]) -> dict[str, Any] | None:
+    """Flag a root bounding box whose size suggests a millimeter/meter unit mistake.
+
+    See the reasoning documented next to PLAUSIBLE_MAX_SPAN_METERS /
+    PLAUSIBLE_MIN_SPAN_METERS. Only the long edge of the root bounds matters — a single
+    absurd dimension is exactly the "author forgot the mm->m conversion" signature.
+    """
+    minimum = root_bounds["minimum_mm"]
+    maximum = root_bounds["maximum_mm"]
+    span_mm = max(high - low for low, high in zip(minimum, maximum, strict=True))
+    span_m = span_mm / MILLIMETERS_PER_METER
+    if span_m > PLAUSIBLE_MAX_SPAN_METERS:
+        return {
+            "code": "units.suspected_millimeters",
+            "message": (
+                f"root bounds span {span_m:.1f} m — source may be authored in millimetres "
+                "(glTF's spec unit is metres); consider --unit-scale 0.001"
+            ),
+            "component_ids": [],
+        }
+    if span_m < PLAUSIBLE_MIN_SPAN_METERS:
+        return {
+            "code": "units.suspected_meters",
+            "message": (
+                f"root bounds span {span_mm:.4f} mm — source may be authored in metres and "
+                "read as millimetres (glTF's spec unit is metres); consider --unit-scale 1000"
+            ),
+            "component_ids": [],
+        }
+    return None
 
 
 def object_bounds(obj: bpy.types.Object) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
@@ -3177,6 +3224,22 @@ def import_source(path: Path) -> list[dict[str, Any]]:
     return warnings
 
 
+def apply_unit_scale(scale: float) -> None:
+    """Uniformly rescale the whole imported scene about the origin, in place.
+
+    A uniform scale commutes with rotation, so multiplying every root object's (no-parent
+    object's) translation and object-scale by `scale`, leaving rotation untouched,
+    reproduces exactly the effect of scaling the whole scene: every descendant's
+    matrix_world scales identically through the ordinary parent/child transform chain.
+    """
+    for obj in bpy.context.scene.objects:
+        if obj.parent is not None:
+            continue
+        obj.location = obj.location * scale
+        obj.scale = obj.scale * scale
+    bpy.context.view_layer.update()
+
+
 def coordinate_frames(source_format: str) -> dict[str, Any]:
     identity = [
         1.0,
@@ -3318,6 +3381,9 @@ def build_manifest(
     ]
     hierarchy_flattened = source_format == "stl" or has_unaddressable_hierarchy(objects)
     warnings = [*import_warnings, *illumination_warnings]
+    bounds_warning = plausibility_warning(root_bounds)
+    if bounds_warning is not None:
+        warnings.append(bounds_warning)
     if hierarchy_flattened and not any(
         warning["code"] == "hierarchy.flattened" for warning in warnings
     ):
@@ -3526,9 +3592,12 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
     source_sha256 = command.get("source_sha256") or sha256_file(source_path)
+    unit_scale = float(command.get("unit_scale", 1.0))
     clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
+    if unit_scale != 1.0:
+        apply_unit_scale(unit_scale)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
     initialize_session(manifest, source_path)
     return manifest

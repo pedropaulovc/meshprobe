@@ -106,6 +106,7 @@ class SessionCheckpoint(BaseModel):
     blender: str | None
     state_sha256: str
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
+    unit_scale: float = 1.0
 
 
 def _upgrade_checkpoint(checkpoint: SessionCheckpoint) -> tuple[SessionCheckpoint, bool]:
@@ -408,6 +409,7 @@ class SessionManager:
         *,
         request_id: str = "open",
         blender: str | None = None,
+        unit_scale: float = 1.0,
     ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
@@ -416,6 +418,7 @@ class SessionManager:
                 request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
+                unit_scale=unit_scale,
             )
             service = self._new_service(selected_blender)
             try:
@@ -448,6 +451,7 @@ class SessionManager:
                 source_sha256=manifest.source_sha256,
                 blender=selected_blender,
                 state_sha256=snapshot.state_sha256,
+                unit_scale=command.unit_scale,
             )
             atomic_json(files.metadata, metadata.model_dump(mode="json"))
             atomic_json(files.scene, manifest.model_dump(mode="json"))
@@ -474,6 +478,7 @@ class SessionManager:
                 Path(command.source_path),
                 request_id=command.request_id,
                 blender=blender,
+                unit_scale=command.unit_scale,
             )
         with self._lock:
             files = self._require_files(name)
@@ -713,6 +718,7 @@ class SessionManager:
                     request_id="recover-open",
                     op="scene.open",
                     source_path=checkpoint.source_path,
+                    unit_scale=checkpoint.unit_scale,
                 )
             )
             manifest = SceneManifest.model_validate(opened.result)

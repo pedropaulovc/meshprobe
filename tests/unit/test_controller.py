@@ -938,7 +938,8 @@ def test_execute_routes_scene_open_through_checked_import(
     source.write_bytes(b"model")
     opened: list[Path] = []
 
-    def open_scene(path: str | Path) -> SceneManifest:
+    def open_scene(path: str | Path, *, unit_scale: float = 1.0) -> SceneManifest:
+        del unit_scale
         opened.append(Path(path))
         return scene_manifest
 
@@ -1001,7 +1002,8 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
 
-    def open_scene(path: Path) -> SimpleNamespace:
+    def open_scene(path: Path, *, unit_scale: float = 1.0) -> SimpleNamespace:
+        del unit_scale
         calls.append(("open", path))
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1046,7 +1048,8 @@ def test_recover_session_retains_replay_log_when_replay_crashes(
     monkeypatch.setattr(controller, "close", lambda: None)
     monkeypatch.setattr(controller, "start", lambda: {})
 
-    def reopen(path: Path) -> SimpleNamespace:
+    def reopen(path: Path, *, unit_scale: float = 1.0) -> SimpleNamespace:
+        del unit_scale
         controller._accepted_commands.clear()
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1073,7 +1076,7 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         controller,
         "open_scene",
-        lambda path: SimpleNamespace(source_sha256="replacement-hash"),
+        lambda path, *, unit_scale=1.0: SimpleNamespace(source_sha256="replacement-hash"),
     )
     monkeypatch.setattr(
         controller,
