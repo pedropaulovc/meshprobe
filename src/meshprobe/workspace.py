@@ -57,6 +57,24 @@ STATE_OPERATIONS = frozenset(
     }
 )
 
+# The ops that always refit the camera to an aspect ratio, so their aspect_ratio is
+# the intended framing. view.move/view.rotate reuse the current projection without
+# refitting, so their aspect_ratio only feeds diagnostics and must NOT be read as the
+# framing aspect — a bare move/rotate after a wide orbit would otherwise reset the
+# tracked framing to its 1.0 default and false-warn a matching render. The exception is
+# a view.rotate that carries its own projection (see _refits_camera): that replaces the
+# projection, so it reframes at the given aspect just like the always-framing ops.
+FRAMING_OPERATIONS = frozenset({"view.set", "view.orbit", "view.frame"})
+
+
+def _refits_camera(command: dict[str, Any]) -> bool:
+    op = command.get("op")
+    if op in FRAMING_OPERATIONS:
+        return True
+    # A bare view.rotate reuses the current projection (a nudge, like view.move); one that
+    # supplies a projection replaces it, reframing at the command's aspect_ratio.
+    return op == "view.rotate" and command.get("projection") is not None
+
 
 class RendererContinuity(StrEnum):
     PRESERVED = "preserved"
@@ -487,9 +505,15 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             artifacts = self._artifact_paths(command.op, response.result)
             warnings: tuple[str, ...] = ()
+            if isinstance(command, RenderImageCommand):
+                aspect_warning = self._aspect_ratio_warning(
+                    command, self._framed_aspect_ratio(files)
+                )
+                if aspect_warning is not None:
+                    warnings = (*warnings, aspect_warning)
             if self._graphics_warned_worker_pids.get(name) != service.worker_pid:
                 graphics = getattr(service, "graphics", None)
-                warnings = graphics.warnings if graphics is not None else ()
+                warnings = (*warnings, *(graphics.warnings if graphics is not None else ()))
                 self._graphics_warned_worker_pids[name] = service.worker_pid
             match_count = (
                 len(response.result)
@@ -722,6 +746,44 @@ class SessionManager:
         if not isinstance(payload, dict) or "session" not in payload:
             raise ValueError("renderer returned an invalid session snapshot")
         return SessionSnapshot.model_validate(payload["session"])
+
+    # A render's width/height diverging from the aspect ratio the camera was framed with
+    # (view.orbit/view.frame/view.set take an aspect_ratio that refits the camera) does not
+    # stretch or crop pixels: Blender derives the render's real field of view from the actual
+    # resolution, so a mismatch silently reframes the shot instead (extra padding, or a
+    # tighter crop, on whichever axis the framing aspect didn't pin). >1% relative difference
+    # is treated as a deliberate divergence worth flagging.
+    _ASPECT_RATIO_RELATIVE_TOLERANCE = 0.01
+
+    @staticmethod
+    def _framed_aspect_ratio(files: SessionFiles) -> float:
+        # The framing aspect is the aspect_ratio of the last command that refit the camera
+        # (see _refits_camera); the snapshot's camera_diagnostics.aspect_ratio can't be used
+        # because view.move and bare view.rotate overwrite it with their own default while
+        # leaving the projection framed as before. Defaults to 1.0 (the framing a freshly
+        # opened session's camera carries) when nothing has refit the camera yet.
+        checkpoint, _ = _upgrade_checkpoint(
+            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+        )
+        for raw in reversed(checkpoint.accepted_commands):
+            if _refits_camera(raw):
+                return float(raw.get("aspect_ratio", 1.0))
+        return 1.0
+
+    @classmethod
+    def _aspect_ratio_warning(cls, command: RenderImageCommand, framed_aspect: float) -> str | None:
+        render_aspect = command.width / command.height
+        relative_difference = abs(render_aspect - framed_aspect) / framed_aspect
+        if relative_difference <= cls._ASPECT_RATIO_RELATIVE_TOLERANCE:
+            return None
+        return (
+            f"render.image requested {command.width}x{command.height} (aspect ratio "
+            f"{render_aspect:.4g}), but the session camera was last framed for aspect ratio "
+            f"{framed_aspect:.4g} by view.orbit/view.frame/view.set (or a view.rotate that set "
+            "a projection). The render will reframe to the requested resolution instead of "
+            "matching that framing; re-run whichever framing command you used with a matching "
+            "--aspect-ratio first if the tight framing matters."
+        )
 
     def _require_files(self, name: str) -> SessionFiles:
         files = SessionFiles(self.root, name)
