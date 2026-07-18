@@ -1371,7 +1371,6 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     assert moved_camera.pose.position_mm == pytest.approx(expected_position)
     assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
     assert type(moved_camera.projection) is type(initial.camera.projection)
-    assert moved_camera.projection.near_clip_mm == initial.camera.projection.near_clip_mm
     expected_depths = [
         sum(
             (corner[axis] - moved_camera.pose.position_mm[axis]) * diagnostics.forward[axis]
@@ -1388,6 +1387,8 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
         initial.camera.projection.far_clip_mm,
         max(depth for depth in expected_depths if depth > 0) * 1.5,
     )
+    expected_near_clip = max(0.1, min(depth for depth in expected_depths if depth > 0) * 0.5)
+    assert moved_camera.projection.near_clip_mm == pytest.approx(expected_near_clip)
     assert moved_camera.projection.far_clip_mm == pytest.approx(expected_far_clip)
     assert isinstance(snapshot.camera_operation, CameraTranslationReceipt)
     assert move_receipt.requested_world_delta_mm == (0, 0, 100)
@@ -1419,6 +1420,33 @@ def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> Non
     assert after.camera == before.camera
     assert after.camera_operation == before.camera_operation
     assert after.state_sha256 == before.state_sha256
+
+
+def test_rejected_bare_orbit_preserves_live_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        camera = manifest.imported_camera.model_copy(
+            update={
+                "projection": manifest.imported_camera.projection.model_copy(
+                    update={"far_clip_mm": 1_000}
+                )
+            }
+        )
+        controller.execute(ViewSetCommand(request_id="short-clip", op="view.set", camera=camera))
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.orbit",
+                target_mm=[0, 0, 0],
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=10_000,
+                focus_component_ids=["missing-component"],
+            )
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
 
 
 def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
@@ -2547,6 +2575,16 @@ def test_default_view_keeps_orthographic_camera_outside_bounds_after_a_bare_rota
 
     # The renewed clip range remains valid after the orbit.
     assert rendered.session.camera.projection.near_clip_mm > 0
+    forward = rendered.session.camera_diagnostics.forward
+    depths = [
+        sum((corner[axis] - position[axis]) * forward[axis] for axis in range(3))
+        for corner in ((x, y, z) for x in (-500, 500) for y in (-500, 500) for z in (-500, 500))
+    ]
+    visible_depths = [depth for depth in depths if depth > 0]
+    assert rendered.session.camera.projection.near_clip_mm == pytest.approx(
+        max(0.1, min(visible_depths) * 0.5)
+    )
+    assert rendered.session.camera.projection.far_clip_mm >= max(visible_depths) * 1.5 - 0.1
 
 
 def test_default_view_fits_orthographic_camera_for_non_square_render(tmp_path: Path) -> None:

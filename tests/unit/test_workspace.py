@@ -1111,8 +1111,9 @@ def test_bare_reset_stays_omitted_in_durable_events(
     assert "aspect_ratio" not in events[-1]["command"]
 
 
-def test_v1_checkpoint_recovery_restores_the_source_camera_before_replaying(
-    tmp_path: Path, scene_manifest: SceneManifest
+@pytest.mark.parametrize("schema_version", (1, 2))
+def test_checkpoint_without_framing_marker_restores_the_source_camera_before_replaying(
+    tmp_path: Path, scene_manifest: SceneManifest, schema_version: int
 ) -> None:
     services: list[FakeSessionService] = []
 
@@ -1129,7 +1130,7 @@ def test_v1_checkpoint_recovery_restores_the_source_camera_before_replaying(
     manager.close("review")
     checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["schema_version"] = 1
+    checkpoint["schema_version"] = schema_version
     checkpoint.pop("aspect_ratio")
     checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
 

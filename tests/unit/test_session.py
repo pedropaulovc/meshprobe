@@ -38,6 +38,12 @@ def test_session_starts_with_the_same_auto_framed_default_as_the_renderer(
     assert session.reset().camera == session.snapshot().camera
 
 
+def test_non_square_session_reports_its_framing_aspect(scene_manifest: SceneManifest) -> None:
+    session = InspectionSession(scene_manifest, aspect_ratio=2.5)
+
+    assert session.snapshot().camera_diagnostics.aspect_ratio == 2.5
+
+
 def test_custom_mark_color_is_hashed_and_cleared_when_unmarked(
     scene_manifest: SceneManifest,
 ) -> None:

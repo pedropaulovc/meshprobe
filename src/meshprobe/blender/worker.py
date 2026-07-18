@@ -719,10 +719,10 @@ def apply_camera(
     return session_snapshot()
 
 
-def _expand_far_clip_to_scene(
+def _fit_reused_projection_to_scene(
     camera: dict[str, Any], position: Vector, rotation: Quaternion
 ) -> None:
-    """Keep a reused projection's far plane beyond the scene after camera motion."""
+    """Keep a reused projection's clip range valid after camera motion."""
     if MANIFEST is None:
         return
     bounds = MANIFEST["root_bounds"]
@@ -737,6 +737,7 @@ def _expand_far_clip_to_scene(
     if not visible_depths:
         return
     projection = camera["projection"]
+    projection["near_clip_mm"] = max(0.1, min(visible_depths) * 0.5)
     projection["far_clip_mm"] = max(projection["far_clip_mm"], max(visible_depths) * 1.5)
 
 
@@ -747,8 +748,6 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
     # CURRENT_CAMERA is guaranteed set here.
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
-    global CURRENT_CAMERA_OPERATION
-    CURRENT_CAMERA_OPERATION = None
     target = Vector(value / MILLIMETERS_PER_METER for value in command["target_mm"])
     azimuth = math.radians(command["azimuth_degrees"])
     elevation = math.radians(command["elevation_degrees"])
@@ -774,8 +773,13 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
     # standard 50mm perspective (imported_camera's fallback when the source has no
     # camera), so this alone covers "default to perspective on first use". See #96.
     requested_projection = command.get("projection")
+    focus_component_ids = command.get("focus_component_ids", ())
+    aspect_ratio = command.get("aspect_ratio", 1.0)
+    validate_camera_diagnostics_inputs(focus_component_ids, aspect_ratio)
     projection = (
-        requested_projection if requested_projection is not None else CURRENT_CAMERA["projection"]
+        requested_projection
+        if requested_projection is not None
+        else deepcopy(CURRENT_CAMERA["projection"])
     )
     camera = {
         "pose": {
@@ -785,11 +789,11 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         "projection": projection,
     }
     if requested_projection is None:
-        _expand_far_clip_to_scene(camera, position, rotation)
+        _fit_reused_projection_to_scene(camera, position, rotation)
     return apply_camera(
         camera,
-        command.get("focus_component_ids", ()),
-        command.get("aspect_ratio", 1.0),
+        focus_component_ids,
+        aspect_ratio,
         command["target_mm"],
     )
 
@@ -813,9 +817,9 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
     }
     camera = {
         "pose": resulting_pose,
-        "projection": CURRENT_CAMERA["projection"],
+        "projection": deepcopy(CURRENT_CAMERA["projection"]),
     }
-    _expand_far_clip_to_scene(
+    _fit_reused_projection_to_scene(
         camera,
         position / MILLIMETERS_PER_METER,
         orientation,
@@ -956,7 +960,7 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
     }
     requested_projection = command.get("projection")
     projection = (
-        CURRENT_CAMERA["projection"]
+        deepcopy(CURRENT_CAMERA["projection"])
         if requested_projection is None
         else normalize_camera_projection(requested_projection)
     )
@@ -964,6 +968,9 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         "pose": resulting_pose,
         "projection": projection,
     }
+    if requested_projection is None:
+        position = Vector(resulting_pose["position_mm"]) / MILLIMETERS_PER_METER
+        _fit_reused_projection_to_scene(camera, position, orientation)
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "rotate",

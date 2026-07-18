@@ -129,7 +129,11 @@ class InspectionSession:
         )
         return SessionSnapshot(
             camera=self._camera,
-            camera_diagnostics=camera_diagnostics(self._camera, target_mm=target),
+            camera_diagnostics=camera_diagnostics(
+                self._camera,
+                target_mm=target,
+                aspect_ratio=self._aspect_ratio,
+            ),
             illumination=self._illumination,
             components=dict(self._components),
             state_sha256=hashlib.sha256(canonical).hexdigest(),

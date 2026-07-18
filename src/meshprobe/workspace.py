@@ -725,10 +725,10 @@ class SessionManager:
         persisted_checkpoint = SessionCheckpoint.model_validate_json(
             files.checkpoint.read_text(encoding="utf-8")
         )
-        pre_auto_frame_checkpoint = (
-            persisted_checkpoint.schema_version == 1
-            and "aspect_ratio" not in persisted_checkpoint.model_fields_set
-        )
+        # Auto-framing introduced the aspect marker after schema v2 had already
+        # shipped. A checkpoint without it replays relative camera commands from
+        # the source camera, regardless of its numeric schema version.
+        pre_auto_frame_checkpoint = "aspect_ratio" not in persisted_checkpoint.model_fields_set
         checkpoint, upgraded = _upgrade_checkpoint(persisted_checkpoint)
         service = self._new_service(checkpoint.blender)
         try:
