@@ -2534,6 +2534,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     source = build_edge_style_glb(tmp_path)
     plain_output = tmp_path / "plain.png"
     edge_output = tmp_path / "shaded-edges.png"
+    screen_edge_output = tmp_path / "screen-edges.png"
     evaluator_dir = tmp_path / "plain-evaluator"
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
@@ -2609,16 +2610,33 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
             )
         )
         edge_runtime = controller.request("session.runtime")
+        screen_edged = controller.render_image(
+            RenderImageCommand(
+                request_id="render-screen-edges",
+                op="render.image",
+                output_path=str(screen_edge_output),
+                width=320,
+                height=240,
+                samples=1,
+                style=RenderStyle.SCREEN_EDGES,
+            )
+        )
+        screen_edge_runtime = controller.request("session.runtime")
 
     assert plain.evaluator is not None
     assert plain.session.state_sha256 == edged.session.state_sha256
+    assert plain.session.state_sha256 == screen_edged.session.state_sha256
     assert plain.session.camera == edged.session.camera
+    assert plain.session.camera == screen_edged.session.camera
     assert edged.style is RenderStyle.SHADED_EDGES
+    assert screen_edged.style is RenderStyle.SCREEN_EDGES
     assert edged.shaded_edges == ShadedEdgesStyle()
     assert edge_runtime["render"]["use_freestyle"] is True
+    assert screen_edge_runtime["render"]["use_freestyle"] is False
 
     plain_image = Image.open(plain.color.path).convert("RGB")
     edge_image = Image.open(edged.color.path).convert("RGB")
+    screen_edge_image = Image.open(screen_edged.color.path).convert("RGB")
     component_image = Image.open(plain.evaluator.component_ids.path).convert("RGB")
     changed = {
         (x, y)
@@ -2628,6 +2646,20 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
             abs(left - right)
             for left, right in zip(
                 plain_image.getpixel((x, y)), edge_image.getpixel((x, y)), strict=True
+            )
+        )
+        >= 24
+    }
+    screen_changed = {
+        (x, y)
+        for y in range(plain_image.height)
+        for x in range(plain_image.width)
+        if max(
+            abs(left - right)
+            for left, right in zip(
+                plain_image.getpixel((x, y)),
+                screen_edge_image.getpixel((x, y)),
+                strict=True,
             )
         )
         >= 24
@@ -2665,6 +2697,8 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     assert len(changed & panel_boundary) >= 40
     assert len(changed & cube_deep) >= 10
     assert len(changed & panel_deep) <= 2
+    assert len(screen_changed & panel_boundary) >= 40
+    assert screen_changed != changed
 
 
 @pytest.mark.skipif(

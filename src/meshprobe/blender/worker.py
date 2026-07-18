@@ -1903,10 +1903,7 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
     line_color = group.nodes.new("CompositorNodeRGB")
     color = settings["line_color"]
     line_color.outputs["Color"].default_value = (
-        *(
-            srgb_channel_to_linear(int(color[offset : offset + 2], 16))
-            for offset in (1, 3, 5)
-        ),
+        *(srgb_channel_to_linear(int(color[offset : offset + 2], 16)) for offset in (1, 3, 5)),
         1.0,
     )
     mix = group.nodes.new("ShaderNodeMix")
@@ -1924,8 +1921,7 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
 
     prefix = f"{path.stem}.screen-edges"
     before = {
-        candidate: file_version(candidate)
-        for candidate in path.parent.glob(f"{prefix}*.exr")
+        candidate: file_version(candidate) for candidate in path.parent.glob(f"{prefix}*.exr")
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
