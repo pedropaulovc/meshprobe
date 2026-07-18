@@ -2637,7 +2637,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
             width=320,
             height=240,
             samples=1,
-        ).model_dump(mode="json", exclude={"request_id", "op", "style"})
+        ).model_dump(mode="json", exclude={"request_id", "op", "style", "shaded_edges"})
         raw_default = RenderManifest.model_validate(
             controller.request("render.image", **raw_default_arguments)
         )

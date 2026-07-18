@@ -2331,6 +2331,15 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
     style = command.setdefault("style", "screen_edges")
+    shaded_edges = command.setdefault(
+        "shaded_edges",
+        {
+            "line_color": "#202020",
+            "line_width": 1.5,
+            "crease_angle_degrees": 120,
+            "edge_types": ["silhouette", "border", "crease", "material_boundary"],
+        },
+    )
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
@@ -2341,7 +2350,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
         if style == "screen_edges":
-            render_screen_edges(output, command["shaded_edges"])
+            render_screen_edges(output, shaded_edges)
         else:
             render_still(output)
         if backdrop is not None:
@@ -2363,15 +2372,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "samples": command["samples"],
         "engine": command["engine"],
         "style": style,
-        "shaded_edges": command.get(
-            "shaded_edges",
-            {
-                "line_color": "#202020",
-                "line_width": 1.5,
-                "crease_angle_degrees": 120,
-                "edge_types": ["silhouette", "border", "crease", "material_boundary"],
-            },
-        ),
+        "shaded_edges": shaded_edges,
         "device": device,
         "graphics_policy": command["graphics_policy"],
         "graphics": graphics_platform(),
