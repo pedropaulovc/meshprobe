@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command, SceneOpenCommand
+from meshprobe.protocol import Command, SceneOpenCommand, SessionResetCommand
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -52,7 +52,9 @@ class MeshProbeClient:
         # defaults such as render width and height must still travel over the wire.
         # Dumping the full model also keeps nested discriminators intact.
         full_command = command.model_dump(mode="json")
-        if isinstance(command, SceneOpenCommand) and "aspect_ratio" not in command.model_fields_set:
+        if isinstance(command, (SceneOpenCommand, SessionResetCommand)) and (
+            "aspect_ratio" not in command.model_fields_set
+        ):
             full_command.pop("aspect_ratio")
         payload = self.request(
             "execute",

@@ -34,6 +34,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     ViewFrameCommand,
     ViewRotateCommand,
+    ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -64,7 +65,7 @@ class FakeSessionService:
     def execute(self, command: Command) -> CommandResponse:
         self.received_commands.append(command)
         if isinstance(command, SceneOpenCommand):
-            self.session = InspectionSession(self.manifest)
+            self.session = InspectionSession(self.manifest, aspect_ratio=command.aspect_ratio)
             result: JsonValue = self.manifest.model_dump(mode="json")
         elif isinstance(command, SessionSnapshotCommand):
             assert self.session is not None
@@ -86,6 +87,9 @@ class FakeSessionService:
         elif isinstance(command, (ViewFrameCommand, ViewRotateCommand)):
             assert self.session is not None
             result = {"state_sha256": self.session.snapshot().state_sha256}
+        elif isinstance(command, ViewSetCommand):
+            assert self.session is not None
+            result = self.session.set_camera(command.camera).model_dump(mode="json")
         elif isinstance(command, SessionResetCommand):
             assert self.session is not None
             result = self.session.reset().model_dump(mode="json")
@@ -516,6 +520,31 @@ def test_render_image_does_not_warn_within_the_aspect_ratio_tolerance(
             height=1000,
         ),
     )
+    assert receipt.warnings == ()
+
+
+def test_render_image_uses_the_checkpointed_open_aspect_before_any_view_refit(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source, aspect_ratio=2.0)
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matches-open-framing",
+            op="render.image",
+            output_path=str(tmp_path / "matches-open-framing.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+
     assert receipt.warnings == ()
 
 
@@ -1060,6 +1089,40 @@ def test_bare_reset_preserves_the_checkpointed_open_aspect_ratio(
     recover_open = services[-1].received_commands[0]
     assert isinstance(recover_open, SceneOpenCommand)
     assert recover_open.aspect_ratio == 2.5
+
+
+def test_v1_checkpoint_recovery_restores_the_source_camera_before_replaying(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("review", source)
+    manager.close("review")
+    checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["schema_version"] = 1
+    checkpoint.pop("aspect_ratio")
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recover", op="session.snapshot"),
+    )
+
+    recovered_commands = services[-1].received_commands
+    assert isinstance(recovered_commands[0], SceneOpenCommand)
+    assert isinstance(recovered_commands[1], ViewSetCommand)
+    assert recovered_commands[1].camera == scene_manifest.imported_camera
 
 
 def test_failed_checkpoint_upgrade_kills_untracked_recovery_worker(

@@ -29,6 +29,15 @@ def test_reset_restores_imported_state_and_hash(scene_manifest: SceneManifest) -
     assert session.reset() == initial
 
 
+def test_session_starts_with_the_same_auto_framed_default_as_the_renderer(
+    scene_manifest: SceneManifest,
+) -> None:
+    session = InspectionSession(scene_manifest)
+
+    assert session.snapshot().camera != scene_manifest.imported_camera
+    assert session.reset().camera == session.snapshot().camera
+
+
 def test_custom_mark_color_is_hashed_and_cleared_when_unmarked(
     scene_manifest: SceneManifest,
 ) -> None:

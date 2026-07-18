@@ -6,9 +6,11 @@ import math
 from typing import cast
 
 from meshprobe.models import (
+    Bounds,
     Camera,
     CameraDiagnostics,
     CameraPoseFrame,
+    DepthOfFieldMode,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
@@ -23,6 +25,136 @@ _EPSILON = 1e-12
 # camera auto-frames the scene on open. 0.9 leaves a ~5% margin on every side —
 # comfortably clear of the edge, yet far tighter than an untouched source camera.
 DEFAULT_FRAME_FILL = 0.9
+
+
+def framed_default_camera(
+    camera: Camera,
+    bounds: Bounds,
+    *,
+    aspect_ratio: float = 1.0,
+    frame_fill: float = DEFAULT_FRAME_FILL,
+) -> Camera:
+    """Fit a source camera to the scene bounds while retaining its view direction.
+
+    This is deliberately renderer-independent so the in-memory session model has
+    the same initial camera as the Blender worker. The worker additionally
+    excludes source-hidden geometry before calling its equivalent fit.
+    """
+
+    minimum = bounds.minimum_mm
+    maximum = bounds.maximum_mm
+    center = cast(
+        Vec3,
+        tuple((low + high) / 2 for low, high in zip(minimum, maximum, strict=True)),
+    )
+    diagnostics = camera_diagnostics(camera, target_mm=center, aspect_ratio=aspect_ratio)
+    forward, right, up = diagnostics.forward, diagnostics.right, diagnostics.up
+    corners = _box_corners(minimum, maximum)
+    half_extent = max((high - low) / 2 for low, high in zip(minimum, maximum, strict=True))
+    nearest_depth = min(
+        _dot(
+            cast(Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))),
+            forward,
+        )
+        for corner in corners
+    )
+    clearance = -nearest_depth + 1.0
+    projection = camera.projection
+
+    if isinstance(projection, OrthographicProjection):
+        half_width = max(
+            abs(
+                _dot(
+                    cast(
+                        Vec3,
+                        tuple(value - origin for value, origin in zip(corner, center, strict=True)),
+                    ),
+                    right,
+                )
+            )
+            for corner in corners
+        )
+        half_height = max(
+            abs(
+                _dot(
+                    cast(
+                        Vec3,
+                        tuple(value - origin for value, origin in zip(corner, center, strict=True)),
+                    ),
+                    up,
+                )
+            )
+            for corner in corners
+        )
+        required_half = (
+            max(half_width, half_height * aspect_ratio, 1.0)
+            if aspect_ratio >= 1
+            else max(half_height, half_width / aspect_ratio, 1.0)
+        )
+        projection = projection.model_copy(update={"scale_mm": 2 * required_half / frame_fill})
+        distance = max(clearance, half_extent, 1.0)
+    else:
+        assert diagnostics.horizontal_fov_degrees is not None
+        assert diagnostics.vertical_fov_degrees is not None
+        distance = bounds_fit_distance_mm(
+            minimum_mm=minimum,
+            maximum_mm=maximum,
+            forward=forward,
+            right=right,
+            up=up,
+            horizontal_half_tan=math.tan(math.radians(diagnostics.horizontal_fov_degrees / 2)),
+            vertical_half_tan=math.tan(math.radians(diagnostics.vertical_fov_degrees / 2)),
+            frame_fill=frame_fill,
+        )
+
+    position = cast(
+        Vec3,
+        tuple(origin - axis * distance for origin, axis in zip(center, forward, strict=True)),
+    )
+    depths = [
+        _dot(
+            cast(
+                Vec3,
+                tuple(value - origin for value, origin in zip(corner, position, strict=True)),
+            ),
+            forward,
+        )
+        for corner in corners
+    ]
+    updates: dict[str, object] = {
+        "near_clip_mm": max(0.1, min(depths) * 0.5),
+        "far_clip_mm": max(depths) * 1.5,
+    }
+    if (
+        isinstance(projection, PerspectiveProjection)
+        and projection.depth_of_field.mode is DepthOfFieldMode.ENABLED
+        and projection.depth_of_field.focus_distance_mm is not None
+    ):
+        original_position = camera.pose.position_mm
+        focus_point = cast(
+            Vec3,
+            tuple(
+                origin + axis * projection.depth_of_field.focus_distance_mm
+                for origin, axis in zip(original_position, forward, strict=True)
+            ),
+        )
+        focus_distance = _dot(
+            cast(
+                Vec3,
+                tuple(point - origin for point, origin in zip(focus_point, position, strict=True)),
+            ),
+            forward,
+        )
+        updates["depth_of_field"] = projection.depth_of_field.model_copy(
+            update={"focus_distance_mm": max(0.1, focus_distance)}
+        )
+    projection = projection.model_copy(update=updates)
+    return camera.model_copy(
+        update={
+            "pose": camera.pose.model_copy(update={"position_mm": position}),
+            "projection": projection,
+        }
+    )
 
 
 def bounds_fit_distance_mm(

@@ -412,7 +412,7 @@ def framed_default_camera(
             horizontal = abs(offset @ right) / (horizontal_half_tan * frame_fill)
             vertical = abs(offset @ up) / (vertical_half_tan * frame_fill)
             distance = max(distance, horizontal - depth, vertical - depth)
-        distance = max(distance, half_extent + 1.0, clearance)
+        distance = max(distance, clearance)
         position = center - forward * distance
         framed_projection = deepcopy(projection)
 
@@ -768,7 +768,11 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
         "pose": resulting_pose,
         "projection": CURRENT_CAMERA["projection"],
     }
-    _expand_far_clip_to_scene(camera, position, orientation)
+    _expand_far_clip_to_scene(
+        camera,
+        position / MILLIMETERS_PER_METER,
+        orientation,
+    )
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "move",

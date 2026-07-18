@@ -10,7 +10,12 @@ import pytest
 
 from meshprobe.client import MeshProbeClient
 from meshprobe.models import PerspectiveProjection
-from meshprobe.protocol import RenderImageCommand, SceneOpenCommand, ViewOrbitCommand
+from meshprobe.protocol import (
+    RenderImageCommand,
+    SceneOpenCommand,
+    SessionResetCommand,
+    ViewOrbitCommand,
+)
 from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
 
 
@@ -332,6 +337,18 @@ def test_execute_omits_only_the_new_default_aspect_ratio_from_the_wire_payload(
             source_path="/models/assembly.glb",
             aspect_ratio=2.5,
         ),
+    )
+    assert captured["command"]["aspect_ratio"] == 2.5
+
+    client.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset"),
+    )
+    assert "aspect_ratio" not in captured["command"]
+
+    client.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=2.5),
     )
     assert captured["command"]["aspect_ratio"] == 2.5
 

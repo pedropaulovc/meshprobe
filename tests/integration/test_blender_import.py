@@ -1233,7 +1233,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
 def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
-        controller.open_scene(source)
+        manifest = controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         moved = cast(
             "dict[str, object]",
@@ -1262,7 +1262,23 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
     assert type(moved_camera.projection) is type(initial.camera.projection)
     assert moved_camera.projection.near_clip_mm == initial.camera.projection.near_clip_mm
-    assert moved_camera.projection.far_clip_mm >= initial.camera.projection.far_clip_mm
+    expected_depths = [
+        sum(
+            (corner[axis] - moved_camera.pose.position_mm[axis]) * diagnostics.forward[axis]
+            for axis in range(3)
+        )
+        for corner in (
+            (x, y, z)
+            for x in (manifest.root_bounds.minimum_mm[0], manifest.root_bounds.maximum_mm[0])
+            for y in (manifest.root_bounds.minimum_mm[1], manifest.root_bounds.maximum_mm[1])
+            for z in (manifest.root_bounds.minimum_mm[2], manifest.root_bounds.maximum_mm[2])
+        )
+    ]
+    expected_far_clip = max(
+        initial.camera.projection.far_clip_mm,
+        max(depth for depth in expected_depths if depth > 0) * 1.5,
+    )
+    assert moved_camera.projection.far_clip_mm == pytest.approx(expected_far_clip)
     assert isinstance(snapshot.camera_operation, CameraTranslationReceipt)
     assert move_receipt.requested_world_delta_mm == (0, 0, 100)
     assert move_receipt.requested_camera_delta_mm == (-25, 0, 50)

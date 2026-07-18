@@ -40,6 +40,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    ViewSetCommand,
 )
 from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
@@ -708,9 +709,14 @@ class SessionManager:
         current = self._services.get(name)
         if current is not None:
             return current
-        checkpoint, upgraded = _upgrade_checkpoint(
-            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+        persisted_checkpoint = SessionCheckpoint.model_validate_json(
+            files.checkpoint.read_text(encoding="utf-8")
         )
+        pre_auto_frame_checkpoint = (
+            persisted_checkpoint.schema_version == 1
+            and "aspect_ratio" not in persisted_checkpoint.model_fields_set
+        )
+        checkpoint, upgraded = _upgrade_checkpoint(persisted_checkpoint)
         service = self._new_service(checkpoint.blender)
         try:
             opened = service.execute(
@@ -726,6 +732,17 @@ class SessionManager:
                 raise ValueError("source asset bundle changed since the session checkpoint")
             from meshprobe.protocol import COMMAND_ADAPTER
 
+            if pre_auto_frame_checkpoint:
+                # A v1 checkpoint predates default auto-framing. Its recorded relative
+                # camera commands therefore start from the source camera, not the new
+                # framed default. Restore that exact baseline before replaying them.
+                service.execute(
+                    ViewSetCommand(
+                        request_id="recover-v1-source-camera",
+                        op="view.set",
+                        camera=manifest.imported_camera,
+                    )
+                )
             for raw in checkpoint.accepted_commands:
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
             if upgraded:
@@ -766,15 +783,16 @@ class SessionManager:
         # The framing aspect is the aspect_ratio of the last command that refit the camera
         # (see _refits_camera); the snapshot's camera_diagnostics.aspect_ratio can't be used
         # because view.move and bare view.rotate overwrite it with their own default while
-        # leaving the projection framed as before. Defaults to 1.0 (the framing a freshly
-        # opened session's camera carries) when nothing has refit the camera yet.
+        # leaving the projection framed as before. A freshly opened session is already
+        # framed with its checkpointed open/reset aspect ratio, so use that when nothing has
+        # refit the camera yet.
         checkpoint, _ = _upgrade_checkpoint(
             SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         for raw in reversed(checkpoint.accepted_commands):
             if _refits_camera(raw):
                 return float(raw.get("aspect_ratio", 1.0))
-        return 1.0
+        return checkpoint.aspect_ratio
 
     @classmethod
     def _aspect_ratio_warning(cls, command: RenderImageCommand, framed_aspect: float) -> str | None:
