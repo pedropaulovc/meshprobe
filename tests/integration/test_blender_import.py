@@ -3541,10 +3541,20 @@ def test_worker_orbit_without_projection_keeps_session_current_projection(
         )
     assert isinstance(continued, dict)
     continued_camera = Camera.model_validate(continued["camera"])
-    # The pose moved (new azimuth/elevation/distance) but the projection carried over
-    # from the previous orbit unchanged, without the caller restating it.
+    # The pose moved (new azimuth/elevation/distance) and the projection's mode and
+    # framing carried over without restating it. Bare motion renews clip planes so
+    # the inherited view remains valid from its new position.
     assert continued_camera.pose.position_mm != pytest.approx(established_camera.pose.position_mm)
-    assert continued_camera.projection == established_camera.projection
+    assert (
+        continued_camera.projection.model_copy(
+            update={
+                "near_clip_mm": established_camera.projection.near_clip_mm,
+                "far_clip_mm": established_camera.projection.far_clip_mm,
+            }
+        )
+        == established_camera.projection
+    )
+    assert 0 < continued_camera.projection.near_clip_mm < continued_camera.projection.far_clip_mm
 
 
 def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspective(
@@ -3694,8 +3704,18 @@ def test_cli_view_orbit_without_projection_flags_reuses_session_camera(tmp_path:
     assert "Missing option" not in bare_result.output
     assert stopped.exit_code == 0
     bare_camera = Camera.model_validate(json.loads(bare_result.stdout)["camera"])
-    # The 85mm perspective established above carries over untouched; only the pose moved.
-    assert bare_camera.projection == established.projection
+    # The 85mm perspective established above carries over; only the pose and the
+    # inherited clip range move with the camera.
+    assert (
+        bare_camera.projection.model_copy(
+            update={
+                "near_clip_mm": established.projection.near_clip_mm,
+                "far_clip_mm": established.projection.far_clip_mm,
+            }
+        )
+        == established.projection
+    )
+    assert 0 < bare_camera.projection.near_clip_mm < bare_camera.projection.far_clip_mm
     assert bare_camera.pose.position_mm != pytest.approx(established.pose.position_mm)
 
 
