@@ -16,6 +16,14 @@ def contact_sheet_staging_path(output_path: Path) -> Path:
 
 _MAX_CAPTION_LINES = 4
 _MAX_LEGEND_LINES = 2
+# Bound on caption + legend lines together, so a panel that maxes out BOTH bands
+# at once (a long custom_3x3 caption and a long callout legend, all nine panels)
+# cannot push every row to its own worst case simultaneously and bust the ~4K
+# long-edge budget the default panel size was chosen for. The caption keeps its
+# own full _MAX_CAPTION_LINES allowance always (preserving the default
+# occluder-removal caption in full); only the legend gives up room when the
+# caption is already at its cap.
+_MAX_BAND_LINES = 5
 
 
 def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
@@ -85,7 +93,8 @@ def compose_contact_sheet(
         if callouts:
             legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
             legend_lines = _wrap_text(measuring_draw, legend, font, panel_width - 12)
-            lines.extend(_cap_lines(legend_lines, _MAX_LEGEND_LINES))
+            legend_limit = min(_MAX_LEGEND_LINES, _MAX_BAND_LINES - len(capped_caption_lines))
+            lines.extend(_cap_lines(legend_lines, legend_limit))
         panel_caption_line_counts.append(len(capped_caption_lines))
         panel_lines.append(tuple(lines))
     row_caption_heights = tuple(

@@ -168,6 +168,37 @@ def test_compose_contact_sheet_caps_caption_growth_at_default_panel_size(tmp_pat
     assert Image.open(output).height <= 4_096
 
 
+def test_compose_contact_sheet_bounds_every_row_worst_case_at_default_panel_size(
+    tmp_path: Path,
+) -> None:
+    # custom_3x3 lets callers give every one of the nine panels a maximally long
+    # caption and callout legend, unlike the single-panel case above where only
+    # one row is capped and the other two rows stay minimal. All three rows can
+    # therefore hit the per-band line cap at once, which is the real worst case
+    # the ~4K long-edge budget must hold under.
+    long_label = "selected-component-" + "x" * 230
+    callouts = tuple(
+        ContactSheetCallout(
+            number=number,
+            component_id=f"cmp_{number}",
+            label=long_label,
+            image_xy=(0.5, 0.5),
+        )
+        for number in range(1, 4)
+    )
+    default_panel = RenderContactSheetCommand.model_fields["panel_width"].default
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"worst-row-panel-{index}.png"
+        Image.new("RGB", (8, 8), "black").save(path)
+        panels.append((path, long_label, callouts))
+
+    output = tmp_path / "worst-row-sheet.png"
+    compose_contact_sheet(tuple(panels), output, default_panel, default_panel)
+
+    assert Image.open(output).height <= 4_096
+
+
 def test_compose_contact_sheet_bounds_font_for_tall_narrow_panels(tmp_path: Path) -> None:
     label = "selected-component-" + "x" * 230
     callout = ContactSheetCallout(
