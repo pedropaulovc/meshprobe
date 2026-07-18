@@ -2056,9 +2056,16 @@ def render_evaluator_passes(output_dir: Path, stem: str) -> dict[str, Any]:
     group.links.new(render_layers.outputs["Normal"], pass_output.inputs["Normal"])
     prefix = f"{stem}.passes"
     before = {path: file_version(path) for path in output_dir.glob(f"{prefix}*.exr")}
+    # Freestyle strokes composite into the Combined pass only; the Depth and Normal
+    # passes come straight from geometry rasterization and are byte-identical whether
+    # Freestyle is on or off. Leaving it on here would pay a second single-threaded
+    # view-map computation (the shaded_edges bottleneck) for output it never touches.
+    original_freestyle = scene.render.use_freestyle
+    scene.render.use_freestyle = False
     try:
         bpy.ops.render.render()
     finally:
+        scene.render.use_freestyle = original_freestyle
         scene.compositing_node_group = original_group
         bpy.data.node_groups.remove(group)
     multilayer_path = published_compositor_path(output_dir, prefix, before)

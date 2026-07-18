@@ -1362,7 +1362,18 @@ def render_image(
     height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 1024,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
-    style: Annotated[RenderStyle, typer.Option("--style")] = RenderStyle.SHADED,
+    style: Annotated[
+        RenderStyle,
+        typer.Option(
+            "--style",
+            help=(
+                "shaded is fast; shaded_edges adds Freestyle outlines that separate "
+                "same-color adjacent parts but renders markedly slower (single-threaded, "
+                "CPU-bound; cost scales with the number of visible components, not "
+                "resolution). Narrow the visible set or drop --edge-types to speed it up."
+            ),
+        ),
+    ] = RenderStyle.SHADED,
     edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
     edge_width: Annotated[float, typer.Option("--edge-width", min=0.01, max=10)] = 1.5,
     crease_angle: Annotated[
