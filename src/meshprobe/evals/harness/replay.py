@@ -97,7 +97,13 @@ def replay_trace(events: tuple[TraceEvent, ...], broker: EvaluationBroker) -> Re
 def _semantic_result(operation: Operation, result: JsonValue) -> JsonValue:
     if operation not in {Operation.RENDER_IMAGE, Operation.RENDER_CONTACT_SHEET}:
         return result
-    return _without_render_variance(result)
+    normalized = _without_render_variance(result)
+    if isinstance(normalized, dict):
+        # A trace recorded before `warnings` existed has no such key; a fresh
+        # render always emits `warnings: []` when nothing is wrong. Treat the two
+        # as equivalent so legacy no-warning traces still replay clean.
+        normalized.setdefault("warnings", [])
+    return normalized
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:
