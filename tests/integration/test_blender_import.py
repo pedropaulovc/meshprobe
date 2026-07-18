@@ -24,13 +24,16 @@ from meshprobe.models import (
     AreaLight,
     Camera,
     CameraDiagnostics,
+    CameraPoseFrame,
     CameraRotationReceipt,
     CameraTranslationReceipt,
     ContactSheetManifest,
     ContactSheetOrbit,
     ContactSheetPanelSpec,
+    CoordinateFrame,
     CustomIllumination,
     DepthOfField,
+    DepthOfFieldMode,
     DisplayMode,
     EnvironmentMap,
     GraphicsPolicy,
@@ -45,6 +48,7 @@ from meshprobe.models import (
     RenderManifest,
     RenderStyle,
     SceneManifest,
+    SensorFit,
     SessionSnapshot,
     ShadedEdgesStyle,
     VisibleBackgroundMode,
@@ -69,6 +73,13 @@ from meshprobe.workspace import SessionManager
 
 pytestmark = pytest.mark.skipif(shutil.which("blender") is None, reason="Blender is not installed")
 runner = CliRunner()
+
+
+def rgb_pixel(image: Image.Image, xy: tuple[int, int]) -> tuple[int, ...]:
+    """Read an RGB pixel, narrowing PIL's loosely-typed getpixel() return."""
+    pixel = image.getpixel(xy)
+    assert isinstance(pixel, tuple)
+    return pixel
 
 
 def build_obj_axes(tmp_path: Path) -> Path:
@@ -943,7 +954,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
         enabled_projection = projection.model_copy(
             update={
                 "depth_of_field": DepthOfField(
-                    mode="enabled",
+                    mode=DepthOfFieldMode.ENABLED,
                     aperture_fstop=0.5,
                     focus_distance_mm=1_000,
                 )
@@ -1014,13 +1025,16 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
-        moved = controller.execute(
-            ViewMoveCommand(
-                request_id="move",
-                op="view.move",
-                world_delta_mm=(0, 0, 100),
-                camera_delta_mm=(-25, 0, 50),
-            )
+        moved = cast(
+            "dict[str, object]",
+            controller.execute(
+                ViewMoveCommand(
+                    request_id="move",
+                    op="view.move",
+                    world_delta_mm=(0, 0, 100),
+                    camera_delta_mm=(-25, 0, 50),
+                )
+            ),
         )
         snapshot = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
 
@@ -1037,7 +1051,7 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     assert moved_camera.pose.position_mm == pytest.approx(expected_position)
     assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
     assert moved_camera.projection == initial.camera.projection
-    assert snapshot.camera_operation is not None
+    assert isinstance(snapshot.camera_operation, CameraTranslationReceipt)
     assert move_receipt.requested_world_delta_mm == (0, 0, 100)
     assert move_receipt.requested_camera_delta_mm == (-25, 0, 50)
     assert move_receipt.resolved_world_delta_mm == pytest.approx(expected_delta)
@@ -1080,7 +1094,7 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
                 target_mm=(0, 0, 0),
                 axis="y",
                 degrees=90,
-                frame="source",
+                frame=CoordinateFrame.SOURCE,
             )
         )
         source_pose = controller.execute(
@@ -1091,7 +1105,7 @@ def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
                     pose=Pose(
                         position_mm=(1_000, 2_000, 3_000),
                         orientation_xyzw=(0, 0, 0, 1),
-                        frame="source",
+                        frame=CameraPoseFrame.SOURCE,
                     ),
                     projection=PerspectiveProjection(),
                 ),
@@ -1460,7 +1474,7 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
         target_mm=(0, 0, 0),
         axis="y",
         degrees=90,
-        frame="source",
+        frame=CoordinateFrame.SOURCE,
     )
     manager = SessionManager(
         root, blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
@@ -1557,7 +1571,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                         target_mm=(0, 0, 0),
                         axis="y",
                         degrees=degrees,
-                        frame="source",
+                        frame=CoordinateFrame.SOURCE,
                     )
                 )
             else:
@@ -1595,7 +1609,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
     actual, rotated_snapshot = highlighted_render(source, rotate_view=True)
     expected, _ = highlighted_render(positive_control, rotate_view=False)
 
-    assert rotated_snapshot.camera_operation is not None
+    assert isinstance(rotated_snapshot.camera_operation, CameraRotationReceipt)
     assert rotated_snapshot.camera_operation.requested_visual_degrees == degrees
     assert rotated_snapshot.camera_operation.applied_camera_orbit_degrees == -degrees
     difference = ImageChops.difference(actual, expected)
@@ -1934,6 +1948,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         custom_mark_runtime = controller.request("session.runtime")["components"][target]
+        assert isinstance(custom_mark, dict)
         assert custom_mark["components"][target]["mark_color"] == "#ff00ff"
         assert custom_mark_runtime["materials"] == ["MeshProbeMark-highlighted-ff00ff"]
         assert custom_mark_runtime["material_colors"][0] == pytest.approx([1, 0, 1, 1])
@@ -1982,7 +1997,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
                         position_mm=(-4_000, 2_000, 1_000),
                         orientation_xyzw=(0, 0, 1, 0),
                     ),
-                    projection=PerspectiveProjection(sensor_fit="auto"),
+                    projection=PerspectiveProjection(sensor_fit=SensorFit.AUTO),
                 ),
             )
         )
@@ -2033,6 +2048,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         white_preset_runtime = controller.request("session.runtime")
+        assert isinstance(white_preset, dict)
         white_illumination = PresetIllumination.model_validate(white_preset["illumination"])
         assert white_illumination.background_rgb == (1, 1, 1)
         assert white_illumination.background_strength == 1
@@ -2109,6 +2125,7 @@ def test_worker_applies_visual_session_operations_and_reset(tmp_path: Path) -> N
             )
         )
         runtime_world = controller.request("session.runtime")["world"]
+        assert isinstance(separated, dict)
         separated_illumination = CustomIllumination.model_validate(separated["illumination"])
         assert separated_illumination.background_rgb == (1, 1, 1)
         assert separated_illumination.ambient_rgb == (0.1, 0.2, 0.3)
@@ -2879,7 +2896,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
         if max(
             abs(left - right)
             for left, right in zip(
-                plain_image.getpixel((x, y)), edge_image.getpixel((x, y)), strict=True
+                rgb_pixel(plain_image, (x, y)), rgb_pixel(edge_image, (x, y)), strict=True
             )
         )
         >= 24
@@ -3085,6 +3102,7 @@ def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
         assert focused_bounds == deoccluded_bounds
     else:
         assert focused_bounds != deoccluded_bounds
+    assert sheet.occlusion is not None
     assert sheet.occlusion.camera_source == "generated_focus_context"
     assert sheet.occlusion.camera == sheet.panels[1].render.session.camera
     assert sheet.occlusion.visibility_width_px == 128
@@ -3129,7 +3147,7 @@ def test_occlusion_query_uses_current_camera_and_leaves_no_artifact(tmp_path: Pa
             )
         )
         comparisons = []
-        projections = (
+        projections: tuple[PerspectiveProjection | OrthographicProjection, ...] = (
             PerspectiveProjection(focal_length_mm=50),
             OrthographicProjection(scale_mm=3_000),
         )
@@ -3233,6 +3251,8 @@ def test_occlusion_query_uses_recorded_aspect_for_off_frame_filtering(tmp_path: 
             )
 
     landscape, portrait = results
+    assert isinstance(landscape, OcclusionQueryResult)
+    assert isinstance(portrait, OcclusionQueryResult)
     assert landscape.aspect_ratio == landscape.camera_diagnostics.aspect_ratio == 4
     assert landscape.projection_status == "projected"
     assert landscape.sample_count > 0
@@ -3280,6 +3300,7 @@ def test_occlusion_query_rejects_focus_outside_camera_clip_range(
             )
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.projection_status == "not_projected"
     assert result.sample_count == 0
     assert result.visible_sample_count == 0
@@ -3325,6 +3346,7 @@ def test_occlusion_query_ignores_blockers_before_near_clip(tmp_path: Path) -> No
             graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.projection_status == "projected"
     assert result.visible_sample_count > 0
     assert result.occluded_sample_count == 0
@@ -3378,6 +3400,7 @@ def test_occlusion_query_excludes_zero_distance_near_plane_samples(
             )
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.projection_status == "projected"
     assert result.sample_count > 0
     assert (
@@ -3431,6 +3454,7 @@ def test_occlusion_query_excludes_focus_on_far_clip_plane(
             )
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.projection_status == "not_projected"
     assert result.sample_count == 0
 
@@ -3460,6 +3484,7 @@ def test_occlusion_query_samples_focus_surface_crossing_frustum(tmp_path: Path) 
             graphics_policy=GraphicsPolicy.SOFTWARE_ALLOWED.value,
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert visibility["visible_pixels"] > 0
     assert result.projection_status == "projected"
     assert result.sample_count > 0
@@ -3483,6 +3508,7 @@ def test_occlusion_query_does_not_sample_hidden_focus(tmp_path: Path) -> None:
             )
         )
 
+    assert isinstance(result, OcclusionQueryResult)
     assert result.projection_status == "not_projected"
     assert result.sample_count == 0
     assert result.blockers == ()
