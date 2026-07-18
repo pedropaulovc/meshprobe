@@ -477,6 +477,7 @@ def build_occluded_glb(
     blocker_alpha: float = 1.0,
     mixed_blocker_materials: bool = False,
     linked_blocker_alpha: bool = False,
+    linked_blocker_alpha_value: float = 1.0,
     blocker_alpha_mode: str = "BLEND",
     blocker_alpha_cutoff: float | None = None,
 ) -> Path:
@@ -499,7 +500,7 @@ if {blocker_alpha!r} < 1 or {linked_blocker_alpha!r}:
     principled.inputs['Base Color'].default_value = (0.2, 0.5, 0.8, 1.0)
     if {linked_blocker_alpha!r}:
         image = bpy.data.images.new('opaque-alpha', width=1, height=1, alpha=True)
-        image.pixels = [1.0, 1.0, 1.0, 1.0]
+        image.pixels = [1.0, 1.0, 1.0, {linked_blocker_alpha_value!r}]
         image.pack()
         texture = transparent.node_tree.nodes.new('ShaderNodeTexImage')
         texture.image = image
@@ -3628,6 +3629,79 @@ def test_empty_frame_warning_catches_alpha_masked_cutout_below_threshold(tmp_pat
 
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_catches_fully_transparent_linked_alpha_texture(
+    tmp_path: Path,
+) -> None:
+    # A shown component whose alpha comes from a TEXTURE (linked Alpha input) that is
+    # fully transparent renders blank in the real color pass, exactly like a constant
+    # transparent alpha (issue #64 re-review). The foreground mask must sample the same
+    # alpha instead of painting the component flat opaque and suppressing the warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.0,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-linked-alpha-only",
+                op="render.image",
+                output_path=str(tmp_path / "linked-alpha-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_keeps_opaque_linked_alpha_texture(tmp_path: Path) -> None:
+    # The mirror of the fully-transparent linked-alpha case: a component whose linked
+    # alpha texture is fully OPAQUE renders normally, so the foreground mask must keep
+    # counting it as visible instead of over-suppressing it into a spurious warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=1.0,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-opaque-linked-alpha-only",
+                op="render.image",
+                output_path=str(tmp_path / "opaque-linked-alpha-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
 
 
 def test_empty_frame_warning_does_not_erase_opaque_geometry_behind_transparency(

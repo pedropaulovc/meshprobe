@@ -2133,15 +2133,13 @@ def empty_frame_warnings(coverage: dict[str, Any]) -> list[str]:
 def emission_material(
     name: str,
     color: tuple[float, float, float, float],
-    *,
-    backface_culling: bool = False,
 ) -> bpy.types.Material:
     material = EMISSION_MATERIALS.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
         EMISSION_MATERIALS[name] = material
     material.use_nodes = True
-    material.use_backface_culling = backface_culling
+    material.use_backface_culling = False
     nodes = material.node_tree.nodes
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
@@ -2152,29 +2150,58 @@ def emission_material(
     return material
 
 
-def invisible_mask_material() -> bpy.types.Material:
-    """A fully transparent surface: alpha-blends through to whatever is actually
-    behind it — the world background, or another component's mask color — matching
-    a fully transparent or culled-away source material, which is likewise invisible
-    in the real color render but still lets geometry behind it show through.
+def mask_alpha_variant_material(
+    source: bpy.types.Material,
+    color: tuple[float, float, float, float],
+) -> bpy.types.Material:
+    """A mask material that emits ``color`` where ``source`` is opaque and turns
+    transparent where ``source`` is — mixing an Emission with a Transparent BSDF by the
+    source's own Alpha. The source's whole node tree is duplicated (``source.copy()``),
+    so the Alpha driver carries over verbatim whether it is a constant, a glTF MASK
+    cutoff Blender baked to 0/1, or a per-pixel LINKED alpha texture; backface culling is
+    preserved too. This keeps the foreground mask agreeing with the real color render:
+    a fragment the color pass discards for transparency reads invisible here instead of
+    being painted flat opaque and suppressing the empty-frame warning.
 
-    A Holdout shader was tried first but always reveals the world background
-    regardless of what else is behind the polygon, incorrectly erasing an opaque
-    component's mask color when a transparent face sits in front of it on screen.
+    Where the source is fully transparent (Alpha 0) the mix is pure Transparent BSDF, so
+    it alpha-blends through to whatever is behind it — the world background, or another
+    component's mask color — rather than erasing it. A Holdout shader was tried for that
+    role first but always reveals the world background regardless of what else is behind
+    the polygon, incorrectly erasing an opaque component's mask color when a transparent
+    face sits in front of it on screen.
     """
-    name = "MeshProbeMask-invisible"
-    material = EMISSION_MATERIALS.get(name)
-    if material is None:
-        material = bpy.data.materials.new(name)
-        EMISSION_MATERIALS[name] = material
-    material.use_nodes = True
-    material.blend_method = "BLEND"
-    nodes = material.node_tree.nodes
-    nodes.clear()
-    output = nodes.new("ShaderNodeOutputMaterial")
+    variant = source.copy()
+    variant.name = f"MeshProbeMaskVariant-{source.name}"
+    variant.use_nodes = True
+    variant.use_backface_culling = source.use_backface_culling
+    variant.blend_method = "BLEND"
+    if hasattr(variant, "surface_render_method"):
+        variant.surface_render_method = "BLENDED"
+    tree = variant.node_tree
+    nodes = tree.nodes
+    output = next(
+        (node for node in nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output),
+        None,
+    ) or nodes.get("Material Output")
+    if output is None:
+        output = nodes.new("ShaderNodeOutputMaterial")
+    principled = nodes.get("Principled BSDF")
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Color"].default_value = color
+    emission.inputs["Strength"].default_value = 1.0
     transparent = nodes.new("ShaderNodeBsdfTransparent")
-    material.node_tree.links.new(transparent.outputs["BSDF"], output.inputs["Surface"])
-    return material
+    mix = nodes.new("ShaderNodeMixShader")
+    tree.links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    tree.links.new(emission.outputs["Emission"], mix.inputs[2])
+    alpha = principled.inputs.get("Alpha") if principled is not None else None
+    if alpha is not None and alpha.is_linked:
+        tree.links.new(alpha.links[0].from_socket, mix.inputs["Fac"])
+    elif alpha is not None:
+        mix.inputs["Fac"].default_value = float(alpha.default_value)
+    else:
+        mix.inputs["Fac"].default_value = float(source.diffuse_color[3])
+    tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    return variant
 
 
 def srgb_channel_to_linear(channel: int) -> float:
@@ -2238,6 +2265,7 @@ def render_mask(
     # (possibly thousands of) samples would render the mask that many times over
     # just to answer a yes/no coverage question.
     configure_eevee_samples(1)
+    mask_variants: list[bpy.types.Material] = []
     try:
         for obj in other_visibility:
             obj.hide_render = True
@@ -2258,31 +2286,34 @@ def render_mask(
                 for polygon in mesh.polygons:
                     polygon.material_index = 0
             else:
-                # Preserve the source material's transparency/culling instead of forcing
+                # Preserve each source material's transparency/culling instead of forcing
                 # every polygon opaque and front-and-back visible: a component that is
-                # invisible in the real color render (fully transparent material, or a
-                # culled backface) must read the same way in this mask, or the foreground
-                # check can't tell "geometry exists" from "geometry is actually visible".
-                flat_index = len(mesh.materials)
-                mesh.materials.append(emission_material(f"{base_name}-flat", color))
-                cull_index = len(mesh.materials)
-                mesh.materials.append(
-                    emission_material(f"{base_name}-cull", color, backface_culling=True)
-                )
-                invisible_index = len(mesh.materials)
-                mesh.materials.append(invisible_mask_material())
+                # invisible in the real color render (transparent material — constant,
+                # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
+                # must read the same way in this mask, or the foreground check can't tell
+                # "geometry exists" from "geometry is actually visible". Each source
+                # material gets one alpha-preserving emissive variant; polygons with no
+                # material fall back to a flat opaque mask.
+                flat_index = -1
+                variant_index: dict[str, int] = {}
                 for polygon in mesh.polygons:
                     original = (
                         source_materials[polygon.material_index]
                         if polygon.material_index < len(source_materials)
                         else None
                     )
-                    if original is not None and material_is_fully_transparent(original):
-                        polygon.material_index = invisible_index
-                    elif original is not None and original.use_backface_culling:
-                        polygon.material_index = cull_index
-                    else:
+                    if original is None:
+                        if flat_index < 0:
+                            flat_index = len(mesh.materials)
+                            mesh.materials.append(emission_material(f"{base_name}-flat", color))
                         polygon.material_index = flat_index
+                        continue
+                    if original.name not in variant_index:
+                        variant = mask_alpha_variant_material(original, color)
+                        mask_variants.append(variant)
+                        variant_index[original.name] = len(mesh.materials)
+                        mesh.materials.append(variant)
+                    polygon.material_index = variant_index[original.name]
             obj.data = mesh
         render_still(path)
     finally:
@@ -2291,6 +2322,9 @@ def render_mask(
             obj.data = original_meshes[component_id]
             if replacement.users == 0:
                 bpy.data.meshes.remove(replacement)
+        for variant in mask_variants:
+            if variant.users == 0:
+                bpy.data.materials.remove(variant)
         for obj, hide_render in other_visibility.items():
             obj.hide_render = hide_render
         scene.world = original_world
