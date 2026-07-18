@@ -31,9 +31,11 @@ from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
-# Blender 5.2 is the oldest version exercised by CI. Do not lower this floor
-# without a real test run on the proposed older Blender LTS.
-MINIMUM_BLENDER_VERSION = (5, 2)
+# Blender 4.2 runs in a bounded software-only compatibility mode. Its background
+# GPU API lacks ``gpu.init()``, so graphics telemetry, hardware-required EEVEE,
+# and the GPU compositor's ``screen_edges`` style require Blender 5.2 or newer.
+MINIMUM_BLENDER_VERSION = (4, 2)
+GPU_INITIALIZATION_MINIMUM_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
@@ -1719,8 +1721,13 @@ def temporary_render_style() -> Iterator[None]:
 
 
 def configure_render_style(command: dict[str, Any]) -> None:
-    scene = bpy.context.scene
     style = command.get("style", "screen_edges")
+    if style == "screen_edges" and uses_software_compatibility_mode(bpy.app.version):
+        raise RuntimeError(
+            "screen_edges requires Blender 5.2 or newer; use shaded or shaded_edges "
+            "with Blender 4.2 software compatibility mode"
+        )
+    scene = bpy.context.scene
     scene.render.use_freestyle = style == "shaded_edges"
     if style in {"shaded", "screen_edges"}:
         return
@@ -1768,8 +1775,8 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     function (no ``bpy``/``gpu`` access) so it stays unit-testable outside a
     real Blender process — see ``tests/unit/test_blender_worker.py``.
 
-    Call this before touching version-sensitive Blender APIs so an unsupported
-    Blender produces a clear version error instead of an engine-specific failure.
+    Blender 4.2 through 5.1 run in software-only compatibility mode. They must not
+    call GPU telemetry or the GPU compositor path, which require Blender 5.2.
     """
     if version[:2] >= MINIMUM_BLENDER_VERSION:
         return
@@ -1777,8 +1784,12 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     minimum = ".".join(str(component) for component in MINIMUM_BLENDER_VERSION)
     raise RuntimeError(
         f"Blender {detected} is unsupported — MeshProbe requires Blender >= {minimum}. "
-        "Install Blender 5.2 LTS or newer."
+        "Install Blender 4.2 LTS or newer."
     )
+
+
+def uses_software_compatibility_mode(version: tuple[int, int, int]) -> bool:
+    return version[:2] < GPU_INITIALIZATION_MINIMUM_VERSION
 
 
 def graphics_platform() -> dict[str, Any]:
@@ -1789,6 +1800,20 @@ def graphics_platform() -> dict[str, Any]:
 
 def initialize_graphics_platform() -> dict[str, Any]:
     require_supported_blender_version(bpy.app.version)
+    if uses_software_compatibility_mode(bpy.app.version):
+        detected = bpy.app.version_string
+        return {
+            "vendor": "unavailable",
+            "renderer": f"Blender {detected} software compatibility mode",
+            "version": detected,
+            "backend": "unavailable",
+            "blender_device_type": "unavailable",
+            "device_class": "software",
+            "warnings": [
+                f"Blender {detected} runs in software compatibility mode: hardware_required "
+                "and screen_edges require Blender 5.2 or newer."
+            ],
+        }
     gpu.init()
     vendor = str(gpu.platform.vendor_get())
     renderer = str(gpu.platform.renderer_get())

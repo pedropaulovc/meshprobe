@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
 import struct
 import subprocess
@@ -3164,6 +3165,69 @@ def test_eevee_hardware_policy_rejects_software_renderer(
             )
 
     assert not output.exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("MESHPROBE_TEST_BLENDER_42") != "1",
+    reason="requires the dedicated Blender 4.2 compatibility CI job",
+)
+def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=120) as controller:
+        assert controller.graphics is not None
+        assert controller.graphics.device_class.value == "software"
+        assert "software compatibility mode" in controller.graphics.renderer
+        assert controller.graphics.warnings == (
+            "Blender 4.2.0 runs in software compatibility mode: hardware_required and "
+            "screen_edges require Blender 5.2 or newer.",
+        )
+        controller.open_scene(source)
+
+        for style in (RenderStyle.SHADED, RenderStyle.SHADED_EDGES):
+            output = tmp_path / f"blender-4.2-{style.value}.png"
+            rendered = controller.execute(
+                RenderImageCommand(
+                    request_id=f"blender-4.2-{style.value}",
+                    op="render.image",
+                    output_path=str(output),
+                    width=64,
+                    height=64,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                    style=style,
+                )
+            )
+            assert isinstance(rendered, RenderManifest)
+            assert rendered.device == "graphics_software"
+            assert Image.open(rendered.color.path).size == (64, 64)
+
+        with pytest.raises(BlenderWorkerError, match="hardware graphics required"):
+            controller.execute(
+                RenderImageCommand(
+                    request_id="blender-4.2-hardware",
+                    op="render.image",
+                    output_path=str(tmp_path / "blender-4.2-hardware.png"),
+                    width=64,
+                    height=64,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SHADED,
+                    graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
+                )
+            )
+        with pytest.raises(BlenderWorkerError, match=r"screen_edges requires Blender 5.2"):
+            controller.execute(
+                RenderImageCommand(
+                    request_id="blender-4.2-screen-edges",
+                    op="render.image",
+                    output_path=str(tmp_path / "blender-4.2-screen-edges.png"),
+                    width=64,
+                    height=64,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SCREEN_EDGES,
+                )
+            )
 
 
 def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
