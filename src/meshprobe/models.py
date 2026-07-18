@@ -617,6 +617,13 @@ class CapabilityWarning(ContractModel):
     component_ids: tuple[Identifier, ...] = ()
 
 
+# Manifest warning codes emitted (as string literals) by the Blender worker's
+# plausibility_warning when a source's root bounds suggest a millimeter/meter unit mistake.
+# The durable open path surfaces these on the operation receipt so a plain `meshprobe open`
+# shows them without --raw.
+UNIT_SUSPICION_WARNING_CODES = frozenset({"units.suspected_millimeters", "units.suspected_meters"})
+
+
 class SceneCapabilities(ContractModel):
     hierarchy: Annotated[
         Literal["preserved", "flattened"],

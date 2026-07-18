@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.models import (
+    UNIT_SUSPICION_WARNING_CODES,
     Camera,
     CameraOrbitAngles,
     DisplayMode,
@@ -461,7 +462,13 @@ class SessionManager:
             result_path = self._write_result(files, command.request_id, response)
             self._event(files, command, "accepted", result_path=result_path)
             graphics = getattr(service, "graphics", None)
-            warnings = graphics.warnings if graphics is not None else ()
+            graphics_warnings = graphics.warnings if graphics is not None else ()
+            unit_warnings = tuple(
+                warning.message
+                for warning in manifest.warnings
+                if warning.code in UNIT_SUSPICION_WARNING_CODES
+            )
+            warnings = unit_warnings + graphics_warnings
             self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 

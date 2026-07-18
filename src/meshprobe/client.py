@@ -46,10 +46,18 @@ class MeshProbeClient:
         self.blender = str(Path(resolved_blender).resolve()) if resolved_blender else blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
+        wire = command.model_dump(mode="json")
+        # Keep an ordinary open's wire format identical to the pre-upgrade one: a daemon that
+        # was already running before `unit_scale` existed validates commands with
+        # extra="forbid" and would reject the unknown field, breaking every plain open until
+        # it is restarted. Only send the field when the caller actually overrode the default
+        # (the same in-place-upgrade compatibility the resolve-ids fallback provides).
+        if wire.get("unit_scale") == 1.0:
+            del wire["unit_scale"]
         payload = self.request(
             "execute",
             session=session,
-            command=command.model_dump(mode="json"),
+            command=wire,
             blender=self.blender,
         )
         return OperationReceipt.model_validate(payload)

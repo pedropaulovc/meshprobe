@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
+from meshprobe.protocol import SceneOpenCommand
 from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
 
 
@@ -189,6 +190,46 @@ def test_resolve_component_ids_propagates_unrelated_daemon_errors(
 
     with pytest.raises(ValueError, match="no components match glob pattern"):
         client.resolve_component_ids("review", "**/missing")
+
+
+def test_execute_omits_default_unit_scale_from_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append(arguments["command"])
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    command = SceneOpenCommand(request_id="open", op="scene.open", source_path="/tmp/model.glb")
+    client.execute("review", command)
+
+    # A daemon that predates the unit_scale field validates with extra="forbid"; an ordinary
+    # open must not send the new key or it would reject every open until restarted.
+    assert "unit_scale" not in captured[0]
+
+
+def test_execute_sends_overridden_unit_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append(arguments["command"])
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    command = SceneOpenCommand(
+        request_id="open", op="scene.open", source_path="/tmp/model.glb", unit_scale=0.001
+    )
+    client.execute("review", command)
+
+    assert captured[0]["unit_scale"] == 0.001
 
 
 def test_close_all_waits_for_graceful_shutdown(

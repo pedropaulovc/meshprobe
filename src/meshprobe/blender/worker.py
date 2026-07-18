@@ -3224,19 +3224,54 @@ def import_source(path: Path) -> list[dict[str, Any]]:
     return warnings
 
 
-def apply_unit_scale(scale: float) -> None:
-    """Uniformly rescale the whole imported scene about the origin, in place.
+def _parent_depth(obj: bpy.types.Object) -> int:
+    depth = 0
+    parent = obj.parent
+    while parent is not None:
+        depth += 1
+        parent = parent.parent
+    return depth
 
-    A uniform scale commutes with rotation, so multiplying every root object's (no-parent
-    object's) translation and object-scale by `scale`, leaving rotation untouched,
-    reproduces exactly the effect of scaling the whole scene: every descendant's
-    matrix_world scales identically through the ordinary parent/child transform chain.
+
+def apply_unit_scale(scale: float) -> None:
+    """Bake a uniform scale about the world origin into the imported geometry, in place.
+
+    The correction is baked into the mesh data (not left in the object transforms) so that
+    *every* dimension the manifest reports — component-local bounds, world bounds, root
+    bounds, camera pose and camera intrinsics — comes out in the corrected units. Scaling
+    only the transforms would leave `obj.bound_box`-derived local bounds and the camera's
+    scene-unit intrinsics (ortho scale, clip planes, focus distance) at the original,
+    wrong scale.
+
+    Mesh geometry is scaled once per unique datablock; each object's world *position* is
+    scaled about the origin (rotation/object-scale untouched) via matrix_world, which
+    reproduces an exact uniform scale about the origin for any hierarchy — including glTF's
+    parent-inverse matrices — because it is expressed in world space directly.
     """
+    if scale == 1.0:
+        return
+    scale_matrix = Matrix.Scale(scale, 4)
+    scaled_meshes: set[str] = set()
     for obj in bpy.context.scene.objects:
-        if obj.parent is not None:
+        data = obj.data
+        if isinstance(data, bpy.types.Mesh) and data.name not in scaled_meshes:
+            data.transform(scale_matrix)
+            scaled_meshes.add(data.name)
+    ordered = sorted(bpy.context.scene.objects, key=_parent_depth)
+    targets = {obj: obj.matrix_world.copy() for obj in ordered}
+    for obj in ordered:
+        world = targets[obj]
+        world.translation = world.translation * scale
+        obj.matrix_world = world
+    for obj in bpy.context.scene.objects:
+        if obj.type != "CAMERA":
             continue
-        obj.location = obj.location * scale
-        obj.scale = obj.scale * scale
+        camera = obj.data
+        camera.clip_start *= scale
+        camera.clip_end *= scale
+        if camera.type == "ORTHO":
+            camera.ortho_scale *= scale
+        camera.dof.focus_distance *= scale
     bpy.context.view_layer.update()
 
 

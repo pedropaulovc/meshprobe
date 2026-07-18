@@ -22,6 +22,7 @@ from meshprobe.controller import (
 )
 from meshprobe.models import (
     AreaLight,
+    Bounds,
     Camera,
     CameraDiagnostics,
     CameraPoseFrame,
@@ -1939,6 +1940,64 @@ def test_unit_scale_cli_option_reaches_the_worker(tmp_path: Path) -> None:
         )
     )
     assert scene_span == pytest.approx(600.0, rel=1e-3)
+
+
+def _bounds_span(bounds: Bounds) -> float:
+    return max(high - low for low, high in zip(bounds.minimum_mm, bounds.maximum_mm, strict=True))
+
+
+def test_unit_scale_bakes_into_component_local_bounds(tmp_path: Path) -> None:
+    # build_glb is a real parent/child hierarchy (cover -> idler -> retaining-clip), so this
+    # also proves the correction survives glTF parent-inverse matrices, not just flat scenes.
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    unscaled_by_id = {component.id: component for component in unscaled.components}
+    for component in corrected.components:
+        baseline = unscaled_by_id[component.id]
+        # Local bounds must shrink with the correction, not just world/root bounds — eval code
+        # reads local_bounds as the component size signal.
+        assert _bounds_span(component.local_bounds) == pytest.approx(
+            _bounds_span(baseline.local_bounds) * 0.001, rel=1e-3
+        )
+        assert _bounds_span(component.world_bounds) == pytest.approx(
+            _bounds_span(baseline.world_bounds) * 0.001, rel=1e-3
+        )
+    assert _bounds_span(corrected.root_bounds) == pytest.approx(
+        _bounds_span(unscaled.root_bounds) * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_scales_imported_camera_clip_distances(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    # Camera intrinsics are measured in scene units, so a unit correction must scale the clip
+    # planes too — otherwise the imported view stays 1000x off for the very assets --unit-scale
+    # exists to fix.
+    assert corrected.imported_camera.projection.near_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.near_clip_mm * 0.001, rel=1e-3
+    )
+    assert corrected.imported_camera.projection.far_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.far_clip_mm * 0.001, rel=1e-3
+    )
+
+
+def test_open_receipt_surfaces_units_warning_on_default_path(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(app, ["--workspace", str(workspace), "open", str(source)])
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert result.exit_code == 0
+    assert stopped.exit_code == 0
+    # A plain `meshprobe open` (no --raw) must show the units warning, not only the manifest.
+    assert "warning:" in result.output
+    assert "--unit-scale 0.001" in result.output
 
 
 def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
