@@ -201,6 +201,7 @@ app = typer.Typer(
     help="Read-only 3D model inspection for AI agents.",
     no_args_is_help=True,
     cls=GlobalOptionGroup,
+    rich_markup_mode="markdown",
 )
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
@@ -1366,14 +1367,8 @@ def render_image(
         RenderStyle,
         typer.Option(
             "--style",
-            help=(
-                "Rendering policy: screen_edges is the fast default for inspection; "
-                "use shaded_edges for slower Freestyle final confirmation, especially "
-                "to separate same-color adjacent parts, or shaded for no edge overlay. "
-                "The visible components count drives Freestyle cost, not resolution. "
-                "Freestyle is single-threaded and CPU-bound; narrow the visible set or "
-                "edge types to reduce that cost."
-            ),
+            metavar="STYLE",
+            help="See the style guide above.",
         ),
     ] = RenderStyle.SCREEN_EDGES,
     edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
@@ -1400,9 +1395,16 @@ def render_image(
 ) -> None:
     """Render the selected session to an image artifact.
 
-    The default `screen_edges` style is the fast inspection pass. Use `--style shaded_edges`
-    for slower, geometry-aware Freestyle lines when making a final confirmation. Use
-    `--style shaded` when the unmodified shaded image is the evidence you need.
+    **Choose a style:**
+
+    - `screen_edges` (default): Fast GPU depth/normal edge pass for routine inspection.
+    - `shaded_edges`: Slower geometry-aware Freestyle lines for final confirmation,
+      especially when separating same-color adjacent parts.
+    - `shaded`: Unmodified shaded image with no edge overlay.
+
+    Freestyle is single-threaded and CPU-bound. Its cost increases with the number of
+    visible components, not output resolution. Narrow the visible set or `--edge-types`
+    to reduce final-confirmation time.
 
     The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
     a too-dark or blown-out frame can be detected without inspecting pixels. See

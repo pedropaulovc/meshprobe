@@ -136,9 +136,9 @@ def test_render_image_style_help_documents_shaded_edges_cost() -> None:
     result = runner.invoke(app, ["render-image", "--help"])
 
     assert result.exit_code == 0
-    help_text = unstyle(result.stdout)
+    help_text = " ".join(unstyle(result.stdout).split())
     assert "shaded_edges" in help_text
-    assert "slower" in help_text
+    assert "slower" in help_text.casefold()
     assert "visible components" in help_text
 
 
@@ -549,13 +549,25 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert render_command.style is RenderStyle.SCREEN_EDGES
 
 
-def test_render_help_explains_style_policy() -> None:
-    result = runner.invoke(app, ["render-image", "--help"])
+@pytest.mark.parametrize("terminal_width", [80, 120])
+def test_render_help_explains_style_policy_at_common_widths(terminal_width: int) -> None:
+    result = runner.invoke(
+        app,
+        ["render-image", "--help"],
+        env={"COLUMNS": str(terminal_width)},
+    )
 
     assert result.exit_code == 0
     help_text = " ".join(unstyle(result.output).split())
-    assert "default `screen_edges` style is the fast inspection pass" in help_text
-    assert "geometry-aware Freestyle lines when making a final confirmation" in help_text
+    assert "Choose a style:" in help_text
+    assert "screen_edges (default): Fast GPU depth/normal edge pass" in help_text
+    assert "shaded_edges: Slower geometry-aware Freestyle lines" in help_text
+    assert "shaded: Unmodified shaded image with no edge overlay" in help_text
+    assert "--style STYLE" in help_text
+    assert "See the style guide" in help_text
+    assert (
+        "cost increases with the number of visible components, not output resolution" in help_text
+    )
     assert "[default: screen_edges]" in help_text
 
 
