@@ -1930,6 +1930,21 @@ def test_worker_imports_flat_mesh_formats(tmp_path: Path, source_format: str) ->
     assert manifest.capabilities.hierarchy == expected_hierarchy
 
 
+@pytest.mark.parametrize("source_format", ["obj", "stl"])
+def test_units_warning_for_flat_meshes_does_not_claim_gltf_units(
+    tmp_path: Path, source_format: str
+) -> None:
+    source = build_flat_mesh(tmp_path, source_format, cube_size=1_000.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_millimeters"
+    )
+    assert "glTF" not in warning.message
+    assert "--unit-scale 0.001" in warning.message
+
+
 def test_generated_camera_far_clip_scales_with_large_scenes(tmp_path: Path) -> None:
     source = build_flat_mesh(tmp_path, "obj", cube_size=1_000.0)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:

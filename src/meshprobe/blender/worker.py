@@ -163,7 +163,7 @@ def plausibility_warning(root_bounds: dict[str, list[float]]) -> dict[str, Any] 
 
     See the reasoning documented next to PLAUSIBLE_MAX_SPAN_METERS /
     PLAUSIBLE_MIN_SPAN_METERS. Only the long edge of the root bounds matters — a single
-    absurd dimension is exactly the "author forgot the mm->m conversion" signature.
+    absurd dimension is exactly the signature of an incorrectly scaled source.
     """
     minimum = root_bounds["minimum_mm"]
     maximum = root_bounds["maximum_mm"]
@@ -173,8 +173,8 @@ def plausibility_warning(root_bounds: dict[str, list[float]]) -> dict[str, Any] 
         return {
             "code": "units.suspected_millimeters",
             "message": (
-                f"root bounds span {span_m:.1f} m — source may be authored in millimetres "
-                "(glTF's spec unit is metres); consider --unit-scale 0.001"
+                f"root bounds span {span_m:.1f} m — source coordinates may be millimetres "
+                "interpreted as metres; consider --unit-scale 0.001"
             ),
             "component_ids": [],
         }
@@ -182,8 +182,8 @@ def plausibility_warning(root_bounds: dict[str, list[float]]) -> dict[str, Any] 
         return {
             "code": "units.suspected_meters",
             "message": (
-                f"root bounds span {span_mm:.4f} mm — source may be authored in metres and "
-                "read as millimetres (glTF's spec unit is metres); consider --unit-scale 1000"
+                f"root bounds span {span_mm:.4f} mm — source coordinates may be metres "
+                "interpreted as millimetres; consider --unit-scale 1000"
             ),
             "component_ids": [],
         }
