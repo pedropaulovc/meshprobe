@@ -83,7 +83,7 @@ class ViewOrbitCommand(CommandModel):
     elevation_degrees: FiniteFloat
     roll_degrees: FiniteFloat = 0
     distance_mm: Annotated[float, Field(gt=0, allow_inf_nan=False)]
-    projection: Projection
+    projection: Projection | None = None
     focus_component_ids: tuple[str, ...] = ()
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 

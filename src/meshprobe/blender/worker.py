@@ -498,6 +498,12 @@ def apply_camera(
 
 
 def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
+    # Every dispatch path calls require_session() before orbit_camera, and
+    # initialize_session always sets CURRENT_CAMERA (from the imported or a default
+    # camera) in the same step it sets the manifest that require_session checks, so
+    # CURRENT_CAMERA is guaranteed set here.
+    if CURRENT_CAMERA is None:
+        raise ValueError("session camera is not initialized")
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = None
     target = Vector(value / MILLIMETERS_PER_METER for value in command["target_mm"])
@@ -519,12 +525,21 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
     roll = math.radians(command.get("roll_degrees", 0.0))
     if roll:
         rotation = Quaternion(direction.normalized(), roll) @ rotation
+    # No projection given: keep the session's current projection (mirrors
+    # rotate_camera below), so a bare orbit doesn't force every caller to restate
+    # camera intrinsics. A brand-new session's "current projection" is already a
+    # standard 50mm perspective (imported_camera's fallback when the source has no
+    # camera), so this alone covers "default to perspective on first use". See #96.
+    requested_projection = command.get("projection")
+    projection = (
+        requested_projection if requested_projection is not None else CURRENT_CAMERA["projection"]
+    )
     camera = {
         "pose": {
             "position_mm": [value * MILLIMETERS_PER_METER for value in position],
             "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
         },
-        "projection": command["projection"],
+        "projection": projection,
     }
     return apply_camera(
         camera,

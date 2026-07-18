@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.models import RenderStyle
+from meshprobe.models import OrthographicProjection, PerspectiveProjection, RenderStyle
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -27,6 +27,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     ViewFrameCommand,
     ViewMoveCommand,
+    ViewOrbitCommand,
     ViewRotateCommand,
     ViewSetCommand,
 )
@@ -1104,6 +1105,135 @@ def test_flat_operation_commands_build_typed_protocol_calls(
     find = client.commands[0]
     assert isinstance(find, ComponentFindCommand)
     assert find.selector.kind.value == "glob"
+
+
+def _orbit_args(*extra: str) -> list[str]:
+    return [
+        "--session",
+        "review",
+        "view-orbit",
+        "--target",
+        "0",
+        "0",
+        "0",
+        "--azimuth",
+        "45",
+        "--elevation",
+        "30",
+        "--distance",
+        "100",
+        *extra,
+    ]
+
+
+def test_view_orbit_without_projection_flags_defers_to_session_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #96: the common case orbits the existing camera without restating it."""
+
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, _orbit_args())
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewOrbitCommand)
+    assert command.projection is None
+
+
+def test_view_orbit_focal_length_shorthand_builds_perspective_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, _orbit_args("--focal-length", "100"))
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewOrbitCommand)
+    assert command.projection == PerspectiveProjection(focal_length_mm=100)
+
+
+def test_view_orbit_ortho_scale_shorthand_builds_orthographic_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, _orbit_args("--ortho-scale", "600"))
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewOrbitCommand)
+    assert command.projection == OrthographicProjection(scale_mm=600)
+
+
+def test_view_orbit_projection_json_still_builds_exact_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--projection-json keeps working unchanged for the exact-camera case."""
+
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        _orbit_args(
+            "--projection-json",
+            '{"mode":"perspective","focal_length_mm":85,"sensor_width_mm":36,'
+            '"sensor_height_mm":24,"sensor_fit":"horizontal","near_clip_mm":1,'
+            '"far_clip_mm":10000,"depth_of_field":{"mode":"disabled"}}',
+        ),
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewOrbitCommand)
+    assert command.projection == PerspectiveProjection(
+        focal_length_mm=85,
+        sensor_width_mm=36,
+        sensor_height_mm=24,
+        sensor_fit="horizontal",
+        near_clip_mm=1,
+        far_clip_mm=10_000,
+    )
+
+
+def test_view_orbit_projection_flags_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    both_shorthands = runner.invoke(
+        app, _orbit_args("--focal-length", "50", "--ortho-scale", "600")
+    )
+    assert both_shorthands.exit_code != 0
+    assert not client.commands
+
+    json_and_shorthand = runner.invoke(
+        app,
+        _orbit_args(
+            "--projection-json",
+            '{"mode":"orthographic","scale_mm":100}',
+            "--focal-length",
+            "50",
+        ),
+    )
+    assert json_and_shorthand.exit_code != 0
+    assert not client.commands
+
+
+def test_view_orbit_help_advertises_projection_shorthands() -> None:
+    result = runner.invoke(app, ["view-orbit", "--help"])
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.stdout).replace("│", " ").split())
+    assert "--focal-length" in help_text
+    assert "--ortho-scale" in help_text
+    assert "current projection" in help_text
 
 
 def test_mark_cli_accepts_srgb_highlight_color(monkeypatch: pytest.MonkeyPatch) -> None:
