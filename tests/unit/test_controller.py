@@ -348,10 +348,16 @@ def test_output_reader_is_bound_to_its_worker_generation() -> None:
 def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     controller = BlenderController()
     snapshot = InspectionSession(scene_manifest).snapshot()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        calls.append((operation, arguments))
+        return snapshot.model_dump(mode="json")
+
     monkeypatch.setattr(
         controller,
         "request",
-        lambda operation, **arguments: snapshot.model_dump(mode="json"),
+        request,
     )
     target = scene_manifest.components[-1].id
 
@@ -372,6 +378,13 @@ def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -
     reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
     assert reset == {"reset": True, "state_sha256": snapshot.state_sha256}
     assert controller._accepted_commands == []
+    assert calls[-1] == ("session.reset", {})
+
+    controller.execute(
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=2.5)
+    )
+    assert calls[-1] == ("session.reset", {"aspect_ratio": 2.5})
+    assert controller._aspect_ratio == 2.5
 
 
 def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]

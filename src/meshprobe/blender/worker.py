@@ -624,6 +624,7 @@ def apply_camera(
         raise ValueError("camera pose frame must be source or world")
     else:
         resolved_camera["pose"]["frame"] = "world"
+    _expand_clip_range_to_scene(resolved_camera, position, rotation)
     obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
     projection = resolved_camera["projection"]
     data = obj.data
@@ -670,6 +671,30 @@ def apply_camera(
     )
     orient_component_labels()
     return session_snapshot()
+
+
+def _expand_clip_range_to_scene(
+    camera: dict[str, Any], position: Vector, rotation: Quaternion
+) -> None:
+    """Keep a reused projection large enough for the scene after camera motion."""
+    if MANIFEST is None:
+        return
+    bounds = MANIFEST["root_bounds"]
+    forward = rotation @ Vector((0.0, 0.0, -1.0))
+    depths = [
+        (Vector((x, y, z)) / MILLIMETERS_PER_METER - position) @ forward
+        for x in (bounds["minimum_mm"][0], bounds["maximum_mm"][0])
+        for y in (bounds["minimum_mm"][1], bounds["maximum_mm"][1])
+        for z in (bounds["minimum_mm"][2], bounds["maximum_mm"][2])
+    ]
+    visible_depths = [depth * MILLIMETERS_PER_METER for depth in depths if depth > 0]
+    if not visible_depths:
+        return
+    projection = camera["projection"]
+    projection["near_clip_mm"] = min(
+        projection["near_clip_mm"], max(0.1, min(visible_depths) * 0.5)
+    )
+    projection["far_clip_mm"] = max(projection["far_clip_mm"], max(visible_depths) * 1.5)
 
 
 def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
@@ -1758,7 +1783,8 @@ def reset_session(command: dict[str, Any]) -> dict[str, Any]:
             IMPORTED_CAMERA,
             visible_root_bounds(require_session()["root_bounds"]),
             aspect_ratio=aspect_ratio,
-        )
+        ),
+        aspect_ratio=aspect_ratio,
     )
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
     configure_render_style({})
@@ -3323,7 +3349,7 @@ def initialize_session(
     MARK_OBJECTS = {}
     OVERRIDE_MATERIALS = {}
     EMISSION_MATERIALS = {}
-    apply_camera(deepcopy(CURRENT_CAMERA))
+    apply_camera(deepcopy(CURRENT_CAMERA), aspect_ratio=aspect_ratio)
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
 
 

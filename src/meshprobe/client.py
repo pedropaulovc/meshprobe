@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command
+from meshprobe.protocol import Command, SceneOpenCommand
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -46,23 +46,18 @@ class MeshProbeClient:
         self.blender = str(Path(resolved_blender).resolve()) if resolved_blender else blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
-        # Omit top-level fields the caller never set: an already-running daemon
-        # from a previous version validates commands with `extra="forbid"` and may
-        # not know about a newly added field, so sending it unconditionally (as
-        # `model_dump` does by default) would reject the command until the daemon
-        # is restarted. `model_dump(exclude_defaults=True)` would do this too, but
-        # it recurses into nested submodels and strips THEIR default-valued fields
-        # as well — including discriminator fields like `Projection.mode`, whose
-        # absence breaks `COMMAND_ADAPTER.validate_python()` on the receiving end.
-        # `model_fields_set` only reflects what was set on this top-level model, so
-        # filtering by it leaves every nested submodel dumped in full.
+        # The `aspect_ratio` field was added after clients could already talk to a
+        # persistent daemon. Omit only that *new* field when its default was not
+        # explicitly requested: older daemons reject unknown fields, while known
+        # defaults such as render width and height must still travel over the wire.
+        # Dumping the full model also keeps nested discriminators intact.
         full_command = command.model_dump(mode="json")
+        if isinstance(command, SceneOpenCommand) and "aspect_ratio" not in command.model_fields_set:
+            full_command.pop("aspect_ratio")
         payload = self.request(
             "execute",
             session=session,
-            command={
-                key: value for key, value in full_command.items() if key in command.model_fields_set
-            },
+            command=full_command,
             blender=self.blender,
         )
         return OperationReceipt.model_validate(payload)

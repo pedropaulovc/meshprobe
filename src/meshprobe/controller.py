@@ -59,6 +59,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    SessionResetCommand,
     ViewFrameCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
@@ -397,6 +398,11 @@ class BlenderController:
                 return self.query_occlusion(command)
         operation = command.op
         arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        if (
+            isinstance(command, SessionResetCommand)
+            and "aspect_ratio" not in command.model_fields_set
+        ):
+            arguments.pop("aspect_ratio")
         if isinstance(command, IlluminationSetCommand):
             arguments["illumination"] = self._cache_environment_map(
                 command.illumination
@@ -406,7 +412,9 @@ class BlenderController:
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self._recover_session()
             result = self.request(operation, **arguments)
-        if operation == "session.reset":
+        if isinstance(command, SessionResetCommand):
+            if "aspect_ratio" in command.model_fields_set:
+                self._aspect_ratio = command.aspect_ratio
             self._accepted_commands.clear()
             snapshot = SessionSnapshot.model_validate(result)
             return {"reset": True, "state_sha256": snapshot.state_sha256}

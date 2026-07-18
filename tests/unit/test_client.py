@@ -10,7 +10,7 @@ import pytest
 
 from meshprobe.client import MeshProbeClient
 from meshprobe.models import PerspectiveProjection
-from meshprobe.protocol import SceneOpenCommand, ViewOrbitCommand
+from meshprobe.protocol import RenderImageCommand, SceneOpenCommand, ViewOrbitCommand
 from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
 
 
@@ -302,7 +302,7 @@ def test_windows_pid_liveness_does_not_send_ctrl_c(monkeypatch: pytest.MonkeyPat
     assert not MeshProbeClient._pid_alive(41)
 
 
-def test_execute_omits_default_valued_fields_from_the_wire_payload(
+def test_execute_omits_only_the_new_default_aspect_ratio_from_the_wire_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # An already-running daemon from a previous version validates commands with
@@ -334,6 +334,25 @@ def test_execute_omits_default_valued_fields_from_the_wire_payload(
         ),
     )
     assert captured["command"]["aspect_ratio"] == 2.5
+
+
+def test_execute_keeps_established_default_values_on_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "render.image"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+    client.execute(
+        "review",
+        RenderImageCommand(request_id="render", op="render.image", output_path="/tmp/render.png"),
+    )
+    assert captured["command"]["width"] == 2576
+    assert captured["command"]["height"] == 2576
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(
