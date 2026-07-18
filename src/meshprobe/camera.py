@@ -10,6 +10,7 @@ from meshprobe.models import (
     CameraDiagnostics,
     CameraPoseFrame,
     OrthographicProjection,
+    PerspectiveProjection,
     Pose,
     Projection,
     Quaternion,
@@ -121,21 +122,22 @@ def camera_diagnostics(
     projection = camera.projection
     near = projection.near_clip_mm
     far = projection.far_clip_mm
-    orthographic_half_extents = (
-        _orthographic_half_extents(projection.scale_mm, aspect_ratio)
-        if isinstance(projection, OrthographicProjection)
-        else None
-    )
+    orthographic_half_extents: tuple[float, float] | None = None
+    perspective_projection: Projection | None = projection
+    if isinstance(projection, OrthographicProjection):
+        orthographic_half_extents = _orthographic_half_extents(projection.scale_mm, aspect_ratio)
+        perspective_projection = None
     frustum: list[Vec3] = []
     for depth in (near, far):
         if orthographic_half_extents is not None:
             half_width, half_height = orthographic_half_extents
-        else:
+        if orthographic_half_extents is None:
+            assert isinstance(perspective_projection, PerspectiveProjection)
             half_width = depth * math.tan(
-                math.radians(projection.horizontal_fov_degrees(aspect_ratio)) / 2
+                math.radians(perspective_projection.horizontal_fov_degrees(aspect_ratio)) / 2
             )
             half_height = depth * math.tan(
-                math.radians(projection.vertical_fov_degrees(aspect_ratio)) / 2
+                math.radians(perspective_projection.vertical_fov_degrees(aspect_ratio)) / 2
             )
         for vertical in (-half_height, half_height):
             for horizontal in (-half_width, half_width):
