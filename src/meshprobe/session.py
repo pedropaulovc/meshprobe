@@ -21,7 +21,31 @@ from meshprobe.models import (
 
 
 class InspectionSession:
-    """Own visual overrides without mutating imported scene data."""
+    """In-memory bookkeeping for one manifest's visual-override state.
+
+    Given an already-open ``SceneManifest``, tracks camera, illumination, and
+    per-component display/mark overrides and hashes them into a
+    ``SessionSnapshot`` via :meth:`snapshot`. It never opens a file and never
+    talks to Blender, so it is not the way to load or render a model.
+
+    Most callers should not instantiate this directly. To open a model and
+    render it from Python, use :class:`meshprobe.BlenderController` instead::
+
+        from meshprobe import BlenderController
+        from meshprobe.protocol import RenderImageCommand
+
+        with BlenderController() as controller:
+            manifest = controller.open_scene("model.glb")
+            controller.render_image(
+                RenderImageCommand(
+                    request_id="r1", op="render.image", output_path="out.png"
+                )
+            )
+
+    ``InspectionSession`` exists for tests and other code that needs to
+    compute or replay session state against a manifest without a live
+    Blender worker.
+    """
 
     def __init__(self, manifest: SceneManifest) -> None:
         self.manifest = manifest
