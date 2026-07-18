@@ -3669,6 +3669,84 @@ def test_empty_frame_warning_catches_fully_transparent_linked_alpha_texture(
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
 
+def test_empty_frame_warning_catches_textured_alpha_mask_cutout(tmp_path: Path) -> None:
+    # A shown component with a TEXTURED alpha whose texels fall below a glTF
+    # alphaMode=MASK cutoff is clipped away entirely by the color render (issue #64
+    # re-review): the importer keeps the raw texel alpha linked and clips via the
+    # material's alpha threshold/render method, so the foreground mask must preserve
+    # that clip rather than alpha-blend the raw sub-cutoff alpha into visible pixels
+    # and suppress the empty-frame warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.2,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-textured-mask-only",
+                op="render.image",
+                output_path=str(tmp_path / "textured-mask-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_keeps_textured_alpha_mask_above_cutoff(tmp_path: Path) -> None:
+    # Positive control for the sub-cutoff case above: the SAME textured alphaMode=MASK
+    # material with texel alpha ABOVE the cutoff passes the color render, so the mask
+    # must keep counting it visible — proving the sub-cutoff blank result is a real clip,
+    # not the blocker simply missing the frame.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.8,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-textured-mask-visible",
+                op="render.image",
+                output_path=str(tmp_path / "textured-mask-visible.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
+
+
 def test_empty_frame_warning_keeps_opaque_linked_alpha_texture(tmp_path: Path) -> None:
     # The mirror of the fully-transparent linked-alpha case: a component whose linked
     # alpha texture is fully OPAQUE renders normally, so the foreground mask must keep
