@@ -6,17 +6,20 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import JsonValue
 
 from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.models import (
     CustomIllumination,
     DisplayMode,
+    EdgeType,
     EnvironmentMap,
     GraphicsDeviceClass,
     GraphicsPlatform,
     RenderStyle,
     RenderStyleState,
     SceneManifest,
+    ShadedEdgesStyle,
 )
 from meshprobe.protocol import (
     Command,
@@ -58,7 +61,7 @@ class FakeSessionService:
     def execute(self, command: Command) -> CommandResponse:
         if isinstance(command, SceneOpenCommand):
             self.session = InspectionSession(self.manifest)
-            result: object = self.manifest.model_dump(mode="json")
+            result: JsonValue = self.manifest.model_dump(mode="json")
         elif isinstance(command, SessionSnapshotCommand):
             assert self.session is not None
             result = {
@@ -174,12 +177,12 @@ def test_session_manager_writes_compact_queryable_state(
         services[0].session.snapshot(),
         render_style=RenderStyleState(
             style=RenderStyle.SHADED_EDGES,
-            shaded_edges={
-                "line_color": "#101820",
-                "line_width": 2,
-                "crease_angle_degrees": 45,
-                "edge_types": ("silhouette", "crease"),
-            },
+            shaded_edges=ShadedEdgesStyle(
+                line_color="#101820",
+                line_width=2,
+                crease_angle_degrees=45,
+                edge_types=(EdgeType.SILHOUETTE, EdgeType.CREASE),
+            ),
         ),
     )
     styled_state = yaml.safe_load((session_root / "state.yml").read_text(encoding="utf-8"))
@@ -547,6 +550,7 @@ def test_checkpoint_persists_cached_environment_map_path(
         ambient_strength=0.0,
         environment_map=EnvironmentMap(path="/tmp/upload.hdr", sha256="a" * 64),
     )
+    assert original.environment_map is not None
     cached = original.model_copy(
         update={
             "environment_map": original.environment_map.model_copy(

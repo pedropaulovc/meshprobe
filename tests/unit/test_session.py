@@ -61,7 +61,7 @@ def test_invalid_custom_mark_does_not_mutate_session(
     before = session.mark([target], MarkMode.SELECTED)
 
     with pytest.raises(ValueError, match=message):
-        session.mark([target], mode, color)  # type: ignore[arg-type]
+        session.mark([target], mode, color)
 
     assert session.snapshot() == before
 

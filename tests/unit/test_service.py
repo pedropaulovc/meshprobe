@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import create_autospec
 
 import pytest
@@ -16,7 +17,7 @@ from meshprobe.service import MeshProbeService
 
 
 def controller_mock() -> BlenderController:
-    return create_autospec(BlenderController, instance=True)
+    return cast(BlenderController, create_autospec(BlenderController, instance=True))
 
 
 def test_service_requires_open_as_first_command() -> None:

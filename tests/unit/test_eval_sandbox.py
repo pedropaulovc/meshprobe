@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import shutil
@@ -7,7 +8,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -281,7 +282,7 @@ def test_sandbox_preserves_node_package_runtime_for_bin_symlink(
 
     mounts, translated = _sandbox_agent_command(("agent", "--version"))
 
-    assert mounts == ((runtime, Path("/opt/meshprobe-agent")),)
+    assert mounts == ((runtime, PurePosixPath("/opt/meshprobe-agent")),)
     assert translated == ("/opt/meshprobe-agent/bin/agent", "--version")
 
 
@@ -390,9 +391,8 @@ def test_windows_poll_releases_process_resources(monkeypatch: pytest.MonkeyPatch
 
     class FakeKernel32:
         @staticmethod
-        def GetExitCodeProcess(handle: int, output: object) -> int:
+        def GetExitCodeProcess(handle: int, output: ctypes._CArgObject) -> int:
             del handle
-            import ctypes
             from ctypes import wintypes
 
             ctypes.cast(output, ctypes.POINTER(wintypes.DWORD)).contents.value = 0
