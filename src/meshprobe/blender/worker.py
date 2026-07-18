@@ -1308,6 +1308,7 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
         runtime = resolved
     else:
         runtime = preset_lights(illumination["preset"])
+        srgb_override = illumination.get("background_srgb")
         background_override = illumination.get("background_rgb")
         strength_override = illumination.get("background_strength")
         if background_override is not None:
@@ -1315,11 +1316,25 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
             runtime["background_strength"] = 1.0
         if strength_override is not None:
             runtime["background_strength"] = strength_override
-        resolved = {
-            **deepcopy(illumination),
-            "background_rgb": deepcopy(runtime["background_rgb"]),
-            "background_strength": runtime["background_strength"],
-        }
+        if srgb_override is None:
+            resolved = {
+                **deepcopy(illumination),
+                "background_rgb": deepcopy(runtime["background_rgb"]),
+                "background_strength": runtime["background_strength"],
+            }
+        else:
+            # A display-referred backdrop composites the exact color, so the resolved
+            # snapshot carries only background_srgb (no shadowed linear override).
+            resolved = {
+                **deepcopy(illumination),
+                "background_rgb": None,
+                "background_strength": None,
+            }
+    # Normalize away an absent-vs-explicit-null difference: an imported preset omits the
+    # key, an explicitly re-applied one carries background_srgb=None. Drop the null so both
+    # hash to the same state_sha256 in session_snapshot.
+    if resolved.get("background_srgb") is None:
+        resolved.pop("background_srgb", None)
     clear_lights()
     configure_world(
         runtime["background_rgb"],
@@ -1603,6 +1618,7 @@ def runtime_diagnostics() -> dict[str, Any]:
             "camera_background_source": camera_background_source,
             "background_rgb": list(visible_background.inputs["Color"].default_value[:3]),
             "background_strength": float(visible_background.inputs["Strength"].default_value),
+            "background_srgb": current_illumination.get("background_srgb"),
             "ambient_rgb": list(ambient_background.inputs["Color"].default_value[:3]),
             "ambient_strength": float(ambient_background.inputs["Strength"].default_value),
         },
@@ -2109,6 +2125,63 @@ def published_compositor_path(
     return expected
 
 
+def display_referred_background() -> tuple[float, float, float] | None:
+    illumination = CURRENT_ILLUMINATION
+    if illumination is None:
+        return None
+    srgb = illumination.get("background_srgb")
+    if srgb is None or illumination.get("visible_background_mode", "color") != "color":
+        return None
+    return (float(srgb[0]), float(srgb[1]), float(srgb[2]))
+
+
+def composite_over_background(path: Path, background_srgb: tuple[float, float, float]) -> None:
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError as error:  # pragma: no cover - numpy ships with Blender
+        raise RuntimeError(
+            "--background-srgb compositing needs numpy, which is bundled with Blender but "
+            "was not importable in this build; drop the flag or install numpy for this Blender"
+        ) from error
+
+    # Composite the exact display-referred color behind the transparent (film_transparent)
+    # backdrop in place, using the bulk pixel API into a float32 buffer so a max-resolution
+    # render never materializes the whole image as a Python float list.
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        image.colorspace_settings.name = "Non-Color"
+        width, height = image.size
+        buffer = np.empty(width * height * 4, dtype=np.float32)
+        image.pixels.foreach_get(buffer)
+        pixels = buffer.reshape(-1, 4)
+        rgb = pixels[:, :3]
+        alpha = pixels[:, 3]
+        background = np.asarray(background_srgb, dtype=np.float32)
+        # Composite one channel at a time, using `out=` to write into two reused
+        # (width*height,) scratch buffers instead of `rgb * alpha + background * (1 - alpha)`
+        # computed directly, which allocates several full (width*height, 3) float32
+        # temporaries (each ~3 GiB at the 16,384x16,384 limit) — or per-channel scratch
+        # allocated fresh on every loop iteration, which still peaks at ~1 GiB per
+        # temporary. Two reused (width*height,) buffers keep the composite's extra
+        # memory bounded regardless of how many channels it runs over.
+        one_minus_alpha = np.empty_like(alpha)
+        np.subtract(1.0, alpha, out=one_minus_alpha)
+        scaled_background = np.empty_like(alpha)
+        for channel in range(3):
+            channel_view = rgb[:, channel]
+            channel_view *= alpha
+            np.multiply(one_minus_alpha, background[channel], out=scaled_background)
+            channel_view += scaled_background
+        np.clip(rgb, 0.0, 1.0, out=rgb)
+        pixels[:, 3] = 1.0
+        image.pixels.foreach_set(buffer)
+        image.file_format = "PNG"
+        image.filepath_raw = str(path)
+        image.save()
+    finally:
+        bpy.data.images.remove(image)
+
+
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
     output = Path(command["output_path"]).expanduser().resolve()
@@ -2117,7 +2190,13 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     with temporary_render_style():
         device = configure_render(command)
         configure_render_style(command)
+        backdrop = display_referred_background()
+        if backdrop is not None:
+            bpy.context.scene.render.film_transparent = True
         render_still(output)
+        if backdrop is not None:
+            bpy.context.scene.render.film_transparent = False
+            composite_over_background(output, backdrop)
         luminance = luminance_summary(output)
         evaluator = None
         if command.get("evaluator_output_dir") is not None:

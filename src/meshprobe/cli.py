@@ -981,11 +981,33 @@ def illumination_set(
     ] = None,
     background_rgb: Annotated[
         tuple[float, float, float] | None,
-        typer.Option("--background-rgb", help="Override the visible linear-RGB background."),
+        typer.Option(
+            "--background-rgb",
+            help=(
+                "Override the visible background as a linear-referred RGB triple; it is "
+                "tone-mapped by the active view transform, so 1 1 1 is NOT pure white. "
+                "For an exact PNG color use --background-srgb."
+            ),
+        ),
     ] = None,
     background_strength: Annotated[
         float | None,
-        typer.Option("--background-strength", min=0),
+        typer.Option(
+            "--background-strength",
+            min=0,
+            help="Scale the linear --background-rgb emission before tone-mapping.",
+        ),
+    ] = None,
+    background_srgb: Annotated[
+        tuple[float, float, float] | None,
+        typer.Option(
+            "--background-srgb",
+            help=(
+                "Set the visible background to an exact display-referred sRGB color "
+                "(0..1 per channel); 1 1 1 renders as pure white (255) in the saved PNG. "
+                "Cannot be combined with --background-rgb/--background-strength."
+            ),
+        ),
     ] = None,
 ) -> None:
     """Apply a named preset or a complete custom illumination JSON object."""
@@ -1013,7 +1035,11 @@ def illumination_set(
             raise typer.BadParameter(str(error)) from error
         if not isinstance(illumination, CustomIllumination):
             raise typer.BadParameter("--illumination-json must declare preset 'custom'")
-        if background_rgb is not None or background_strength is not None:
+        if (
+            background_rgb is not None
+            or background_strength is not None
+            or background_srgb is not None
+        ):
             raise typer.BadParameter(
                 "background overrides cannot be combined with --illumination-json"
             )
@@ -1032,6 +1058,13 @@ def illumination_set(
     else:
         if illumination_json is not None:
             raise typer.BadParameter("--illumination-json requires the custom preset")
+        if background_srgb is not None and (
+            background_rgb is not None or background_strength is not None
+        ):
+            raise typer.BadParameter(
+                "--background-srgb is display-referred and cannot be combined with the "
+                "linear-referred --background-rgb/--background-strength"
+            )
         try:
             named_preset = IlluminationPreset(preset)
         except ValueError as error:
@@ -1042,6 +1075,7 @@ def illumination_set(
                 preset=named_preset,
                 background_rgb=background_rgb,
                 background_strength=background_strength,
+                background_srgb=background_srgb,
             )
         except ValidationError as error:
             raise typer.BadParameter(str(error)) from error

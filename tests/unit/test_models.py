@@ -22,6 +22,7 @@ from meshprobe.models import (
     PerspectiveProjection,
     PointLight,
     Pose,
+    PresetIllumination,
     RenderManifest,
     SceneManifest,
     SensorFit,
@@ -348,6 +349,35 @@ def test_custom_illumination_records_background_and_ambient_separately() -> None
         "environment_map": None,
         "visible_background_mode": "color",
     }
+
+
+def test_preset_illumination_accepts_display_referred_background() -> None:
+    illumination = PresetIllumination(preset="neutral_studio", background_srgb=(1, 1, 1))
+
+    assert illumination.background_srgb == (1, 1, 1)
+    assert illumination.background_rgb is None
+    assert illumination.background_strength is None
+
+
+def test_preset_illumination_rejects_display_and_linear_background_together() -> None:
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        PresetIllumination(
+            preset="neutral_studio",
+            background_srgb=(1, 1, 1),
+            background_rgb=(0.5, 0.5, 0.5),
+        )
+
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        PresetIllumination(
+            preset="neutral_studio",
+            background_srgb=(1, 1, 1),
+            background_strength=2.0,
+        )
+
+
+def test_preset_illumination_rejects_out_of_range_display_background() -> None:
+    with pytest.raises(ValidationError):
+        PresetIllumination(preset="neutral_studio", background_srgb=(1.5, 0, 0))
 
 
 def test_custom_illumination_accepts_content_addressed_environment_only() -> None:

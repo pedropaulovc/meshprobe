@@ -22,6 +22,7 @@ from meshprobe.identity import stable_component_id
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 PositiveFiniteFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+UnitFloat = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 Identifier = Annotated[str, StringConstraints(min_length=1, max_length=256)]
 type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
 type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
@@ -472,6 +473,18 @@ class PresetIllumination(ContractModel):
         tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] | None
     ) = None
     background_strength: NonNegativeFiniteFloat | None = None
+    background_srgb: tuple[UnitFloat, UnitFloat, UnitFloat] | None = None
+
+    @model_validator(mode="after")
+    def _reject_conflicting_background(self) -> PresetIllumination:
+        if self.background_srgb is not None and (
+            self.background_rgb is not None or self.background_strength is not None
+        ):
+            raise ValueError(
+                "background_srgb is display-referred and cannot be combined with the "
+                "linear-referred background_rgb/background_strength"
+            )
+        return self
 
 
 class EnvironmentMap(ContractModel):
