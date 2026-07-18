@@ -34,6 +34,21 @@ PROTOCOL_VERSION = 2
 MINIMUM_BLENDER_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
+# The classic CAD-export bug: glTF's spec unit is meters, but a source authored in
+# millimeters (nearly every mechanical CAD package's native unit) gets exported without
+# converting the numbers, so a real 0.5 m part shows up 1000x too large. The tools this
+# package inspects — machines, assemblies, individual mechanical parts — essentially never
+# exceed a few meters; 50 m is already an enormous machine (a large industrial press, a
+# small building), comfortably clearing legitimate large assemblies while still catching
+# the mm/m mixup long before it reaches the absurd 100s-of-meters range issue #100 reported.
+PLAUSIBLE_MAX_SPAN_METERS = 50.0
+# The mirror mistake — meters authored, millimeters assumed — would show up as a
+# suspiciously TINY scene. This tool is also used to inspect genuinely small mechanical
+# parts (fasteners, connector pins, watch components) that can legitimately span a few
+# millimeters, so the floor sits at 1 mm: a whole asset's bounding box below that is well
+# under anything meaningful to inspect standalone here, and far more likely a units (or a
+# wrong --unit-scale) mistake than a real part.
+PLAUSIBLE_MIN_SPAN_METERS = 0.001
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -145,6 +160,38 @@ def bounds_of_points(points: list[Vector]) -> dict[str, list[float]]:
             max(point[axis] for point in points) * MILLIMETERS_PER_METER for axis in range(3)
         ],
     }
+
+
+def plausibility_warning(root_bounds: dict[str, list[float]]) -> dict[str, Any] | None:
+    """Flag a root bounding box whose size suggests a millimeter/meter unit mistake.
+
+    See the reasoning documented next to PLAUSIBLE_MAX_SPAN_METERS /
+    PLAUSIBLE_MIN_SPAN_METERS. Only the long edge of the root bounds matters — a single
+    absurd dimension is exactly the signature of an incorrectly scaled source.
+    """
+    minimum = root_bounds["minimum_mm"]
+    maximum = root_bounds["maximum_mm"]
+    span_mm = max(high - low for low, high in zip(minimum, maximum, strict=True))
+    span_m = span_mm / MILLIMETERS_PER_METER
+    if span_m > PLAUSIBLE_MAX_SPAN_METERS:
+        return {
+            "code": "units.suspected_millimeters",
+            "message": (
+                f"root bounds span {span_m:.1f} m — source coordinates may be millimetres "
+                "interpreted as metres; consider --unit-scale 0.001"
+            ),
+            "component_ids": [],
+        }
+    if span_m < PLAUSIBLE_MIN_SPAN_METERS:
+        return {
+            "code": "units.suspected_meters",
+            "message": (
+                f"root bounds span {span_mm:.4f} mm — source coordinates may be metres "
+                "interpreted as millimetres; consider --unit-scale 1000"
+            ),
+            "component_ids": [],
+        }
+    return None
 
 
 def object_bounds(obj: bpy.types.Object) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
@@ -3398,6 +3445,61 @@ def import_source(path: Path) -> list[dict[str, Any]]:
     return warnings
 
 
+def _parent_depth(obj: bpy.types.Object) -> int:
+    depth = 0
+    parent = obj.parent
+    while parent is not None:
+        depth += 1
+        parent = parent.parent
+    return depth
+
+
+def apply_unit_scale(scale: float) -> None:
+    """Bake a uniform scale about the world origin into the imported geometry, in place.
+
+    The correction is baked into the mesh data (not left in the object transforms) so that
+    *every* dimension the manifest reports — component-local bounds, world bounds, root
+    bounds, camera pose and camera intrinsics — comes out in the corrected units. Scaling
+    only the transforms would leave `obj.bound_box`-derived local bounds and the camera's
+    scene-unit intrinsics (ortho scale, clip planes, focus distance) at the original,
+    wrong scale.
+
+    Mesh geometry is scaled once per unique datablock; each object's world *position* is
+    scaled about the origin (rotation/object-scale untouched) via matrix_world, which
+    reproduces an exact uniform scale about the origin for any hierarchy — including glTF's
+    parent-inverse matrices — because it is expressed in world space directly.
+    """
+    if scale == 1.0:
+        return
+    scale_matrix = Matrix.Scale(scale, 4)
+    scaled_meshes: set[str] = set()
+    scaled_cameras: set[str] = set()
+    for obj in bpy.context.scene.objects:
+        data = obj.data
+        if isinstance(data, bpy.types.Mesh) and data.name not in scaled_meshes:
+            data.transform(scale_matrix, shape_keys=True)
+            scaled_meshes.add(data.name)
+    ordered = sorted(bpy.context.scene.objects, key=_parent_depth)
+    targets = {obj: obj.matrix_world.copy() for obj in ordered}
+    for obj in ordered:
+        world = targets[obj]
+        world.translation = world.translation * scale
+        obj.matrix_world = world
+    for obj in bpy.context.scene.objects:
+        if obj.type != "CAMERA":
+            continue
+        camera = obj.data
+        if camera.name in scaled_cameras:
+            continue
+        scaled_cameras.add(camera.name)
+        camera.clip_start *= scale
+        camera.clip_end *= scale
+        if camera.type == "ORTHO":
+            camera.ortho_scale *= scale
+        camera.dof.focus_distance *= scale
+    bpy.context.view_layer.update()
+
+
 def coordinate_frames(source_format: str) -> dict[str, Any]:
     identity = [
         1.0,
@@ -3539,6 +3641,9 @@ def build_manifest(
     ]
     hierarchy_flattened = source_format == "stl" or has_unaddressable_hierarchy(objects)
     warnings = [*import_warnings, *illumination_warnings]
+    bounds_warning = plausibility_warning(root_bounds)
+    if bounds_warning is not None:
+        warnings.append(bounds_warning)
     if hierarchy_flattened and not any(
         warning["code"] == "hierarchy.flattened" for warning in warnings
     ):
@@ -3747,9 +3852,14 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     if not source_path.is_file():
         raise ValueError(f"source is not a file: {source_path}")
     source_sha256 = command.get("source_sha256") or sha256_file(source_path)
+    unit_scale = float(command.get("unit_scale", 1.0))
+    if not math.isfinite(unit_scale) or unit_scale <= 0:
+        raise ValueError("unit_scale must be a positive finite number")
     clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
+    if unit_scale != 1.0:
+        apply_unit_scale(unit_scale)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
     initialize_session(manifest, source_path, command.get("aspect_ratio", 1.0))
     return manifest

@@ -16,7 +16,7 @@ from meshprobe.protocol import (
     SessionResetCommand,
     ViewOrbitCommand,
 )
-from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
+from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
 
 
 def _daemon_metadata(pid: int) -> dict[str, Any]:
@@ -196,6 +196,93 @@ def test_resolve_component_ids_propagates_unrelated_daemon_errors(
 
     with pytest.raises(ValueError, match="no components match glob pattern"):
         client.resolve_component_ids("review", "**/missing")
+
+
+def test_execute_omits_default_unit_scale_from_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append(arguments["command"])
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    command = SceneOpenCommand(request_id="open", op="scene.open", source_path="/tmp/model.glb")
+    client.execute("review", command)
+
+    # A daemon that predates the unit_scale field validates with extra="forbid"; an ordinary
+    # open must not send the new key or it would reject every open until restarted.
+    assert "unit_scale" not in captured[0]
+
+
+def test_execute_sends_overridden_unit_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append(arguments["command"])
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    command = SceneOpenCommand(
+        request_id="open", op="scene.open", source_path="/tmp/model.glb", unit_scale=0.001
+    )
+    client.execute("review", command)
+
+    assert captured[0]["unit_scale"] == 0.001
+
+
+def test_execute_restarts_old_daemon_for_overridden_unit_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append({"action": action, **arguments})
+        if (
+            action == "execute"
+            and len([call for call in captured if call["action"] == "execute"]) == 1
+        ):
+            raise ValueError("unit_scale: Extra inputs are not permitted")
+        return {"session": "review", "op": "scene.open"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    command = SceneOpenCommand(
+        request_id="open", op="scene.open", source_path="/tmp/model.glb", unit_scale=0.001
+    )
+    client.execute("review", command)
+
+    assert close_all_calls == 1
+    execute_commands = [call["command"] for call in captured if call["action"] == "execute"]
+    assert execute_commands == [
+        {
+            "request_id": "open",
+            "op": "scene.open",
+            "source_path": "/tmp/model.glb",
+            "unit_scale": 0.001,
+        },
+        {
+            "request_id": "open",
+            "op": "scene.open",
+            "source_path": "/tmp/model.glb",
+            "unit_scale": 0.001,
+        },
+    ]
 
 
 def test_close_all_waits_for_graceful_shutdown(

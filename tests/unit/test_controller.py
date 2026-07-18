@@ -953,7 +953,10 @@ def test_execute_routes_scene_open_through_checked_import(
     source.write_bytes(b"model")
     opened: list[tuple[Path, float]] = []
 
-    def open_scene(path: str | Path, aspect_ratio: float = 1.0) -> SceneManifest:
+    def open_scene(
+        path: str | Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SceneManifest:
+        assert unit_scale == 1.0
         opened.append((Path(path), aspect_ratio))
         return scene_manifest
 
@@ -1019,7 +1022,10 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
 
-    def open_scene(path: Path, aspect_ratio: float = 1.0) -> SimpleNamespace:
+    def open_scene(
+        path: Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SimpleNamespace:
+        assert unit_scale == 1.0
         calls.append(("open", path, aspect_ratio))
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1064,7 +1070,10 @@ def test_recover_session_retains_replay_log_when_replay_crashes(
     monkeypatch.setattr(controller, "close", lambda: None)
     monkeypatch.setattr(controller, "start", lambda: {})
 
-    def reopen(path: Path, aspect_ratio: float = 1.0) -> SimpleNamespace:
+    def reopen(
+        path: Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SimpleNamespace:
+        del path, aspect_ratio, unit_scale
         controller._accepted_commands.clear()
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1091,7 +1100,9 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         controller,
         "open_scene",
-        lambda path, aspect_ratio=1.0: SimpleNamespace(source_sha256="replacement-hash"),
+        lambda path, *, aspect_ratio=1.0, unit_scale=1.0: SimpleNamespace(
+            source_sha256="replacement-hash"
+        ),
     )
     monkeypatch.setattr(
         controller,

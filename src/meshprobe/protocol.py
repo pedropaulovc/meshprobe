@@ -24,6 +24,7 @@ from meshprobe.models import (
     OcclusionQueryResult,
     OrthonormalBasis,
     PerspectiveProjection,
+    PositiveFiniteFloat,
     Projection,
     RenderEngine,
     RenderManifest,
@@ -48,6 +49,12 @@ class SceneOpenCommand(CommandModel):
     op: Literal["scene.open"]
     source_path: str
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+    unit_scale: PositiveFiniteFloat = Field(
+        default=1.0,
+        description="Multiplier applied to the imported geometry at import time, before any "
+        "bounds/units checks run. Use 0.001 to correct a millimeter-authored asset that a "
+        "buggy exporter reported as meters, or 1000 for the opposite mistake.",
+    )
 
 
 class SessionSnapshotCommand(CommandModel):

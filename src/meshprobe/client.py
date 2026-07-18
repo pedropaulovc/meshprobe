@@ -51,18 +51,48 @@ class MeshProbeClient:
         # explicitly requested: older daemons reject unknown fields, while known
         # defaults such as render width and height must still travel over the wire.
         # Dumping the full model also keeps nested discriminators intact.
-        full_command = command.model_dump(mode="json")
+        wire = command.model_dump(mode="json")
         if isinstance(command, (SceneOpenCommand, SessionResetCommand)) and (
             "aspect_ratio" not in command.model_fields_set
         ):
-            full_command.pop("aspect_ratio")
-        payload = self.request(
-            "execute",
-            session=session,
-            command=full_command,
-            blender=self.blender,
-        )
+            wire.pop("aspect_ratio")
+        # Keep an ordinary open's wire format identical to the pre-upgrade one: a daemon that
+        # was already running before `unit_scale` existed validates commands with
+        # extra="forbid" and would reject the unknown field, breaking every plain open until
+        # it is restarted. Only send the field when the caller actually overrode the default
+        # (the same in-place-upgrade compatibility the resolve-ids fallback provides).
+        if wire.get("unit_scale") == 1.0:
+            del wire["unit_scale"]
+        try:
+            payload = self.request(
+                "execute",
+                session=session,
+                command=wire,
+                blender=self.blender,
+            )
+        except ValueError as error:
+            if not self._old_daemon_rejected_unit_scale(command, error):
+                raise
+            # `close_all` is part of the original daemon protocol and checkpoints sessions before
+            # stopping it. Restart through that known action, then retry against the new daemon so
+            # an explicit --unit-scale works across an in-place client upgrade.
+            self.close_all()
+            payload = self.request(
+                "execute",
+                session=session,
+                command=wire,
+                blender=self.blender,
+            )
         return OperationReceipt.model_validate(payload)
+
+    @staticmethod
+    def _old_daemon_rejected_unit_scale(command: Command, error: ValueError) -> bool:
+        if not isinstance(command, SceneOpenCommand) or command.unit_scale == 1.0:
+            return False
+        message = str(error).lower()
+        return "unit_scale" in message and (
+            "extra" in message or "unknown" in message or "forbid" in message
+        )
 
     def resolve_component(self, session: str, value: str) -> str:
         payload = self.request("resolve", session=session, value=value)

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A plausibility warning on `scene.open` when the imported root bounds span more than 50 m or
+  less than 1 mm, the classic signature of a millimeter/meter unit mistake, plus a `--unit-scale`
+  CLI option to correct a wrong-unit asset without a re-export cycle.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

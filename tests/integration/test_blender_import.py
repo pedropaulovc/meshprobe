@@ -22,6 +22,7 @@ from meshprobe.controller import (
 )
 from meshprobe.models import (
     AreaLight,
+    Bounds,
     Camera,
     CameraDiagnostics,
     CameraPoseFrame,
@@ -118,9 +119,18 @@ l 1 4
     return output
 
 
-def build_glb(tmp_path: Path) -> Path:
+def build_glb(tmp_path: Path, *, shared_camera_data: bool = False) -> Path:
     output = tmp_path / "fixture.glb"
     script = tmp_path / "build_fixture.py"
+    shared_camera = (
+        """
+shared_camera = bpy.data.objects.new('inspection-camera-copy', camera_data)
+bpy.context.scene.collection.objects.link(shared_camera)
+shared_camera.location = (6, 4, 3)
+"""
+        if shared_camera_data
+        else ""
+    )
     script.write_text(
         f"""
 import bpy
@@ -151,6 +161,7 @@ camera.location = (5, 4, 3)
 camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
 camera_data.lens = 85
 bpy.context.scene.camera = camera
+{shared_camera}
 
 light_data = bpy.data.lights.new('key-light', 'POINT')
 light_data.energy = 900
@@ -175,6 +186,75 @@ bpy.ops.export_scene.gltf(
         timeout=30,
     )
     return output
+
+
+def build_shape_key_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "shape-key.glb"
+    script = tmp_path / "build_shape_key.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=2.0)
+obj = bpy.context.object
+obj.name = 'morphing-cube'
+obj.shape_key_add(name='Basis')
+target = obj.shape_key_add(name='wide')
+for vertex in target.data:
+    vertex.co.x *= 2.0
+obj.active_shape_key_index = 1
+obj.active_shape_key.value = 1.0
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_morph=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def shape_key_span(path: Path, tmp_path: Path) -> float:
+    script = tmp_path / "shape_key_span.py"
+    script.write_text(
+        f"""
+import bpy
+import json
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath={json.dumps(str(path))})
+mesh = next(obj.data for obj in bpy.context.scene.objects if obj.type == 'MESH')
+key = mesh.shape_keys.key_blocks['wide']
+span = max(vertex.co.x for vertex in key.data) - min(vertex.co.x for vertex in key.data)
+print(f"SHAPE_KEY_SPAN={{span}}")
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    prefix = "SHAPE_KEY_SPAN="
+    return float(
+        next(
+            line.removeprefix(prefix)
+            for line in completed.stdout.splitlines()
+            if line.startswith(prefix)
+        )
+    )
 
 
 def build_far_camera_tall_glb(tmp_path: Path) -> Path:
@@ -541,6 +621,36 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.mesh.primitive_cube_add(size={cube_size})
 bpy.context.object.name = 'fixture-component'
 {export_call}
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_scaled_glb(tmp_path: Path, cube_size: float) -> Path:
+    """A single-cube GLB whose root bounds equal `cube_size` meters on every axis.
+
+    Used to simulate a source authored at the wrong scale: glTF's spec unit is meters, so a
+    CAD tool that forgets to convert its native millimeter coordinates before export produces
+    exactly this shape — plausible-looking numbers that are 1000x too large (or, for the
+    mirror mistake, too small).
+    """
+    output = tmp_path / "scaled.glb"
+    script = tmp_path / "build_scaled.py"
+    script.write_text(
+        f"""
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size={cube_size})
+bpy.context.object.name = 'fixture-component'
+bpy.ops.export_scene.gltf(filepath={json.dumps(str(output))}, export_format='GLB')
 """,
         encoding="utf-8",
     )
@@ -2048,6 +2158,21 @@ def test_worker_imports_flat_mesh_formats(tmp_path: Path, source_format: str) ->
     assert manifest.capabilities.hierarchy == expected_hierarchy
 
 
+@pytest.mark.parametrize("source_format", ["obj", "stl"])
+def test_units_warning_for_flat_meshes_does_not_claim_gltf_units(
+    tmp_path: Path, source_format: str
+) -> None:
+    source = build_flat_mesh(tmp_path, source_format, cube_size=1_000.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_millimeters"
+    )
+    assert "glTF" not in warning.message
+    assert "--unit-scale 0.001" in warning.message
+
+
 def test_generated_camera_far_clip_scales_with_large_scenes(tmp_path: Path) -> None:
     source = build_flat_mesh(tmp_path, "obj", cube_size=1_000.0)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
@@ -2062,6 +2187,176 @@ def test_generated_camera_far_clip_scales_with_large_scenes(tmp_path: Path) -> N
         )
     )
     assert manifest.imported_camera.projection.far_clip_mm > scene_span
+
+
+def test_oversized_scene_warns_source_may_be_authored_in_millimeters(tmp_path: Path) -> None:
+    # 600 m is comfortably past the 50 m plausibility threshold — the classic signature of a
+    # CAD tool exporting millimeter coordinates without converting to glTF's spec meters.
+    source = build_scaled_glb(tmp_path, 600.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_millimeters"
+    )
+    assert "600.0 m" in warning.message
+    assert "--unit-scale 0.001" in warning.message
+
+
+def test_tiny_scene_warns_source_may_be_authored_in_meters(tmp_path: Path) -> None:
+    # 0.5 mm is well under the 1 mm floor — the mirror mistake, e.g. a meters-authored
+    # source unintentionally scaled down.
+    source = build_scaled_glb(tmp_path, 0.0005)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+
+    warning = next(
+        warning for warning in manifest.warnings if warning.code == "units.suspected_meters"
+    )
+    assert "--unit-scale 1000" in warning.message
+
+
+def test_unit_scale_corrects_millimeter_source_and_suppresses_warning(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    assert any(warning.code == "units.suspected_millimeters" for warning in unscaled.warnings)
+    assert not any(
+        warning.code in {"units.suspected_millimeters", "units.suspected_meters"}
+        for warning in corrected.warnings
+    )
+    scene_span = max(
+        high - low
+        for low, high in zip(
+            corrected.root_bounds.minimum_mm,
+            corrected.root_bounds.maximum_mm,
+            strict=True,
+        )
+    )
+    assert scene_span == pytest.approx(600.0, rel=1e-3)  # 600 m * 0.001 -> 0.6 m -> 600 mm
+
+
+def test_unit_scale_cli_option_reaches_the_worker(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(
+        app,
+        ["--workspace", str(workspace), "--raw", "open", str(source), "--unit-scale", "0.001"],
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert result.exit_code == 0
+    assert stopped.exit_code == 0
+    payload = json.loads(result.stdout)
+    warning_codes = {warning["code"] for warning in payload["warnings"]}
+    assert "units.suspected_millimeters" not in warning_codes
+    assert "units.suspected_meters" not in warning_codes
+    scene_span = max(
+        high - low
+        for low, high in zip(
+            payload["root_bounds"]["minimum_mm"],
+            payload["root_bounds"]["maximum_mm"],
+            strict=True,
+        )
+    )
+    assert scene_span == pytest.approx(600.0, rel=1e-3)
+
+
+@pytest.mark.parametrize("unit_scale", [0.0, -1.0, math.inf, math.nan])
+def test_worker_rejects_non_positive_or_non_finite_unit_scale(
+    tmp_path: Path, unit_scale: float
+) -> None:
+    source = build_glb(tmp_path)
+    with (
+        BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller,
+        pytest.raises(BlenderWorkerError, match="unit_scale must be a positive finite number"),
+    ):
+        controller.open_scene(source, unit_scale=unit_scale)
+
+
+def _bounds_span(bounds: Bounds) -> float:
+    return max(high - low for low, high in zip(bounds.minimum_mm, bounds.maximum_mm, strict=True))
+
+
+def test_unit_scale_bakes_into_component_local_bounds(tmp_path: Path) -> None:
+    # build_glb is a real parent/child hierarchy (cover -> idler -> retaining-clip), so this
+    # also proves the correction survives glTF parent-inverse matrices, not just flat scenes.
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    unscaled_by_id = {component.id: component for component in unscaled.components}
+    for component in corrected.components:
+        baseline = unscaled_by_id[component.id]
+        # Local bounds must shrink with the correction, not just world/root bounds — eval code
+        # reads local_bounds as the component size signal.
+        assert _bounds_span(component.local_bounds) == pytest.approx(
+            _bounds_span(baseline.local_bounds) * 0.001, rel=1e-3
+        )
+        assert _bounds_span(component.world_bounds) == pytest.approx(
+            _bounds_span(baseline.world_bounds) * 0.001, rel=1e-3
+        )
+    assert _bounds_span(corrected.root_bounds) == pytest.approx(
+        _bounds_span(unscaled.root_bounds) * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_scales_imported_camera_clip_distances(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    # Camera intrinsics are measured in scene units, so a unit correction must scale the clip
+    # planes too — otherwise the imported view stays 1000x off for the very assets --unit-scale
+    # exists to fix.
+    assert corrected.imported_camera.projection.near_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.near_clip_mm * 0.001, rel=1e-3
+    )
+    assert corrected.imported_camera.projection.far_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.far_clip_mm * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_scales_shared_imported_camera_data_once(tmp_path: Path) -> None:
+    source = build_glb(tmp_path, shared_camera_data=True)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
+    assert corrected.imported_camera.projection.near_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.near_clip_mm * 0.001, rel=1e-3
+    )
+    assert corrected.imported_camera.projection.far_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.far_clip_mm * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_bakes_into_shape_key_coordinates(tmp_path: Path) -> None:
+    source = build_shape_key_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source, unit_scale=0.001)
+
+    assert manifest.normalized_geometry is not None
+    assert shape_key_span(Path(manifest.normalized_geometry.path), tmp_path) == pytest.approx(
+        0.004, rel=1e-3
+    )
+
+
+def test_open_receipt_surfaces_units_warning_on_default_path(tmp_path: Path) -> None:
+    source = build_scaled_glb(tmp_path, 600.0)
+    workspace = tmp_path / "workspace"
+    result = runner.invoke(app, ["--workspace", str(workspace), "open", str(source)])
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert result.exit_code == 0
+    assert stopped.exit_code == 0
+    # A plain `meshprobe open` (no --raw) must show the units warning, not only the manifest.
+    assert "warning:" in result.output
+    assert "--unit-scale 0.001" in result.output
 
 
 def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
