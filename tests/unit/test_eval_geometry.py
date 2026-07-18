@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import struct
+from typing import cast
 
 import pytest
 
@@ -19,7 +20,7 @@ from meshprobe.evals.geometry import (
 def glb_json(payload: bytes) -> dict[str, object]:
     chunk_length, chunk_type = struct.unpack_from("<II", payload, 12)
     assert chunk_type == 0x4E4F534A
-    return json.loads(payload[20 : 20 + chunk_length])
+    return cast("dict[str, object]", json.loads(payload[20 : 20 + chunk_length]))
 
 
 def sample_scene() -> GlbScene:

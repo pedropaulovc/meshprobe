@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from meshprobe.evals.harness.broker import EvaluationBroker
 from meshprobe.evals.harness.replay import _semantic_result, replay_trace
@@ -22,7 +23,7 @@ class ReplayService:
         evaluator_output_dir: str,
     ) -> CommandResponse:
         del evaluator_output_dir
-        result = {"source_sha256": "a" * 64}
+        result: JsonValue = {"source_sha256": "a" * 64}
         if command.op == "session.snapshot":
             result = {"session": {"state_sha256": self.state * 64}}
         return CommandResponse(request_id=command.request_id, op=command.op, result=result)
@@ -100,7 +101,7 @@ def test_trace_replay_rejects_invalid_sequence_and_arguments(tmp_path: Path) -> 
 
 
 def test_render_replay_ignores_nondeterministic_artifact_fields() -> None:
-    result = {
+    result: JsonValue = {
         "state_sha256": "a" * 64,
         "panels": [
             {"caption": "front", "color": {"path": "first.png"}},

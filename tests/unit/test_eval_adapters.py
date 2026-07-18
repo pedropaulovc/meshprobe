@@ -311,9 +311,11 @@ def test_mcp_adapter_json_rpc_validation_and_tool_error_paths(tmp_path: Path) ->
             initialized,
         )
 
-    assert McpStdioAdapter._handle_message(b"not-json", stream, broker, episode.spec, False)[
-        1
-    ].startswith("invalid MCP message")
+    invalid_json_error = McpStdioAdapter._handle_message(
+        b"not-json", stream, broker, episode.spec, False
+    )[1]
+    assert invalid_json_error is not None
+    assert invalid_json_error.startswith("invalid MCP message")
     assert handle({"jsonrpc": "1.0"})[1] == "invalid MCP JSON-RPC envelope"
     assert handle({"jsonrpc": "2.0", "method": "ping"})[1] == "MCP request has no id"
 

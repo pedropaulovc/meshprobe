@@ -342,7 +342,9 @@ def test_curated_tasks_resolve_private_roles_and_force_full_operation_use(
         for component_id in truth.component_ids.values()
     )
     for episode in episodes:
-        value_schema = episode.spec.answer_schema["properties"]["values"]
+        answer_properties = episode.spec.answer_schema["properties"]
+        assert isinstance(answer_properties, dict)
+        value_schema = answer_properties["values"]
         assert isinstance(value_schema, dict)
         properties = value_schema["properties"]
         assert isinstance(properties, dict)
