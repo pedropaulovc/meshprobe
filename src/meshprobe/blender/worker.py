@@ -624,7 +624,6 @@ def apply_camera(
         raise ValueError("camera pose frame must be source or world")
     else:
         resolved_camera["pose"]["frame"] = "world"
-    _expand_clip_range_to_scene(resolved_camera, position, rotation)
     obj.matrix_world = Matrix.Translation(position) @ rotation.to_matrix().to_4x4()
     projection = resolved_camera["projection"]
     data = obj.data
@@ -673,10 +672,10 @@ def apply_camera(
     return session_snapshot()
 
 
-def _expand_clip_range_to_scene(
+def _expand_far_clip_to_scene(
     camera: dict[str, Any], position: Vector, rotation: Quaternion
 ) -> None:
-    """Keep a reused projection large enough for the scene after camera motion."""
+    """Keep a reused projection's far plane beyond the scene after camera motion."""
     if MANIFEST is None:
         return
     bounds = MANIFEST["root_bounds"]
@@ -691,9 +690,6 @@ def _expand_clip_range_to_scene(
     if not visible_depths:
         return
     projection = camera["projection"]
-    projection["near_clip_mm"] = min(
-        projection["near_clip_mm"], max(0.1, min(visible_depths) * 0.5)
-    )
     projection["far_clip_mm"] = max(projection["far_clip_mm"], max(visible_depths) * 1.5)
 
 
@@ -741,6 +737,8 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         },
         "projection": projection,
     }
+    if requested_projection is None:
+        _expand_far_clip_to_scene(camera, position, rotation)
     return apply_camera(
         camera,
         command.get("focus_component_ids", ()),
@@ -770,6 +768,7 @@ def move_camera(command: dict[str, Any]) -> dict[str, Any]:
         "pose": resulting_pose,
         "projection": CURRENT_CAMERA["projection"],
     }
+    _expand_far_clip_to_scene(camera, position, orientation)
     global CURRENT_CAMERA_OPERATION
     CURRENT_CAMERA_OPERATION = {
         "operation": "move",

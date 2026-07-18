@@ -1260,7 +1260,9 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     move_receipt = CameraTranslationReceipt.model_validate(moved["camera_operation"])
     assert moved_camera.pose.position_mm == pytest.approx(expected_position)
     assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
-    assert moved_camera.projection == initial.camera.projection
+    assert type(moved_camera.projection) is type(initial.camera.projection)
+    assert moved_camera.projection.near_clip_mm == initial.camera.projection.near_clip_mm
+    assert moved_camera.projection.far_clip_mm >= initial.camera.projection.far_clip_mm
     assert isinstance(snapshot.camera_operation, CameraTranslationReceipt)
     assert move_receipt.requested_world_delta_mm == (0, 0, 100)
     assert move_receipt.requested_camera_delta_mm == (-25, 0, 50)
@@ -2162,10 +2164,11 @@ def test_default_view_fits_perspective_camera_for_non_square_render(tmp_path: Pa
         )
         fitted = _mask_frame_coverage(fitted_dir / "fitted-portrait.components.png")
 
-        # Resetting without declaring the render's aspect ratio reproduces the
-        # bug: the default view assumes a square frame, so the same portrait
-        # render clips this model left and right.
-        controller.execute(SessionResetCommand(request_id="reset-square", op="session.reset"))
+        # Explicitly resetting to a square aspect reproduces the old framing
+        # mistake: the same portrait render clips this model left and right.
+        controller.execute(
+            SessionResetCommand(request_id="reset-square", op="session.reset", aspect_ratio=1)
+        )
         unfitted_dir = tmp_path / "unfitted"
         controller.render_image(
             RenderImageCommand(
@@ -2251,10 +2254,11 @@ def test_default_view_fits_orthographic_camera_for_non_square_render(tmp_path: P
         )
         fitted = _mask_frame_coverage(fitted_dir / "fitted-landscape.components.png")
 
-        # Resetting without declaring the render's aspect ratio reproduces the
-        # bug: the default view assumes a square frame, so the same landscape
-        # render clips this tall box top and bottom.
-        controller.execute(SessionResetCommand(request_id="reset-square", op="session.reset"))
+        # Explicitly resetting to a square aspect reproduces the old framing
+        # mistake: the same landscape render clips this tall box top and bottom.
+        controller.execute(
+            SessionResetCommand(request_id="reset-square", op="session.reset", aspect_ratio=1)
+        )
         unfitted_dir = tmp_path / "unfitted"
         controller.render_image(
             RenderImageCommand(
