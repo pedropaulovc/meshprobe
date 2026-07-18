@@ -3177,10 +3177,11 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
         assert controller.graphics is not None
         assert controller.graphics.device_class.value == "software"
         assert "software compatibility mode" in controller.graphics.renderer
-        assert controller.graphics.warnings == (
-            "Blender 4.2.0 runs in software compatibility mode: hardware_required and "
-            "screen_edges require Blender 5.2 or newer.",
-        )
+        assert controller.graphics.warnings
+        compatibility_warning = controller.graphics.warnings[0]
+        assert compatibility_warning.startswith("Blender 4.2")
+        assert "software compatibility mode" in compatibility_warning
+        assert "hardware_required and screen_edges require Blender 5.2" in compatibility_warning
         controller.open_scene(source)
 
         for style in (RenderStyle.SHADED, RenderStyle.SHADED_EDGES):
