@@ -47,6 +47,7 @@ from meshprobe.models import (
     GraphicsPolicy,
     IlluminationPreset,
     MarkMode,
+    OrthographicProjection,
     PerspectiveProjection,
     Projection,
     RenderEngine,
@@ -915,6 +916,43 @@ def view_set(
     )
 
 
+def _orbit_projection(
+    projection_json: str | None,
+    focal_length: float | None,
+    ortho_scale: float | None,
+) -> Projection | None:
+    """Resolve view-orbit's projection flags to a concrete Projection, or None.
+
+    None tells the controller/worker to keep the session's current projection
+    (defaulting to a standard perspective on the first orbit of a session). See
+    issue #96: the full --projection-json object is heavy for the common case of
+    orbiting the existing camera, so --focal-length/--ortho-scale offer shorthands
+    for the two projection modes and both stay mutually exclusive with each other
+    and with --projection-json.
+    """
+
+    provided = [
+        flag
+        for flag, value in (
+            ("--projection-json", projection_json),
+            ("--focal-length", focal_length),
+            ("--ortho-scale", ortho_scale),
+        )
+        if value is not None
+    ]
+    if len(provided) > 1:
+        raise typer.BadParameter(f"provide at most one of {', '.join(provided)}")
+    if projection_json is not None:
+        from pydantic import TypeAdapter
+
+        return TypeAdapter(Projection).validate_json(projection_json)
+    if focal_length is not None:
+        return PerspectiveProjection(focal_length_mm=focal_length)
+    if ortho_scale is not None:
+        return OrthographicProjection(scale_mm=ortho_scale)
+    return None
+
+
 @app.command("view-orbit")
 def view_orbit(
     ctx: typer.Context,
@@ -935,13 +973,35 @@ def view_orbit(
         typer.Option("--distance", min=0.000001, help="Absolute target distance in millimeters."),
     ],
     projection_json: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--projection-json",
             help="Complete perspective or orthographic projection, including camera intrinsics "
-            "(focal_length_mm, sensor_width_mm/sensor_height_mm, sensor_fit, depth_of_field).",
+            "(focal_length_mm, sensor_width_mm/sensor_height_mm, sensor_fit, depth_of_field). "
+            "Omit to keep the session's current projection (or a standard 50mm perspective on "
+            "the first view call); mutually exclusive with --focal-length/--ortho-scale.",
         ),
-    ],
+    ] = None,
+    focal_length: Annotated[
+        float | None,
+        typer.Option(
+            "--focal-length",
+            min=0.000001,
+            help="Perspective shorthand: lens focal length in millimeters, replacing the "
+            "current projection with a perspective one at this focal length. Mutually "
+            "exclusive with --projection-json/--ortho-scale.",
+        ),
+    ] = None,
+    ortho_scale: Annotated[
+        float | None,
+        typer.Option(
+            "--ortho-scale",
+            min=0.000001,
+            help="Orthographic shorthand: vertical view extent in millimeters, replacing the "
+            "current projection with an orthographic one at this scale. Mutually exclusive "
+            "with --projection-json/--focal-length.",
+        ),
+    ] = None,
     roll: Annotated[
         float,
         typer.Option("--roll", help="Signed right-hand-rule degrees around the forward axis."),
@@ -960,13 +1020,15 @@ def view_orbit(
     camera_orbit_angles (azimuth_degrees, elevation_degrees) from state.yml and pass
     them back here. Positive azimuth follows the right-hand rule around +Z. GLTF is
     right-handed and Y-up; scene.open reports the exact source_to_world mapping
-    (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y). The result echoes the resolved camera
-    (including the intrinsics above) and its diagnostics; see `meshprobe schema --kind results`.
+    (GLTF +X -> world +X, +Y -> +Z, +Z -> -Y). The projection carries over from the
+    session's current camera unless --projection-json, --focal-length, or --ortho-scale
+    replaces it (a fresh session defaults to a standard 50mm perspective); use
+    --projection-json for exact control over the full intrinsics (sensor size, sensor
+    fit, depth of field). The result echoes the resolved camera (including the
+    intrinsics above) and its diagnostics; see `meshprobe schema --kind results`.
     """
 
-    from pydantic import TypeAdapter
-
-    projection: Projection = TypeAdapter(Projection).validate_json(projection_json)
+    projection = _orbit_projection(projection_json, focal_length, ortho_scale)
     _execute(
         ctx,
         ViewOrbitCommand(

@@ -2399,6 +2399,190 @@ def test_worker_orbit_and_recovery_replay_state(tmp_path: Path) -> None:
     assert runtime["components"][target]["hide_render"]
 
 
+def test_worker_orbit_without_projection_keeps_session_current_projection(
+    tmp_path: Path,
+) -> None:
+    """Issue #96: a bare view.orbit reuses whatever projection is already active."""
+
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        established = controller.execute(
+            ViewOrbitCommand(
+                request_id="establish",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+                projection=OrthographicProjection(scale_mm=600),
+            )
+        )
+        assert isinstance(established, dict)
+        established_camera = Camera.model_validate(established["camera"])
+        assert isinstance(established_camera.projection, OrthographicProjection)
+        assert established_camera.projection.scale_mm == pytest.approx(600)
+
+        continued = controller.execute(
+            ViewOrbitCommand(
+                request_id="continue",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=90,
+                elevation_degrees=15,
+                distance_mm=2_500,
+            )
+        )
+    assert isinstance(continued, dict)
+    continued_camera = Camera.model_validate(continued["camera"])
+    # The pose moved (new azimuth/elevation/distance) but the projection carried over
+    # from the previous orbit unchanged, without the caller restating it.
+    assert continued_camera.pose.position_mm != pytest.approx(established_camera.pose.position_mm)
+    assert continued_camera.projection == established_camera.projection
+
+
+def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspective(
+    tmp_path: Path,
+) -> None:
+    """The very first view.orbit of a session, with no projection flag at all, lands on
+    a standard perspective: a source with no embedded camera falls back to one on
+    scene.open (imported_camera's default), which the bare orbit then inherits."""
+
+    # OBJ has no camera concept, so the source carries none for imported_camera to reuse.
+    source = build_flat_mesh(tmp_path, "obj")
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        result = controller.execute(
+            ViewOrbitCommand(
+                request_id="first-orbit",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+            )
+        )
+    assert isinstance(result, dict)
+    camera = Camera.model_validate(result["camera"])
+    assert camera.projection == PerspectiveProjection()
+
+
+def _cli_orbit_camera(workspace: Path, request_id: str, *extra: str) -> Camera:
+    result = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace),
+            "--session",
+            "review",
+            "--raw",
+            "view-orbit",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--azimuth",
+            "20",
+            "--elevation",
+            "10",
+            "--distance",
+            "1500",
+            *extra,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return Camera.model_validate(json.loads(result.stdout)["camera"])
+
+
+def test_cli_view_orbit_focal_length_shorthand_matches_projection_json(tmp_path: Path) -> None:
+    """Issue #96: --focal-length is a real shorthand, not just an accepted flag."""
+
+    source = build_glb(tmp_path)
+    workspace = tmp_path / "workspace"
+    opened = runner.invoke(
+        app, ["--workspace", str(workspace), "--session", "review", "open", str(source)]
+    )
+    assert opened.exit_code == 0, opened.output
+
+    shorthand_camera = _cli_orbit_camera(workspace, "shorthand", "--focal-length", "100")
+    explicit_projection_json = PerspectiveProjection(focal_length_mm=100).model_dump_json()
+    explicit_camera = _cli_orbit_camera(
+        workspace, "explicit", "--projection-json", explicit_projection_json
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+    assert stopped.exit_code == 0
+
+    assert shorthand_camera == explicit_camera
+
+
+def test_cli_view_orbit_ortho_scale_shorthand_matches_projection_json(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    workspace = tmp_path / "workspace"
+    opened = runner.invoke(
+        app, ["--workspace", str(workspace), "--session", "review", "open", str(source)]
+    )
+    assert opened.exit_code == 0, opened.output
+
+    shorthand_camera = _cli_orbit_camera(workspace, "shorthand", "--ortho-scale", "600")
+    explicit_projection_json = OrthographicProjection(scale_mm=600).model_dump_json()
+    explicit_camera = _cli_orbit_camera(
+        workspace, "explicit", "--projection-json", explicit_projection_json
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+    assert stopped.exit_code == 0
+
+    assert shorthand_camera == explicit_camera
+
+
+def test_cli_view_orbit_without_projection_flags_reuses_session_camera(tmp_path: Path) -> None:
+    """Issue #96's headline case: the bare `view-orbit --target/--azimuth/--elevation/
+    --distance` call from the issue no longer errors with "Missing option
+    '--projection-json'", and it reuses the camera the session already set up."""
+
+    source = build_glb(tmp_path)
+    workspace = tmp_path / "workspace"
+    opened = runner.invoke(
+        app, ["--workspace", str(workspace), "--session", "review", "open", str(source)]
+    )
+    assert opened.exit_code == 0, opened.output
+
+    established = _cli_orbit_camera(workspace, "establish", "--focal-length", "85")
+    assert isinstance(established.projection, PerspectiveProjection)
+    assert established.projection.focal_length_mm == pytest.approx(85)
+
+    # The exact call from the issue: no --projection-json, no shorthand at all.
+    bare_result = runner.invoke(
+        app,
+        [
+            "--workspace",
+            str(workspace),
+            "--session",
+            "review",
+            "--raw",
+            "view-orbit",
+            "--target",
+            "0",
+            "0",
+            "0",
+            "--azimuth",
+            "45",
+            "--elevation",
+            "30",
+            "--distance",
+            "1500",
+        ],
+    )
+    stopped = runner.invoke(app, ["--workspace", str(workspace), "close", "--all"])
+
+    assert bare_result.exit_code == 0, bare_result.output
+    assert "Missing option" not in bare_result.output
+    assert stopped.exit_code == 0
+    bare_camera = Camera.model_validate(json.loads(bare_result.stdout)["camera"])
+    # The 85mm perspective established above carries over untouched; only the pose moved.
+    assert bare_camera.projection == established.projection
+    assert bare_camera.pose.position_mm != pytest.approx(established.pose.position_mm)
+
+
 def test_worker_rejects_empty_component_selection_without_changing_scene(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
