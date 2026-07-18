@@ -3363,7 +3363,7 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.style":
         require_session()
         configure_render_style(command)
-        return {"style": command.get("style", "shaded")}
+        return {"style": command.get("style", "screen_edges")}
     if operation == "scene.export_normalized":
         return export_normalized(command)
     if operation == "component.visibility":

@@ -2546,6 +2546,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     evaluator_dir = tmp_path / "plain-evaluator"
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        default_style = controller.request("render.style")
         controller.execute(
             IlluminationSetCommand(
                 request_id="edge-lighting",
@@ -2667,6 +2668,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
         recovered_runtime = controller.request("session.runtime")
 
     assert plain.evaluator is not None
+    assert default_style == {"style": "screen_edges"}
     assert plain.session.state_sha256 == edged.session.state_sha256
     assert plain.session.state_sha256 == screen_edged.session.state_sha256
     assert plain.session.state_sha256 == recovered.session.state_sha256
