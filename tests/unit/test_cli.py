@@ -28,6 +28,7 @@ from meshprobe.protocol import (
     ViewRotateCommand,
     ViewSetCommand,
 )
+from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.workspace import OperationReceipt, ResolvedComponentReference
 
 runner = CliRunner()
@@ -143,6 +144,47 @@ def test_occlusion_command_uses_current_camera_query(monkeypatch: pytest.MonkeyP
     assert isinstance(command, ComponentOcclusionCommand)
     assert command.component_ids == ("component-id",)
     assert command.max_samples_per_component == 512
+
+
+def test_occlusion_command_expands_glob_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "occlusion", "**/*"])
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ComponentOcclusionCommand)
+    assert command.component_ids == ("id-root", "id-clip", "id-idler")
+
+
+def test_render_sheet_command_expands_glob_patterns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "render-sheet", "**/idler", "--output", str(tmp_path / "s.png")],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, RenderContactSheetCommand)
+    assert command.focus_component_ids == ("id-idler",)
+
+
+def test_occlusion_glob_with_no_match_reports_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "occlusion", "**/missing*"])
+
+    assert result.exit_code != 0
+    assert "no components match glob pattern" in result.output
 
 
 def test_schema_command_documents_durable_state_files() -> None:
@@ -390,6 +432,12 @@ class FakeClient:
             match_count=self.match_count if isinstance(command, ComponentFindCommand) else None,
         )
 
+    GLOB_COMPONENTS = (
+        ("id-root", "assembly"),
+        ("id-clip", "assembly/cover/clip"),
+        ("id-idler", "assembly/drive/idler"),
+    )
+
     def resolve_component(self, session: str, value: str) -> str:
         assert session == "review"
         return {
@@ -397,6 +445,20 @@ class FakeClient:
             "assembly/idler": "component-id",
             "crank-pinion-1": "component-id",
         }[value]
+
+    def resolve_component_ids(self, session: str, value: str) -> tuple[str, ...]:
+        assert session == "review"
+        if not is_glob_pattern(value):
+            return (self.resolve_component(session, value),)
+        pattern = normalize_glob(value)
+        matched = tuple(
+            component_id
+            for component_id, path in sorted(self.GLOB_COMPONENTS, key=lambda entry: entry[1])
+            if path_glob_match(path, pattern)
+        )
+        if not matched:
+            raise ValueError(f"no components match glob pattern: {value}")
+        return matched
 
     def read_result(self, receipt: OperationReceipt) -> object:
         if receipt.op == "component.find" and self.find_results is not None:

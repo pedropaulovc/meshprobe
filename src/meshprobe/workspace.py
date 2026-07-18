@@ -41,6 +41,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
 )
+from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
 
 STATE_OPERATIONS = frozenset(
@@ -551,9 +552,51 @@ class SessionManager:
         )
 
     def resolve_component(self, name: str, value: str) -> str:
+        components = self._load_components(name)
+        resolved = self._exact_component_id(components, value)
+        if resolved is not None:
+            return resolved
+        raise self._unknown_component_error(value)
+
+    def resolve_component_ids(self, name: str, value: str) -> tuple[str, ...]:
+        components = self._load_components(name)
+        # An exact ref/ID/name/path wins even when it contains glob metacharacters
+        # (e.g. `panel[1]`, `gear?`), which are legal in real component names and
+        # paths. An ambiguous literal raises here rather than falling through, so it
+        # keeps its ambiguous-name error instead of being reinterpreted as a glob;
+        # only a token that matches nothing exactly is read as a glob.
+        resolved = self._exact_component_id(components, value)
+        if resolved is not None:
+            return (resolved,)
+        if is_glob_pattern(value):
+            pattern = normalize_glob(value)
+            matched = sorted(
+                (
+                    component
+                    for component in components
+                    if path_glob_match(component["path"], pattern)
+                ),
+                key=lambda component: str(component["path"]),
+            )
+            if matched:
+                return tuple(str(component["id"]) for component in matched)
+            raise ValueError(f"no components match glob pattern: {value}")
+        raise self._unknown_component_error(value)
+
+    def _load_components(self, name: str) -> list[dict[str, Any]]:
         files = self._require_files(name)
         payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
-        components = payload.get("components", []) if isinstance(payload, dict) else []
+        return payload.get("components", []) if isinstance(payload, dict) else []
+
+    @staticmethod
+    def _exact_component_id(components: list[dict[str, Any]], value: str) -> str | None:
+        """Return the id of an exact ref/ID/path/name match, or None if nothing matches.
+
+        A display name shared by several components is unresolvable, not unmatched, so
+        it raises the ambiguous-name error rather than returning None (which a caller
+        would otherwise reinterpret as a glob).
+        """
+
         for field in ("ref", "id", "path"):
             for component in components:
                 if value == component[field]:
@@ -567,7 +610,11 @@ class SessionManager:
                 f"ambiguous component display name {value!r}; matches: {paths}; "
                 "use an exact path or stable ID"
             )
-        raise ValueError(
+        return None
+
+    @staticmethod
+    def _unknown_component_error(value: str) -> ValueError:
+        return ValueError(
             f"unknown component reference, stable ID, exact display name, or exact path: {value}"
         )
 

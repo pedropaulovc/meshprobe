@@ -13,7 +13,29 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 from meshprobe.identity import stable_component_id
 from meshprobe.models import Component, SceneManifest
 
-__all__ = ["ComponentIndex", "ComponentSelector", "SelectorKind", "stable_component_id"]
+__all__ = [
+    "ComponentIndex",
+    "ComponentSelector",
+    "SelectorKind",
+    "is_glob_pattern",
+    "normalize_glob",
+    "path_glob_match",
+    "stable_component_id",
+]
+
+GLOB_METACHARACTERS = "*?["
+
+
+def is_glob_pattern(value: str) -> bool:
+    return any(character in value for character in GLOB_METACHARACTERS)
+
+
+def normalize_glob(pattern: str) -> str:
+    """Anchor a bare glob so it matches at any depth, matching `find`."""
+
+    if "/" not in pattern:
+        return f"**/{pattern}"
+    return pattern
 
 
 class SelectorKind(StrEnum):

@@ -159,6 +159,38 @@ def test_connection_refusal_replaces_metadata_even_when_pid_was_reused(
     assert not (client.root / "daemon.json").exists()
 
 
+def test_resolve_component_ids_falls_back_to_resolve_on_old_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    actions: list[str] = []
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        actions.append(action)
+        if action == "resolve-ids":
+            raise ValueError("unsupported daemon action: resolve-ids")
+        return {"component_id": "component-42"}
+
+    monkeypatch.setattr(client, "request", request)
+
+    assert client.resolve_component_ids("review", "c2") == ("component-42",)
+    assert actions == ["resolve-ids", "resolve"]
+
+
+def test_resolve_component_ids_propagates_unrelated_daemon_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        raise ValueError("no components match glob pattern: **/missing")
+
+    monkeypatch.setattr(client, "request", request)
+
+    with pytest.raises(ValueError, match="no components match glob pattern"):
+        client.resolve_component_ids("review", "**/missing")
+
+
 def test_close_all_waits_for_graceful_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
