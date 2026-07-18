@@ -16,11 +16,19 @@ from typer.testing import CliRunner
 from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
-from meshprobe.models import OrthographicProjection, PerspectiveProjection, RenderStyle
+from meshprobe.models import (
+    CoordinateFrame,
+    OrthographicProjection,
+    PerspectiveProjection,
+    PresetIllumination,
+    RenderStyle,
+    SensorFit,
+)
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
+    ComponentMarkCommand,
     ComponentOcclusionCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
@@ -111,7 +119,9 @@ def _property_description(envelope: dict[str, object], model: str, field: str) -
     defs = envelope.get("$defs", {})
     assert isinstance(defs, dict)
     properties = defs[model]["properties"]
-    return properties[field].get("description", "")
+    description = properties[field].get("description", "")
+    assert isinstance(description, str)
+    return description
 
 
 def test_schema_results_kind_documents_result_envelope_fields() -> None:
@@ -766,7 +776,9 @@ def test_component_commands_resolve_short_references(
         ["--session", "review", "mark", "crank-pinion-1", "--mode", "highlighted"],
     )
     assert named.exit_code == 0
-    assert client.commands[-1].component_ids == ("component-id",)
+    mark_command = client.commands[-1]
+    assert isinstance(mark_command, ComponentMarkCommand)
+    assert mark_command.component_ids == ("component-id",)
 
 
 def test_compact_receipt_includes_readable_and_stable_component_identity(
@@ -889,7 +901,7 @@ def test_view_rotate_exposes_source_frame_semantics(
     assert result.exit_code == 0
     command = client.commands[-1]
     assert isinstance(command, ViewRotateCommand)
-    assert command.frame == "source"
+    assert command.frame == CoordinateFrame.SOURCE
     assert command.axis == "y"
     assert command.basis.x == (0, 1, 0)
     assert command.degrees == 145
@@ -926,7 +938,7 @@ def test_view_rotate_defaults_to_source_frame(monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0
     command = client.commands[-1]
     assert isinstance(command, ViewRotateCommand)
-    assert command.frame == "source"
+    assert command.frame == CoordinateFrame.SOURCE
 
     world = runner.invoke(
         app,
@@ -947,7 +959,9 @@ def test_view_rotate_defaults_to_source_frame(monkeypatch: pytest.MonkeyPatch) -
         ],
     )
     assert world.exit_code == 0
-    assert client.commands[-1].frame == "world"
+    world_command = client.commands[-1]
+    assert isinstance(world_command, ViewRotateCommand)
+    assert world_command.frame == CoordinateFrame.WORLD
 
     help_result = runner.invoke(app, ["view-rotate", "--help"])
     assert help_result.exit_code == 0
@@ -965,7 +979,9 @@ def test_view_rotate_accepts_camera_frame_and_rejects_component(
 
     camera = runner.invoke(app, [*base, "--axis", "x", "--frame", "camera"])
     assert camera.exit_code == 0
-    assert client.commands[-1].frame == "camera"
+    camera_command = client.commands[-1]
+    assert isinstance(camera_command, ViewRotateCommand)
+    assert camera_command.frame == CoordinateFrame.CAMERA
 
     component = runner.invoke(app, [*base, "--axis", "x", "--frame", "component"])
     assert component.exit_code == 2
@@ -1302,7 +1318,7 @@ def test_view_orbit_projection_json_still_builds_exact_projection(
         focal_length_mm=85,
         sensor_width_mm=36,
         sensor_height_mm=24,
-        sensor_fit="horizontal",
+        sensor_fit=SensorFit.HORIZONTAL,
         near_clip_mm=1,
         far_clip_mm=10_000,
     )
@@ -1443,6 +1459,7 @@ def test_illumination_cli_accepts_display_referred_background(
     assert result.exit_code == 0, result.output
     (command,) = client.commands
     assert isinstance(command, IlluminationSetCommand)
+    assert isinstance(command.illumination, PresetIllumination)
     assert command.illumination.background_srgb == (1, 1, 1)
     assert command.illumination.background_rgb is None
 
