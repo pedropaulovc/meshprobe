@@ -1848,25 +1848,47 @@ def render_still(path: Path) -> None:
         raise RuntimeError(f"Blender did not publish render output: {path}")
 
 
-def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
-    """Render an experimental GPU compositor depth/normal edge pass."""
-
+@contextmanager
+def temporary_screen_edge_compositor(path: Path, settings: dict[str, Any]) -> Iterator[str]:
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     original_group = scene.compositing_node_group
     original_compositor_device = scene.render.compositor_device
     original_pass_z = view_layer.use_pass_z
     original_pass_normal = view_layer.use_pass_normal
-    group = bpy.data.node_groups.new(f"MeshProbeScreenEdges-{path.stem}", "CompositorNodeTree")
-    scene.compositing_node_group = group
-    scene.render.compositor_device = "GPU"
-    view_layer.use_pass_z = True
-    view_layer.use_pass_normal = True
+    group = None
+    try:
+        group = bpy.data.node_groups.new(
+            f"MeshProbeScreenEdges-{path.stem}",
+            "CompositorNodeTree",
+        )
+        scene.compositing_node_group = group
+        scene.render.compositor_device = "GPU"
+        view_layer.use_pass_z = True
+        view_layer.use_pass_normal = True
+        configure_screen_edge_nodes(group, path, settings)
+        yield f"{path.stem}.screen-edges"
+    finally:
+        scene.compositing_node_group = original_group
+        scene.render.compositor_device = original_compositor_device
+        view_layer.use_pass_z = original_pass_z
+        view_layer.use_pass_normal = original_pass_normal
+        if group is not None:
+            bpy.data.node_groups.remove(group)
+
+
+def configure_screen_edge_nodes(
+    group: bpy.types.NodeTree,
+    path: Path,
+    settings: dict[str, Any],
+) -> None:
+    """Build an experimental GPU compositor depth/normal edge pass."""
 
     render_layers = group.nodes.new("CompositorNodeRLayers")
 
     normalized_depth = group.nodes.new("CompositorNodeNormalize")
     depth_sobel = group.nodes.new("CompositorNodeFilter")
+    # Blender 5.2 exposes the filter choice as a menu socket, not a node property.
     depth_sobel.inputs["Type"].default_value = "Sobel"
     depth_luminance = group.nodes.new("CompositorNodeRGBToBW")
     depth_threshold = group.nodes.new("ShaderNodeMath")
@@ -1900,9 +1922,13 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
         group.links.new(mask_output, dilate.inputs["Mask"])
         mask_output = dilate.outputs["Mask"]
 
+    anti_alias = group.nodes.new("CompositorNodeAntiAliasing")
+    group.links.new(mask_output, anti_alias.inputs["Image"])
+    mask_output = anti_alias.outputs["Image"]
+
     opacity = group.nodes.new("ShaderNodeMath")
     opacity.operation = "MULTIPLY"
-    opacity.inputs[1].default_value = 0.5
+    opacity.inputs[1].default_value = 0.75
     group.links.new(mask_output, opacity.inputs[0])
     mask_output = opacity.outputs["Value"]
 
@@ -1922,22 +1948,23 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
     file_output.directory = str(path.parent)
     file_output.file_name = f"{path.stem}.screen-edges"
     file_output.use_file_extension = True
+    file_output.format.file_format = "OPEN_EXR_MULTILAYER"
     file_output.file_output_items.new("RGBA", "Image")
     group.links.new(mix.outputs[2], file_output.inputs["Image"])
 
+
+def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
+    """Render an experimental GPU compositor depth/normal edge pass."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     prefix = f"{path.stem}.screen-edges"
     before = {
         candidate: file_version(candidate) for candidate in path.parent.glob(f"{prefix}*.exr")
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
+    with temporary_screen_edge_compositor(path, settings) as configured_prefix:
+        if configured_prefix != prefix:
+            raise RuntimeError(f"unexpected screen-edge output prefix: {configured_prefix}")
         bpy.ops.render.render()
-    finally:
-        scene.compositing_node_group = original_group
-        scene.render.compositor_device = original_compositor_device
-        view_layer.use_pass_z = original_pass_z
-        view_layer.use_pass_normal = original_pass_normal
-        bpy.data.node_groups.remove(group)
     candidates = [
         candidate
         for candidate in path.parent.glob(f"{prefix}*.exr")
@@ -1950,7 +1977,7 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
         )
     composited = bpy.data.images.load(str(candidates[0]), check_existing=False)
     try:
-        composited.save_render(str(path), scene=scene)
+        composited.save_render(str(path), scene=bpy.context.scene)
     finally:
         bpy.data.images.remove(composited)
         candidates[0].unlink(missing_ok=True)

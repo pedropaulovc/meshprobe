@@ -9,7 +9,7 @@ compositor pass on the 409-component harmonic-analyzer GLTF. Both images use the
 | Plain `shaded` | 5.16 s |
 | Freestyle `shaded_edges` | 50.71 s |
 | Opaque experimental `screen_edges` | 10.61 s |
-| 50% edge-opacity mitigation | 10.02 s |
+| 75% edge-opacity mitigation | 10.06 s |
 
 The screen pass is 4.78 times faster than Freestyle in this run. It applies Sobel filters to
 the depth and normal passes in Blender's GPU compositor, thresholds both results, and overlays
@@ -51,13 +51,18 @@ around a discontinuity, the bands from opposite sides overlap on narrow parts an
 look solid black. Background and broad-surface pixels were not darker; the mask covered most
 of the visible pixels on the thin parts.
 
-The selected mitigation scales the mask to 50% before using it as the Mix factor. Detection
-positions stay unchanged, but half of the underlying shaded color remains visible:
+The selected mitigation antialiases the binary mask, then scales it to 75% before using it as
+the Mix factor. Detection positions stay unchanged, but coverage is smoother and enough of the
+underlying shaded color remains visible:
 
-![Freestyle and 50% opacity screen-space crop](mitigation/side-by-side-crop.png)
+![Freestyle and 75% opacity screen-space crop](mitigation/side-by-side-crop.png)
 
 This is a useful compromise, not semantic parity. The screen-space lines are softer than
-Freestyle, and false-positive detections remain present even though they are less dominant.
+Freestyle, and false-positive detections remain present even though they are less dominant. A
+50% blend preserved more shading but looked noticeably soft; 65% was intermediate. The 75%
+result recovered 88.20% of Freestyle's changed pixels at the report threshold while preserving
+the narrow-part highlights that the opaque pass erased.
+
 A one-pixel erosion was also tested and rejected: it removed isolated one-pixel contours,
 reduced overlap with Freestyle from 96.25% to 46.41%, and left broken or asymmetric outlines.
 
@@ -68,7 +73,7 @@ The implementation and mitigation follow Blender's documented compositor behavio
 - The compositor [can run on the GPU](https://docs.blender.org/manual/en/latest/compositing/sidebar.html#performance).
 - The Mix node's [Factor controls interpolation between its A and B inputs](https://docs.blender.org/manual/en/5.0/compositing/types/color/mix/mix_color.html).
 - Negative Dilate/Erode size [shrinks the mask](https://docs.blender.org/manual/en/4.5/compositing/types/filter/dilate_erode.html), and Step mode uses the minimum value in a square neighborhood for erosion. This matches the observed loss of thin contours.
-- Blender's [Anti-Aliasing node](https://docs.blender.org/manual/en/5.0/compositing/types/filter/anti_aliasing.html) can smooth jagged mask edges. It does not change which pixels the depth/normal test classifies, so it cannot by itself prevent overlapping bands from covering a thin part.
+- Blender's [Anti-Aliasing node](https://docs.blender.org/manual/en/5.0/compositing/types/filter/anti_aliasing.html) smooths the binary mask's jagged edges. It does not change which pixels the depth/normal test classifies, so the opacity blend is still needed to keep overlapping bands from blacking out a thin part.
 
 `tools/compare_edge_renders.py` regenerates the paired views, overlay, and `metrics.json` from
 the three source renders.
