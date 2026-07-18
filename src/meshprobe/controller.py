@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.camera import camera_diagnostics, orbit_camera
@@ -557,7 +557,11 @@ class BlenderController:
             vertical_half_tan = math.tan(math.radians(vertical_fov / 2))
             corners = BlenderController._bounds_corners(bounds)
             offsets = [
-                tuple(corner[axis] - target_mm[axis] for axis in range(3)) for corner in corners
+                cast(
+                    tuple[float, float, float],
+                    tuple(corner[axis] - target_mm[axis] for axis in range(3)),
+                )
+                for corner in corners
             ]
             depths = [BlenderController._dot(offset, diagnostics.forward) for offset in offsets]
             framing_distance = max(
