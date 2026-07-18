@@ -15,9 +15,10 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 from meshprobe.artifacts import ArtifactCache, JsonValue
+from meshprobe.camera import camera_diagnostics, orbit_camera
 from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
 from meshprobe.models import (
     Bounds,
@@ -484,9 +485,17 @@ class BlenderController:
         unknown = set(focus_ids) - known_ids
         if unknown:
             raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
-        center, span = self._bounds_center_span(self._focus_bounds(focus_ids))
+        bounds = self._focus_bounds(focus_ids)
+        center, _ = self._bounds_center_span(bounds)
         projection, distance = self._frame_camera(
-            command.projection, span, command.aspect_ratio, command.margin
+            command.projection,
+            bounds,
+            center,
+            command.azimuth_degrees,
+            command.elevation_degrees,
+            command.roll_degrees,
+            command.aspect_ratio,
+            command.margin,
         )
         return self.execute(
             ViewOrbitCommand(
@@ -506,10 +515,15 @@ class BlenderController:
     @staticmethod
     def _frame_camera(
         projection: Projection,
-        span: float,
+        bounds: Bounds,
+        target_mm: tuple[float, float, float],
+        azimuth_degrees: float,
+        elevation_degrees: float,
+        roll_degrees: float,
         aspect_ratio: float,
         margin: float,
     ) -> tuple[Projection, float]:
+        _, span = BlenderController._bounds_center_span(bounds)
         half_span = span / 2
         if isinstance(projection, OrthographicProjection):
             # Orthographic framing is set by scale_mm, not distance, so the distance only has
@@ -522,23 +536,69 @@ class BlenderController:
                 update={"scale_mm": span * margin / min(aspect_ratio, 1.0)}
             )
         else:
-            framing_fov = min(
-                projection.horizontal_fov_degrees(aspect_ratio),
-                projection.vertical_fov_degrees(aspect_ratio),
+            camera = orbit_camera(
+                target_mm=target_mm,
+                azimuth_degrees=azimuth_degrees,
+                elevation_degrees=elevation_degrees,
+                roll_degrees=roll_degrees,
+                distance_mm=1.0,
+                projection=projection,
             )
-            # half_span is the bounding sphere radius (half the AABB diagonal), so fit it with
-            # sin, not tan: tan assumes the whole span sits flat on the target plane and
-            # under-shoots the distance needed to keep an off-axis box's near corner (which
-            # projects larger, closer to the camera) inside the frustum.
-            framing_distance = half_span / math.sin(math.radians(framing_fov / 2)) * margin
-        # A very wide FOV can drive framing_distance below the bounds radius, putting the camera
-        # inside/behind the target, and a caller-supplied near clip can sit in front of the
-        # bounds. Keep the camera a full span outside the bounds AND past its own near plane.
-        distance = max(framing_distance, span, projection.near_clip_mm + half_span, 1.0)
-        required_far_clip_mm = distance + span
+            diagnostics = camera_diagnostics(
+                camera,
+                target_mm=target_mm,
+                aspect_ratio=aspect_ratio,
+            )
+            horizontal_fov = diagnostics.horizontal_fov_degrees
+            vertical_fov = diagnostics.vertical_fov_degrees
+            if horizontal_fov is None or vertical_fov is None:
+                raise BlenderWorkerError("perspective camera did not report a field of view")
+            horizontal_half_tan = math.tan(math.radians(horizontal_fov / 2))
+            vertical_half_tan = math.tan(math.radians(vertical_fov / 2))
+            corners = BlenderController._bounds_corners(bounds)
+            offsets = [
+                cast(
+                    tuple[float, float, float],
+                    tuple(corner[axis] - target_mm[axis] for axis in range(3)),
+                )
+                for corner in corners
+            ]
+            depths = [BlenderController._dot(offset, diagnostics.forward) for offset in offsets]
+            framing_distance = max(
+                max(
+                    abs(BlenderController._dot(offset, diagnostics.right))
+                    * margin
+                    / horizontal_half_tan
+                    - depth,
+                    abs(BlenderController._dot(offset, diagnostics.up)) * margin / vertical_half_tan
+                    - depth,
+                )
+                for offset, depth in zip(offsets, depths, strict=True)
+            )
+            # Keep the near face in front of the camera and behind any caller-supplied near
+            # clip. Unlike the old bounding-sphere floor, this only accounts for the actual
+            # closest corner, so depth behind the target no longer adds needless padding.
+            distance = max(framing_distance, projection.near_clip_mm - min(depths), 1.0)
+            required_far_clip_mm = distance + max(depths)
+        if isinstance(projection, OrthographicProjection):
+            distance = max(framing_distance, span, projection.near_clip_mm + half_span, 1.0)
+            required_far_clip_mm = distance + span
         if projection.far_clip_mm <= required_far_clip_mm:
             projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
         return projection, distance
+
+    @staticmethod
+    def _bounds_corners(bounds: Bounds) -> tuple[tuple[float, float, float], ...]:
+        return tuple(
+            (x, y, z)
+            for x in (bounds.minimum_mm[0], bounds.maximum_mm[0])
+            for y in (bounds.minimum_mm[1], bounds.maximum_mm[1])
+            for z in (bounds.minimum_mm[2], bounds.maximum_mm[2])
+        )
+
+    @staticmethod
+    def _dot(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+        return sum(first * second for first, second in zip(left, right, strict=True))
 
     @staticmethod
     def _state_operation_result(command: Command, snapshot: SessionSnapshot) -> dict[str, object]:
