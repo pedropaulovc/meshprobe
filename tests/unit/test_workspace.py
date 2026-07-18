@@ -16,6 +16,7 @@ from meshprobe.models import (
     EnvironmentMap,
     GraphicsDeviceClass,
     GraphicsPlatform,
+    PerspectiveProjection,
     RenderStyle,
     RenderStyleState,
     SceneManifest,
@@ -32,6 +33,7 @@ from meshprobe.protocol import (
     SessionResetCommand,
     SessionSnapshotCommand,
     ViewFrameCommand,
+    ViewRotateCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -79,7 +81,7 @@ class FakeSessionService:
                 component.model_dump(mode="json")
                 for component in ComponentIndex(self.manifest).find(command.selector)
             ]
-        elif isinstance(command, ViewFrameCommand):
+        elif isinstance(command, (ViewFrameCommand, ViewRotateCommand)):
             assert self.session is not None
             result = {"state_sha256": self.session.snapshot().state_sha256}
         elif isinstance(command, SessionResetCommand):
@@ -524,6 +526,102 @@ def test_render_image_reads_framing_aspect_from_the_last_refit_not_the_snapshot(
         ),
     )
     assert receipt.warnings == ()
+
+
+def test_view_rotate_with_a_projection_updates_the_tracked_framing_aspect(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    # A view.rotate that supplies its own projection replaces the camera projection, so it
+    # reframes at its aspect_ratio (unlike a bare rotate, which only nudges the pose). The
+    # warning must adopt that 2.0 as the new framing, so a matching 2:1 render stays quiet
+    # even though an earlier view.frame framed for 1.0.
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        ViewFrameCommand(
+            request_id="frame-square",
+            op="view.frame",
+            focus_component_ids=(scene_manifest.components[0].id,),
+            aspect_ratio=1.0,
+        ),
+    )
+    manager.execute(
+        "review",
+        ViewRotateCommand(
+            request_id="rotate-wide",
+            op="view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=15,
+            projection=PerspectiveProjection(),
+            aspect_ratio=2.0,
+        ),
+    )
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matches-rotate",
+            op="render.image",
+            output_path=str(tmp_path / "matches-rotate.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+    assert receipt.warnings == ()
+
+
+def test_bare_view_rotate_does_not_change_the_tracked_framing_aspect(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    # A bare view.rotate (no projection) reuses the current projection, so its aspect_ratio
+    # must NOT be read as the framing aspect: the framing stays the view.frame's 2.0, and a
+    # square render still warns even though the bare rotate carried a 1.0 default.
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        ViewFrameCommand(
+            request_id="frame-wide",
+            op="view.frame",
+            focus_component_ids=(scene_manifest.components[0].id,),
+            aspect_ratio=2.0,
+        ),
+    )
+    manager.execute(
+        "review",
+        ViewRotateCommand(
+            request_id="rotate-bare",
+            op="view.rotate",
+            target_mm=(0, 0, 0),
+            axis="z",
+            degrees=15,
+        ),
+    )
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="square-after-bare-rotate",
+            op="render.image",
+            output_path=str(tmp_path / "square-after-bare-rotate.png"),
+            width=512,
+            height=512,
+        ),
+    )
+    assert len(receipt.warnings) == 1
+    assert "framed for aspect ratio 2" in receipt.warnings[0]
 
 
 def test_recreated_worker_resets_durable_render_style(

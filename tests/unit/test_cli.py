@@ -233,6 +233,26 @@ def test_occlusion_command_uses_current_camera_query(monkeypatch: pytest.MonkeyP
     assert command.max_samples_per_component == 512
 
 
+def test_raw_render_still_surfaces_receipt_warnings_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --raw emits only the operation result JSON on stdout, but receipt warnings (e.g. the
+    # aspect-ratio mismatch) must still reach the user on stderr rather than being silently
+    # dropped by the raw early return.
+    client = FakeClient()
+    client.warnings = ("render.image requested 512x512 (aspect ratio 1), but ...",)
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "--raw", "render-image", "--width", "512", "--height", "512"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "warning: render.image requested 512x512" in result.stderr
+    assert "warning:" not in result.stdout
+
+
 def test_occlusion_command_expands_glob_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
@@ -507,6 +527,7 @@ class FakeClient:
         self.killed: list[str] = []
         self.match_count: int | None = None
         self.find_results: list[object] | None = None
+        self.warnings: tuple[str, ...] = ()
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
         self.commands.append(command)
@@ -517,6 +538,7 @@ class FakeClient:
             result_path=f".meshprobe/sessions/{session}/results/result.json",
             state_path=f".meshprobe/sessions/{session}/state.yml",
             match_count=self.match_count if isinstance(command, ComponentFindCommand) else None,
+            warnings=self.warnings,
         )
 
     GLOB_COMPONENTS = (

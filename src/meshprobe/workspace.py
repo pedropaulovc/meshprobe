@@ -57,12 +57,23 @@ STATE_OPERATIONS = frozenset(
     }
 )
 
-# The ops that refit the camera to an aspect ratio, so their aspect_ratio is the
-# intended framing. view.move/view.rotate reuse the current projection without
-# refitting, so their aspect_ratio only feeds diagnostics and must NOT be read as
-# the framing aspect — a bare move after a wide orbit would otherwise reset the
-# tracked framing to its 1.0 default and false-warn a matching render.
+# The ops that always refit the camera to an aspect ratio, so their aspect_ratio is
+# the intended framing. view.move/view.rotate reuse the current projection without
+# refitting, so their aspect_ratio only feeds diagnostics and must NOT be read as the
+# framing aspect — a bare move/rotate after a wide orbit would otherwise reset the
+# tracked framing to its 1.0 default and false-warn a matching render. The exception is
+# a view.rotate that carries its own projection (see _refits_camera): that replaces the
+# projection, so it reframes at the given aspect just like the always-framing ops.
 FRAMING_OPERATIONS = frozenset({"view.set", "view.orbit", "view.frame"})
+
+
+def _refits_camera(command: dict[str, Any]) -> bool:
+    op = command.get("op")
+    if op in FRAMING_OPERATIONS:
+        return True
+    # A bare view.rotate reuses the current projection (a nudge, like view.move); one that
+    # supplies a projection replaces it, reframing at the command's aspect_ratio.
+    return op == "view.rotate" and command.get("projection") is not None
 
 
 class RendererContinuity(StrEnum):
@@ -747,15 +758,15 @@ class SessionManager:
     @staticmethod
     def _framed_aspect_ratio(files: SessionFiles) -> float:
         # The framing aspect is the aspect_ratio of the last command that refit the camera
-        # (see FRAMING_OPERATIONS); the snapshot's camera_diagnostics.aspect_ratio can't be
-        # used because view.move/view.rotate overwrite it with their own default while
+        # (see _refits_camera); the snapshot's camera_diagnostics.aspect_ratio can't be used
+        # because view.move and bare view.rotate overwrite it with their own default while
         # leaving the projection framed as before. Defaults to 1.0 (the framing a freshly
         # opened session's camera carries) when nothing has refit the camera yet.
         checkpoint, _ = _upgrade_checkpoint(
             SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         for raw in reversed(checkpoint.accepted_commands):
-            if raw.get("op") in FRAMING_OPERATIONS:
+            if _refits_camera(raw):
                 return float(raw.get("aspect_ratio", 1.0))
         return 1.0
 

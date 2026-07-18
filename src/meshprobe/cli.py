@@ -752,6 +752,11 @@ def _camera_with_depth_of_field(
     return camera.model_copy(update={"projection": projection})
 
 
+def _emit_warnings(receipt: OperationReceipt) -> None:
+    for warning in receipt.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+
+
 def _emit_receipt(
     ctx: typer.Context,
     client: MeshProbeClient,
@@ -768,6 +773,9 @@ def _emit_receipt(
         envelope = client.read_result(receipt)
         result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
+        # Warnings go to stderr, so they still surface without corrupting the raw JSON on
+        # stdout — a raw render-image must not silently drop its aspect-ratio warning.
+        _emit_warnings(receipt)
         return
     match_count = receipt.match_count
     if match_count is None and receipt.op == "component.find" and receipt.result_path:
@@ -789,8 +797,7 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     if match_count == 0:
         typer.echo("warning: no components matched", err=True)
-    for warning in receipt.warnings:
-        typer.echo(f"warning: {warning}", err=True)
+    _emit_warnings(receipt)
     for component in receipt.components:
         typer.echo(
             f"component: {component.ref} {component.name} ({component.path}) id={component.id}"
@@ -815,6 +822,8 @@ def _emit_receipts(
             envelope = client.read_result(receipt)
             results.append(envelope.get("result") if isinstance(envelope, dict) else envelope)
         _emit({"results": results})
+        for receipt in receipts:
+            _emit_warnings(receipt)
         return
     for receipt in receipts:
         _emit_receipt(ctx, client, receipt)
