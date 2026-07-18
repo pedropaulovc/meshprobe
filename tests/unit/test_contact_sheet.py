@@ -3,9 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
-from meshprobe.contact_sheet import _caption_line_caps, compose_contact_sheet
+from meshprobe.contact_sheet import (
+    _CAPTION_TRUNCATION_NOTE,
+    _caption_line_caps,
+    _prepare_caption_lines,
+    compose_contact_sheet,
+)
 from meshprobe.models import ContactSheetCallout
 from meshprobe.protocol import RenderContactSheetCommand
 
@@ -140,6 +145,43 @@ def test_compose_contact_sheet_preserves_default_occluder_removal_caption(
     at_default_budget = build_sheet("at-default", default_budget)
     one_below_default_budget = build_sheet("below-default", default_budget - 1)
     assert at_default_budget.height > one_below_default_budget.height
+
+
+def test_prepare_caption_lines_keeps_every_short_entry_visible_when_one_is_long() -> None:
+    # A single overlong entry (a display_name pulled straight from an imported
+    # asset's node name, which can be a deep, unbroken CAD hierarchy path)
+    # used to wrap across several physical lines and, under the fixed caption
+    # cap, silently push its shorter sibling entries out of the image
+    # entirely even though every one of them was genuinely removed.
+    font = ImageFont.load_default(size=30)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    width = 1188  # panel_width(1200) - 12, matching compose_contact_sheet's wrap width
+
+    long_name = (
+        "Assembly_Main/SubAssy_DriveTrain/SubAssy_GearBox_v2/"
+        "Component_HelicalGear48Teeth_Left_Instance003"
+    )
+    caption = f"Occluders removed:\n1. {long_name}\n2. Bracket_Mounting_Left\n3. Housing_Cover_Top"
+
+    lines = _prepare_caption_lines(draw, caption, font, width, max_lines=4)
+
+    assert any("Bracket_Mounting_Left" in line for line in lines)
+    assert any("Housing_Cover_Top" in line for line in lines)
+    assert any(line.startswith("1.") and line.endswith("…") for line in lines)
+    assert lines[-1] == _CAPTION_TRUNCATION_NOTE
+
+
+def test_prepare_caption_lines_adds_no_note_when_nothing_is_truncated() -> None:
+    font = ImageFont.load_default(size=30)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    width = 1188
+
+    caption = "Occluders removed:\n1. blocker-1\n2. blocker-2\n3. blocker-3"
+
+    lines = _prepare_caption_lines(draw, caption, font, width, max_lines=4)
+
+    assert _CAPTION_TRUNCATION_NOTE not in lines
+    assert lines == ("Occluders removed:", "1. blocker-1", "2. blocker-2", "3. blocker-3")
 
 
 def test_compose_contact_sheet_caps_caption_growth_at_default_panel_size(tmp_path: Path) -> None:

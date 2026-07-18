@@ -43,6 +43,9 @@ def _caption_line_caps(panel_height: int) -> tuple[int, int, int]:
     )
 
 
+_CAPTION_TRUNCATION_NOTE = "(see render metadata for full text)"
+
+
 def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
     """Bound how many lines a caption band contributes, so an arbitrarily long
     component display name or callout legend cannot grow the composed sheet past
@@ -80,6 +83,51 @@ def _wrap_text(
     return tuple(lines)
 
 
+def _prepare_caption_lines(
+    draw: ImageDraw.ImageDraw,
+    caption: str,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    width: int,
+    max_lines: int,
+) -> tuple[str, ...]:
+    """Wrap `caption` for the caption band, capped at `max_lines`.
+
+    A caption with multiple `\\n`-separated entries (e.g. one line per removed
+    occluder) is treated specially: each entry is truncated to at most ONE
+    physical line instead of being allowed to wrap across several, so one
+    long entry can't consume the whole line budget and crowd its siblings out
+    of view entirely (the ellipsis on an entry still marks that entry as cut).
+    When anything was cut this way — an entry truncated, or more entries exist
+    than fit — an extra note line is appended pointing at the untruncated data
+    (`panel.caption` in the render result always holds every entry in full;
+    only what's burned into the image can be capped). The note is added ON TOP
+    of `max_lines`, never by displacing an entry that would otherwise have
+    fit — the point is to never silently drop a default-budget entry just to
+    make room for the note. A single-paragraph caption with no `\\n` keeps the
+    previous plain wrap-then-cap behavior, since there are no sibling entries
+    it could crowd out.
+    """
+    paragraphs = caption.splitlines() or [""]
+    if len(paragraphs) <= 1:
+        return _cap_lines(_wrap_text(draw, caption, font, width), max_lines)
+    single_line_paragraphs: list[str] = []
+    any_entry_truncated = False
+    for paragraph in paragraphs:
+        wrapped = _wrap_text(draw, paragraph, font, width)
+        if len(wrapped) > 1:
+            single_line_paragraphs.append(f"{wrapped[0].rstrip()}…")
+            any_entry_truncated = True
+        else:
+            single_line_paragraphs.append(wrapped[0] if wrapped else "")
+    count_truncated = len(single_line_paragraphs) > max_lines
+    if not any_entry_truncated and not count_truncated:
+        return tuple(single_line_paragraphs)
+    shown = single_line_paragraphs[:max_lines]
+    if count_truncated and shown and not shown[-1].endswith("…"):
+        shown = [*shown[:-1], f"{shown[-1].rstrip()}…"]
+    return (*shown, _CAPTION_TRUNCATION_NOTE)
+
+
 def compose_contact_sheet(
     panels: tuple[tuple[Path, str, tuple[ContactSheetCallout, ...]], ...],
     output_path: Path,
@@ -99,14 +147,15 @@ def compose_contact_sheet(
     panel_caption_line_counts: list[int] = []
     for panel_index, (_path, caption, callouts) in enumerate(panels):
         numbered_caption = f"{panel_index + 1}. {caption}"
-        caption_lines = _wrap_text(measuring_draw, numbered_caption, font, panel_width - 12)
         # Cap the caption and the legend separately so a legitimate default-sized
         # caption (e.g. the focused sheet's "Occluders removed:" header plus one
         # line per removed blocker, up to occluder_budget's default of 3) is never
         # truncated by an unrelated long callout legend; only each band's own
         # pathological growth (a very long display name, a very long legend) gets
         # truncated.
-        capped_caption_lines = _cap_lines(caption_lines, max_caption_lines)
+        capped_caption_lines = _prepare_caption_lines(
+            measuring_draw, numbered_caption, font, panel_width - 12, max_caption_lines
+        )
         lines = list(capped_caption_lines)
         if callouts:
             legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
