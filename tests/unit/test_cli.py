@@ -856,12 +856,13 @@ def test_view_rotate_accepts_camera_frame_and_rejects_component(
     assert component.exit_code == 2
     assert "component" in component.output
 
-    # --help advertises exactly the honored frames; it no longer promises component.
+    # --help advertises exactly the honored --frame choices; it no longer promises
+    # component there (the word can still appear elsewhere, e.g. --focus's
+    # view-frame disclaimer).
     help_result = runner.invoke(app, ["view-rotate", "--help"])
     help_text = " ".join(unstyle(help_result.stdout).replace("│", " ").split())
     assert "camera" in help_text
-    assert "source|world|camera" in help_text
-    assert "component" not in help_text
+    assert "[source|world|camera]" in help_text
 
 
 def test_view_frame_builds_component_framing_command(monkeypatch: pytest.MonkeyPatch) -> None:
