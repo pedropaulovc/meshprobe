@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.models import (
+    UNIT_SUSPICION_WARNING_CODES,
     Camera,
     CameraOrbitAngles,
     DisplayMode,
@@ -106,6 +107,7 @@ class SessionCheckpoint(BaseModel):
     blender: str | None
     state_sha256: str
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
+    unit_scale: float = 1.0
 
 
 def _upgrade_checkpoint(checkpoint: SessionCheckpoint) -> tuple[SessionCheckpoint, bool]:
@@ -408,6 +410,7 @@ class SessionManager:
         *,
         request_id: str = "open",
         blender: str | None = None,
+        unit_scale: float = 1.0,
     ) -> OperationReceipt:
         with self._lock:
             files = SessionFiles(self.root, name)
@@ -416,6 +419,7 @@ class SessionManager:
                 request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
+                unit_scale=unit_scale,
             )
             service = self._new_service(selected_blender)
             try:
@@ -448,6 +452,7 @@ class SessionManager:
                 source_sha256=manifest.source_sha256,
                 blender=selected_blender,
                 state_sha256=snapshot.state_sha256,
+                unit_scale=command.unit_scale,
             )
             atomic_json(files.metadata, metadata.model_dump(mode="json"))
             atomic_json(files.scene, manifest.model_dump(mode="json"))
@@ -457,7 +462,13 @@ class SessionManager:
             result_path = self._write_result(files, command.request_id, response)
             self._event(files, command, "accepted", result_path=result_path)
             graphics = getattr(service, "graphics", None)
-            warnings = graphics.warnings if graphics is not None else ()
+            graphics_warnings = graphics.warnings if graphics is not None else ()
+            unit_warnings = tuple(
+                warning.message
+                for warning in manifest.warnings
+                if warning.code in UNIT_SUSPICION_WARNING_CODES
+            )
+            warnings = unit_warnings + graphics_warnings
             self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 
@@ -474,6 +485,7 @@ class SessionManager:
                 Path(command.source_path),
                 request_id=command.request_id,
                 blender=blender,
+                unit_scale=command.unit_scale,
             )
         with self._lock:
             files = self._require_files(name)
@@ -713,6 +725,7 @@ class SessionManager:
                     request_id="recover-open",
                     op="scene.open",
                     source_path=checkpoint.source_path,
+                    unit_scale=checkpoint.unit_scale,
                 )
             )
             manifest = SceneManifest.model_validate(opened.result)

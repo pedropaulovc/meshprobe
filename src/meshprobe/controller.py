@@ -162,6 +162,7 @@ class BlenderController:
         self.graphics: GraphicsPlatform | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
+        self._unit_scale: float = 1.0
         self._manifest: SceneManifest | None = None
         self._source_snapshot: SourceSnapshot | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
@@ -271,23 +272,30 @@ class BlenderController:
             raise BlenderWorkerError("worker returned a non-object result")
         return result
 
-    def open_scene(self, source_path: str | Path) -> SceneManifest:
+    def open_scene(self, source_path: str | Path, *, unit_scale: float = 1.0) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
         before = snapshot_source(source)
         self._source_path = None
         self._source_sha256 = None
+        self._unit_scale = unit_scale
         self._manifest = None
         self._source_snapshot = None
         self._accepted_commands.clear()
         try:
             result = self.request(
-                "scene.open", source_path=str(source), source_sha256=before.sha256
+                "scene.open",
+                source_path=str(source),
+                source_sha256=before.sha256,
+                unit_scale=unit_scale,
             )
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self.close()
             self.start()
             result = self.request(
-                "scene.open", source_path=str(source), source_sha256=before.sha256
+                "scene.open",
+                source_path=str(source),
+                source_sha256=before.sha256,
+                unit_scale=unit_scale,
             )
         after_import = snapshot_source(source)
         if before != after_import:
@@ -320,6 +328,7 @@ class BlenderController:
             "include_cameras": False,
             "include_lights": False,
             "units": "meter",
+            "unit_scale": self._unit_scale,
         }
 
         def write_outputs(payload: Path) -> None:
@@ -329,7 +338,12 @@ class BlenderController:
             except (BlenderWorkerCrashed, BlenderWorkerTimeout):
                 self.close()
                 self.start()
-                self.request("scene.open", source_path=str(source), source_sha256=source_sha256)
+                self.request(
+                    "scene.open",
+                    source_path=str(source),
+                    source_sha256=source_sha256,
+                    unit_scale=self._unit_scale,
+                )
                 self.request("scene.export_normalized", output_path=str(output))
 
         entry = self._artifact_cache.publish(
@@ -360,7 +374,7 @@ class BlenderController:
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
-            return self.open_scene(command.source_path)
+            return self.open_scene(command.source_path, unit_scale=command.unit_scale)
         if isinstance(command, (ComponentFindCommand, ComponentInspectCommand)):
             if self._manifest is None:
                 raise BlenderWorkerError("cannot inspect components before a scene is open")
@@ -1452,7 +1466,7 @@ class BlenderController:
         accepted_commands = list(self._accepted_commands)
         self.close()
         self.start()
-        reopened = self.open_scene(source_path)
+        reopened = self.open_scene(source_path, unit_scale=self._unit_scale)
         if reopened.source_sha256 != source_sha256:
             self.close()
             self._source_path = None
