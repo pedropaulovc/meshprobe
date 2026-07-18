@@ -242,6 +242,35 @@ def test_camera_diagnostics_return_basis_frustum_and_target_depth(
     assert far_depths == pytest.approx([1_000] * 4)
 
 
+@pytest.mark.parametrize(
+    ("aspect_ratio", "expected_half_width", "expected_half_height"),
+    [
+        (16 / 9, 100.0, 56.25),
+        (1 / 4, 25.0, 100.0),
+    ],
+)
+def test_orthographic_camera_diagnostics_match_blender_auto_sensor_fit(
+    aspect_ratio: float,
+    expected_half_width: float,
+    expected_half_height: float,
+) -> None:
+    camera = orbit_camera(
+        target_mm=(0, 0, 0),
+        azimuth_degrees=0,
+        elevation_degrees=0,
+        roll_degrees=0,
+        distance_mm=500,
+        projection=OrthographicProjection(scale_mm=200, near_clip_mm=1, far_clip_mm=1_000),
+    )
+
+    diagnostics = camera_diagnostics(camera, target_mm=(0, 0, 0), aspect_ratio=aspect_ratio)
+    near_corners = diagnostics.frustum_corners_mm[:4]
+
+    for corner in near_corners:
+        assert abs(corner[1]) == pytest.approx(expected_half_width)
+        assert abs(corner[2]) == pytest.approx(expected_half_height)
+
+
 def test_camera_diagnostics_reject_source_frame_without_a_scene_transform() -> None:
     camera = Camera(
         pose=Pose(
