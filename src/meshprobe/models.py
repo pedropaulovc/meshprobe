@@ -739,6 +739,7 @@ class RenderEngine(StrEnum):
 class RenderStyle(StrEnum):
     SHADED = "shaded"
     SHADED_EDGES = "shaded_edges"
+    SCREEN_EDGES = "screen_edges"
 
 
 class EdgeType(StrEnum):

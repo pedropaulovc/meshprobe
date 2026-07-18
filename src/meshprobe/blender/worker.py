@@ -1704,7 +1704,7 @@ def configure_render_style(command: dict[str, Any]) -> None:
     scene = bpy.context.scene
     style = command.get("style", "shaded")
     scene.render.use_freestyle = style == "shaded_edges"
-    if style == "shaded":
+    if style in {"shaded", "screen_edges"}:
         return
     if style != "shaded_edges":
         raise ValueError(f"unknown render style: {style}")
@@ -1846,6 +1846,112 @@ def render_still(path: Path) -> None:
     bpy.ops.render.render(write_still=True)
     if not path.is_file():
         raise RuntimeError(f"Blender did not publish render output: {path}")
+
+
+def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
+    """Render an experimental GPU compositor depth/normal edge pass."""
+
+    scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
+    original_group = scene.compositing_node_group
+    original_compositor_device = scene.render.compositor_device
+    original_pass_z = view_layer.use_pass_z
+    original_pass_normal = view_layer.use_pass_normal
+    group = bpy.data.node_groups.new(f"MeshProbeScreenEdges-{path.stem}", "CompositorNodeTree")
+    scene.compositing_node_group = group
+    scene.render.compositor_device = "GPU"
+    view_layer.use_pass_z = True
+    view_layer.use_pass_normal = True
+
+    render_layers = group.nodes.new("CompositorNodeRLayers")
+
+    normalized_depth = group.nodes.new("CompositorNodeNormalize")
+    depth_sobel = group.nodes.new("CompositorNodeFilter")
+    depth_sobel.inputs["Type"].default_value = "Sobel"
+    depth_luminance = group.nodes.new("CompositorNodeRGBToBW")
+    depth_threshold = group.nodes.new("ShaderNodeMath")
+    depth_threshold.operation = "GREATER_THAN"
+    depth_threshold.inputs[1].default_value = 0.01
+    group.links.new(render_layers.outputs["Depth"], normalized_depth.inputs["Value"])
+    group.links.new(normalized_depth.outputs["Value"], depth_sobel.inputs["Image"])
+    group.links.new(depth_sobel.outputs["Image"], depth_luminance.inputs["Image"])
+    group.links.new(depth_luminance.outputs["Val"], depth_threshold.inputs[0])
+
+    normal_sobel = group.nodes.new("CompositorNodeFilter")
+    normal_sobel.inputs["Type"].default_value = "Sobel"
+    normal_luminance = group.nodes.new("CompositorNodeRGBToBW")
+    normal_threshold = group.nodes.new("ShaderNodeMath")
+    normal_threshold.operation = "GREATER_THAN"
+    normal_threshold.inputs[1].default_value = 0.3
+    group.links.new(render_layers.outputs["Normal"], normal_sobel.inputs["Image"])
+    group.links.new(normal_sobel.outputs["Image"], normal_luminance.inputs["Image"])
+    group.links.new(normal_luminance.outputs["Val"], normal_threshold.inputs[0])
+
+    combined = group.nodes.new("ShaderNodeMath")
+    combined.operation = "MAXIMUM"
+    group.links.new(depth_threshold.outputs["Value"], combined.inputs[0])
+    group.links.new(normal_threshold.outputs["Value"], combined.inputs[1])
+
+    mask_output = combined.outputs["Value"]
+    dilation_size = max(0, round(float(settings["line_width"]) - 1.0))
+    if dilation_size:
+        dilate = group.nodes.new("CompositorNodeDilateErode")
+        dilate.inputs["Size"].default_value = dilation_size
+        group.links.new(mask_output, dilate.inputs["Mask"])
+        mask_output = dilate.outputs["Mask"]
+
+    line_color = group.nodes.new("CompositorNodeRGB")
+    color = settings["line_color"]
+    line_color.outputs["Color"].default_value = (
+        *(
+            srgb_channel_to_linear(int(color[offset : offset + 2], 16))
+            for offset in (1, 3, 5)
+        ),
+        1.0,
+    )
+    mix = group.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    group.links.new(mask_output, mix.inputs[0])
+    group.links.new(render_layers.outputs["Image"], mix.inputs[6])
+    group.links.new(line_color.outputs["Color"], mix.inputs[7])
+
+    file_output = group.nodes.new("CompositorNodeOutputFile")
+    file_output.directory = str(path.parent)
+    file_output.file_name = f"{path.stem}.screen-edges"
+    file_output.use_file_extension = True
+    file_output.file_output_items.new("RGBA", "Image")
+    group.links.new(mix.outputs[2], file_output.inputs["Image"])
+
+    prefix = f"{path.stem}.screen-edges"
+    before = {
+        candidate: file_version(candidate)
+        for candidate in path.parent.glob(f"{prefix}*.exr")
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        bpy.ops.render.render()
+    finally:
+        scene.compositing_node_group = original_group
+        scene.render.compositor_device = original_compositor_device
+        view_layer.use_pass_z = original_pass_z
+        view_layer.use_pass_normal = original_pass_normal
+        bpy.data.node_groups.remove(group)
+    candidates = [
+        candidate
+        for candidate in path.parent.glob(f"{prefix}*.exr")
+        if candidate not in before or file_version(candidate) != before[candidate]
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            f"expected one fresh screen-edge output for {prefix}, found "
+            f"{sorted(candidate.name for candidate in candidates)}"
+        )
+    composited = bpy.data.images.load(str(candidates[0]), check_existing=False)
+    try:
+        composited.save_render(str(path), scene=scene)
+    finally:
+        bpy.data.images.remove(composited)
+        candidates[0].unlink(missing_ok=True)
 
 
 def luminance_summary(path: Path) -> dict[str, float]:
@@ -2200,7 +2306,10 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         backdrop = display_referred_background()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
-        render_still(output)
+        if command.get("style") == "screen_edges":
+            render_screen_edges(output, command["shaded_edges"])
+        else:
+            render_still(output)
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
