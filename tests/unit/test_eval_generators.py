@@ -222,7 +222,9 @@ def test_public_answer_schema_names_every_scored_field(tmp_path: Path) -> None:
         "target_component_path",
     }
     for episode in episodes:
-        value_schema = episode.spec.answer_schema["properties"]["values"]
+        properties_schema = episode.spec.answer_schema["properties"]
+        assert isinstance(properties_schema, dict)
+        value_schema = properties_schema["values"]
         assert isinstance(value_schema, dict)
         properties = value_schema["properties"]
         assert isinstance(properties, dict)
@@ -233,7 +235,9 @@ def test_public_answer_schema_names_every_scored_field(tmp_path: Path) -> None:
 def test_every_operation_has_positive_negative_and_adversarial_episodes(
     tmp_path: Path,
 ) -> None:
-    coverage = {operation: set() for operation in EVALUATED_OPERATIONS}
+    coverage: dict[Operation, set[EpisodeClass]] = {
+        operation: set() for operation in EVALUATED_OPERATIONS
+    }
     for family in GeneratorFamily:
         for seed in (0, 1):
             model = publish_model(build_model(family, seed), tmp_path)

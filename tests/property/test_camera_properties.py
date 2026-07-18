@@ -24,6 +24,8 @@ from meshprobe.models import (
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
+    Quaternion,
+    Vec3,
 )
 
 finite = st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False)
@@ -109,7 +111,7 @@ def test_orbit_angles_are_target_and_distance_independent() -> None:
     )
 
 
-def _local_change(orientation, world_axis, angle):
+def _local_change(orientation: Quaternion, world_axis: Vec3, angle: float) -> Quaternion:
     world_rotation = _axis_angle(world_axis, angle)
     rotated = _multiply_quaternions(world_rotation, orientation)
     conjugate = (-orientation[0], -orientation[1], -orientation[2], orientation[3])

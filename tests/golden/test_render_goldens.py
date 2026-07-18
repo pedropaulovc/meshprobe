@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PIL import Image, ImageChops, ImageFilter, ImageStat
@@ -108,7 +109,10 @@ def semantic_component_mask(
         color: role_by_id[component_id] for component_id, color in component_colors.items()
     }
     with Image.open(component_image) as source:
-        pixels = tuple(source.convert("RGB").get_flattened_data())
+        pixels = cast(
+            "tuple[tuple[int, int, int], ...]",
+            tuple(source.convert("RGB").get_flattened_data()),
+        )
         size = source.size
     semantic = Image.new("L", size)
     semantic.putdata(tuple(color_roles.get(pixel, 0) for pixel in pixels))
@@ -138,9 +142,15 @@ def srgb_to_lab(pixel: tuple[int, int, int]) -> tuple[float, float, float]:
 
 def delta_e_values(observed: Image.Image, expected: Image.Image) -> list[float]:
     deltas = []
+    observed_pixels = cast(
+        "tuple[tuple[int, int, int], ...]", tuple(observed.convert("RGB").get_flattened_data())
+    )
+    expected_pixels = cast(
+        "tuple[tuple[int, int, int], ...]", tuple(expected.convert("RGB").get_flattened_data())
+    )
     for observed_pixel, expected_pixel in zip(
-        observed.convert("RGB").get_flattened_data(),
-        expected.convert("RGB").get_flattened_data(),
+        observed_pixels,
+        expected_pixels,
         strict=True,
     ):
         observed_lab = srgb_to_lab(observed_pixel)
@@ -276,7 +286,7 @@ def test_display_referred_background_renders_exact_srgb(tmp_path: Path) -> None:
                 rgb = image.convert("RGB")
                 width, height = rgb.size
                 return {
-                    rgb.getpixel(corner)
+                    cast("tuple[int, int, int]", rgb.getpixel(corner))
                     for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))
                 }
 

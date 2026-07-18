@@ -6,6 +6,7 @@ import math
 import pytest
 from pydantic import ValidationError
 
+from meshprobe.models import CoordinateFrame
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     ComponentFindCommand,
@@ -61,8 +62,18 @@ def test_schema_contains_all_public_operations() -> None:
         "session.reset",
     ):
         assert operation in encoded
-    assert schema["$defs"]["CameraPoseFrame"]["enum"] == ["source", "world"]
-    assert schema["$defs"]["Pose"]["properties"]["frame"]["$ref"] == ("#/$defs/CameraPoseFrame")
+    defs = schema["$defs"]
+    assert isinstance(defs, dict)
+    camera_pose_frame = defs["CameraPoseFrame"]
+    assert isinstance(camera_pose_frame, dict)
+    assert camera_pose_frame["enum"] == ["source", "world"]
+    pose = defs["Pose"]
+    assert isinstance(pose, dict)
+    pose_properties = pose["properties"]
+    assert isinstance(pose_properties, dict)
+    frame_property = pose_properties["frame"]
+    assert isinstance(frame_property, dict)
+    assert frame_property["$ref"] == "#/$defs/CameraPoseFrame"
 
 
 def test_result_schema_covers_every_command_operation() -> None:
@@ -206,7 +217,7 @@ def test_rotate_accepts_source_axis_and_preserves_projection_by_default() -> Non
     )
 
     assert isinstance(command, ViewRotateCommand)
-    assert command.frame == "source"
+    assert command.frame == CoordinateFrame.SOURCE
     assert command.axis == "y"
     assert command.basis.x == (0, 1, 0)
     assert command.projection is None
@@ -223,7 +234,7 @@ def test_rotate_accepts_camera_frame_but_not_component() -> None:
 
     command = COMMAND_ADAPTER.validate_python({**base, "frame": "camera"})
     assert isinstance(command, ViewRotateCommand)
-    assert command.frame == "camera"
+    assert command.frame == CoordinateFrame.CAMERA
 
     with pytest.raises(ValidationError):
         COMMAND_ADAPTER.validate_python({**base, "frame": "component"})
