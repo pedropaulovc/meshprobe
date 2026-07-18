@@ -100,9 +100,18 @@ l 1 4
     return output
 
 
-def build_glb(tmp_path: Path) -> Path:
+def build_glb(tmp_path: Path, *, shared_camera_data: bool = False) -> Path:
     output = tmp_path / "fixture.glb"
     script = tmp_path / "build_fixture.py"
+    shared_camera = (
+        """
+shared_camera = bpy.data.objects.new('inspection-camera-copy', camera_data)
+bpy.context.scene.collection.objects.link(shared_camera)
+shared_camera.location = (6, 4, 3)
+"""
+        if shared_camera_data
+        else ""
+    )
     script.write_text(
         f"""
 import bpy
@@ -133,6 +142,7 @@ camera.location = (5, 4, 3)
 camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
 camera_data.lens = 85
 bpy.context.scene.camera = camera
+{shared_camera}
 
 light_data = bpy.data.lights.new('key-light', 'POINT')
 light_data.energy = 900
@@ -2011,6 +2021,18 @@ def test_unit_scale_cli_option_reaches_the_worker(tmp_path: Path) -> None:
     assert scene_span == pytest.approx(600.0, rel=1e-3)
 
 
+@pytest.mark.parametrize("unit_scale", [0.0, -1.0, math.inf, math.nan])
+def test_worker_rejects_non_positive_or_non_finite_unit_scale(
+    tmp_path: Path, unit_scale: float
+) -> None:
+    source = build_glb(tmp_path)
+    with (
+        BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller,
+        pytest.raises(BlenderWorkerError, match="unit_scale must be a positive finite number"),
+    ):
+        controller.open_scene(source, unit_scale=unit_scale)
+
+
 def _bounds_span(bounds: Bounds) -> float:
     return max(high - low for low, high in zip(bounds.minimum_mm, bounds.maximum_mm, strict=True))
 
@@ -2048,6 +2070,20 @@ def test_unit_scale_scales_imported_camera_clip_distances(tmp_path: Path) -> Non
     # Camera intrinsics are measured in scene units, so a unit correction must scale the clip
     # planes too — otherwise the imported view stays 1000x off for the very assets --unit-scale
     # exists to fix.
+    assert corrected.imported_camera.projection.near_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.near_clip_mm * 0.001, rel=1e-3
+    )
+    assert corrected.imported_camera.projection.far_clip_mm == pytest.approx(
+        unscaled.imported_camera.projection.far_clip_mm * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_scales_shared_imported_camera_data_once(tmp_path: Path) -> None:
+    source = build_glb(tmp_path, shared_camera_data=True)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        unscaled = controller.open_scene(source)
+        corrected = controller.open_scene(source, unit_scale=0.001)
+
     assert corrected.imported_camera.projection.near_clip_mm == pytest.approx(
         unscaled.imported_camera.projection.near_clip_mm * 0.001, rel=1e-3
     )

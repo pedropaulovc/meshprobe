@@ -3252,6 +3252,7 @@ def apply_unit_scale(scale: float) -> None:
         return
     scale_matrix = Matrix.Scale(scale, 4)
     scaled_meshes: set[str] = set()
+    scaled_cameras: set[str] = set()
     for obj in bpy.context.scene.objects:
         data = obj.data
         if isinstance(data, bpy.types.Mesh) and data.name not in scaled_meshes:
@@ -3267,6 +3268,9 @@ def apply_unit_scale(scale: float) -> None:
         if obj.type != "CAMERA":
             continue
         camera = obj.data
+        if camera.name in scaled_cameras:
+            continue
+        scaled_cameras.add(camera.name)
         camera.clip_start *= scale
         camera.clip_end *= scale
         if camera.type == "ORTHO":
@@ -3628,6 +3632,8 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"source is not a file: {source_path}")
     source_sha256 = command.get("source_sha256") or sha256_file(source_path)
     unit_scale = float(command.get("unit_scale", 1.0))
+    if not math.isfinite(unit_scale) or unit_scale <= 0:
+        raise ValueError("unit_scale must be a positive finite number")
     clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
