@@ -84,6 +84,25 @@ def rgb_pixel(image: Image.Image, xy: tuple[int, int]) -> tuple[int, ...]:
     return pixel
 
 
+def _pin_source_camera(controller: BlenderController, manifest: SceneManifest) -> None:
+    """Apply the faithful source camera as the live view.
+
+    The default applied view now auto-frames the whole scene (issue #56), which is
+    geometry-dependent. Tests that assert camera-specific results (occlusion ray
+    counts, absolute rotated poses) pin the source camera explicitly so they keep
+    testing their real invariant against a known camera rather than an incidental
+    default pose that is designed to change.
+    """
+
+    controller.execute(
+        ViewSetCommand(
+            request_id="pin-source-camera",
+            op="view.set",
+            camera=manifest.imported_camera,
+        )
+    )
+
+
 def build_obj_axes(tmp_path: Path) -> Path:
     output = tmp_path / "axes.obj"
     output.write_text(
@@ -237,6 +256,196 @@ print(f"SHAPE_KEY_SPAN={{span}}")
             if line.startswith(prefix)
         )
     )
+
+
+def build_far_camera_tall_glb(tmp_path: Path) -> Path:
+    """A tall, thin assembly whose source camera is parked far away.
+
+    Mirrors the shape of issue #56: rendering the untouched source camera leaves
+    the model filling a small fraction of the frame.
+    """
+
+    output = tmp_path / "far-camera-tall.glb"
+    script = tmp_path / "build_far_camera_tall.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+def part(name, location, scale):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)
+    obj = bpy.context.object
+    obj.name = name
+    obj.scale = scale
+
+part('column', (0, 0, 0), (0.15, 0.15, 0.6))
+part('foot', (0.12, 0, -0.55), (0.1, 0.1, 0.05))
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (5, -5, 1.5)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+camera_data.lens = 50
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_centered_cube_ortho_glb(tmp_path: Path) -> Path:
+    """A unit cube centered at the origin, viewed head-on by an orthographic
+    camera. A symmetric cube has equal near- and far-corner depths from the
+    bounds center, which is the exact case where fitting the orthographic
+    standoff from the farthest corner's *absolute* depth places the camera on
+    the near face instead of backed off from it (issue #56)."""
+
+    output = tmp_path / "centered-cube-ortho.glb"
+    script = tmp_path / "build_centered_cube_ortho.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = 'cube'
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.type = 'ORTHO'
+camera_data.ortho_scale = 2.0
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (0, -10, 0)
+camera.rotation_euler = (1.5707963267948966, 0, 0)
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_tall_box_ortho_glb(tmp_path: Path) -> Path:
+    """A box centered at the origin, narrow in the camera's right axis (150 mm)
+    and tall in its up axis (600 mm), viewed head-on by an orthographic camera
+    looking down -X. Fitting the orthographic scale as if the render were always
+    square ignores which axis the requested aspect ratio actually fits (issue
+    #56)."""
+
+    output = tmp_path / "tall-box-ortho.glb"
+    script = tmp_path / "build_tall_box_ortho.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+box = bpy.context.object
+box.name = 'box'
+box.scale = (0.3, 0.3, 1.2)
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.type = 'ORTHO'
+camera_data.ortho_scale = 2.0
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (10, 0, 0)
+camera.rotation_euler = (1.5707963267948966, 0, 1.5707963267948966)
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def build_diagonal_cube_wide_lens_glb(tmp_path: Path) -> Path:
+    """A unit cube centered at the origin, viewed along its body diagonal by a
+    very wide perspective lens. The nearest corner sits almost exactly on the
+    view axis, so a per-corner screen-space fit alone converges to (but does
+    not exceed) that corner's own depth, leaving no margin for the near-clip
+    floor to sit safely in front of it (issue #56)."""
+
+    output = tmp_path / "diagonal-cube-wide-lens.glb"
+    script = tmp_path / "build_diagonal_cube_wide_lens.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = 'cube'
+
+camera_data = bpy.data.cameras.new('inspection-camera')
+camera_data.lens = 5
+camera = bpy.data.objects.new('inspection-camera', camera_data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (10, 10, 10)
+camera.rotation_euler = ((Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')).to_euler()
+bpy.context.scene.camera = camera
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
 
 
 def build_edge_style_glb(tmp_path: Path) -> Path:
@@ -1135,7 +1344,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
 def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
-        controller.open_scene(source)
+        manifest = controller.open_scene(source)
         initial = SessionSnapshot.model_validate(controller.request("session.snapshot")["session"])
         moved = cast(
             "dict[str, object]",
@@ -1162,7 +1371,26 @@ def test_relative_camera_move_combines_world_and_camera_basis(tmp_path: Path) ->
     move_receipt = CameraTranslationReceipt.model_validate(moved["camera_operation"])
     assert moved_camera.pose.position_mm == pytest.approx(expected_position)
     assert moved_camera.pose.orientation_xyzw == pytest.approx(initial.camera.pose.orientation_xyzw)
-    assert moved_camera.projection == initial.camera.projection
+    assert type(moved_camera.projection) is type(initial.camera.projection)
+    expected_depths = [
+        sum(
+            (corner[axis] - moved_camera.pose.position_mm[axis]) * diagnostics.forward[axis]
+            for axis in range(3)
+        )
+        for corner in (
+            (x, y, z)
+            for x in (manifest.root_bounds.minimum_mm[0], manifest.root_bounds.maximum_mm[0])
+            for y in (manifest.root_bounds.minimum_mm[1], manifest.root_bounds.maximum_mm[1])
+            for z in (manifest.root_bounds.minimum_mm[2], manifest.root_bounds.maximum_mm[2])
+        )
+    ]
+    expected_far_clip = max(
+        initial.camera.projection.far_clip_mm,
+        max(depth for depth in expected_depths if depth > 0) * 1.5,
+    )
+    expected_near_clip = max(0.1, min(depth for depth in expected_depths if depth > 0) * 0.5)
+    assert moved_camera.projection.near_clip_mm == pytest.approx(expected_near_clip)
+    assert moved_camera.projection.far_clip_mm == pytest.approx(expected_far_clip)
     assert isinstance(snapshot.camera_operation, CameraTranslationReceipt)
     assert move_receipt.requested_world_delta_mm == (0, 0, 100)
     assert move_receipt.requested_camera_delta_mm == (-25, 0, 50)
@@ -1195,10 +1423,89 @@ def test_rejected_camera_move_preserves_live_camera_state(tmp_path: Path) -> Non
     assert after.state_sha256 == before.state_sha256
 
 
+def test_rejected_bare_orbit_preserves_live_camera_state(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        camera = manifest.imported_camera.model_copy(
+            update={
+                "projection": manifest.imported_camera.projection.model_copy(
+                    update={"far_clip_mm": 1_000}
+                )
+            }
+        )
+        controller.execute(ViewSetCommand(request_id="short-clip", op="view.set", camera=camera))
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="unknown focus component ids"):
+            controller.request(
+                "view.orbit",
+                target_mm=[0, 0, 0],
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=10_000,
+                focus_component_ids=["missing-component"],
+            )
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
+
+
+def test_invalid_open_aspect_preserves_the_existing_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="aspect_ratio"):
+            controller.open_scene(source, aspect_ratio=0.005)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
+
+
+def test_invalid_reset_aspect_preserves_the_existing_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="aspect_ratio"):
+            controller.request("session.reset", aspect_ratio=0.005)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
+
+
+def test_accepted_bare_orbit_clears_the_previous_motion_receipt(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        controller.execute(
+            ViewMoveCommand(
+                request_id="move",
+                op="view.move",
+                world_delta_mm=(100, 0, 0),
+            )
+        )
+        orbit = controller.execute(
+            ViewOrbitCommand(
+                request_id="orbit",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=45,
+                elevation_degrees=30,
+                distance_mm=2_000,
+            )
+        )
+        snapshot = controller.request("session.snapshot")["session"]
+
+    assert isinstance(orbit, dict)
+    assert snapshot["camera_operation"] is None
+
+
 def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         rotated = controller.execute(
             ViewRotateCommand(
                 request_id="rotate-source-y",
@@ -1667,6 +1974,18 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
         evaluator = tmp_path / f"{path.stem}-evaluator"
         with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
             manifest = controller.open_scene(path)
+            # The default applied view now auto-frames the whole scene (issue #56),
+            # which is geometry-dependent. Pin the (geometry-independent) source
+            # camera explicitly so this test isolates view-vs-model rotation from
+            # framing, exactly as it did when the default view was the raw source
+            # camera.
+            controller.execute(
+                ViewSetCommand(
+                    request_id="pin-source-camera",
+                    op="view.set",
+                    camera=manifest.imported_camera,
+                )
+            )
             controller.execute(
                 ComponentMarkCommand(
                     request_id="highlight-all",
@@ -1684,18 +2003,6 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                         axis="y",
                         degrees=degrees,
                         frame=CoordinateFrame.SOURCE,
-                    )
-                )
-            else:
-                controller.execute(
-                    SessionResetCommand(request_id="positive-control", op="session.reset")
-                )
-                controller.execute(
-                    ComponentMarkCommand(
-                        request_id="highlight-control",
-                        op="component.mark",
-                        component_ids=tuple(component.id for component in manifest.components),
-                        mode=MarkMode.HIGHLIGHTED,
                     )
                 )
             snapshot = SessionSnapshot.model_validate(
@@ -2139,6 +2446,543 @@ def test_import_prefers_source_active_camera(tmp_path: Path) -> None:
     assert camera["pose"]["position_mm"] == pytest.approx((8_000, 9_000, 10_000))
     assert camera["projection"]["sensor_fit"] == "auto"
     assert result["warning"] is None
+
+
+def _mask_frame_coverage(components_png: Path) -> dict[str, float]:
+    image = Image.open(components_png).convert("L")
+    width, height = image.size
+    mask = image.point(lambda value: 255 if value > 8 else 0)
+    bbox = mask.getbbox()
+    assert bbox is not None, "component mask is empty; nothing was rendered"
+    left, upper, right, lower = bbox
+    return {
+        "width_fraction": (right - left) / width,
+        "height_fraction": (lower - upper) / height,
+        "area_fraction": mask.histogram()[255] / (width * height),
+        "min_x": left / width,
+        "max_x": right / width,
+        "min_y": upper / height,
+        "max_y": lower / height,
+    }
+
+
+def test_default_view_frames_full_scene_tightly(tmp_path: Path) -> None:
+    source = build_far_camera_tall_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+
+        framed_dir = tmp_path / "framed"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="framed",
+                op="render.image",
+                output_path=str(tmp_path / "framed.png"),
+                width=512,
+                height=512,
+                samples=1,
+            ),
+            evaluator_output_dir=str(framed_dir),
+        )
+        framed = _mask_frame_coverage(framed_dir / "framed.components.png")
+
+        # Render the untouched source camera for a before/after comparison.
+        controller.execute(
+            ViewSetCommand(
+                request_id="source-camera",
+                op="view.set",
+                camera=manifest.imported_camera,
+            )
+        )
+        source_dir = tmp_path / "source"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="source",
+                op="render.image",
+                output_path=str(tmp_path / "source.png"),
+                width=512,
+                height=512,
+                samples=1,
+            ),
+            evaluator_output_dir=str(source_dir),
+        )
+        source_view = _mask_frame_coverage(source_dir / "source.components.png")
+
+    # The imported camera is recorded faithfully; only the applied view is reframed.
+    assert manifest.imported_camera.pose.position_mm == pytest.approx((5_000, -5_000, 1_500))
+
+    # The default view fills the limiting axis tightly without clipping the model.
+    limiting_fill = max(framed["width_fraction"], framed["height_fraction"])
+    assert limiting_fill >= 0.8
+    assert framed["min_x"] >= 0.005
+    assert framed["max_x"] <= 0.995
+    assert framed["min_y"] >= 0.005
+    assert framed["max_y"] <= 0.995
+
+    # And it is dramatically tighter than the source camera it replaced.
+    assert framed["area_fraction"] > source_view["area_fraction"] * 4
+
+
+def test_default_view_fits_perspective_camera_for_non_square_render(tmp_path: Path) -> None:
+    """glTF-imported cameras use ``sensor_fit="vertical"``, so a portrait render
+    narrows the horizontal FOV proportionally to its aspect ratio while the
+    vertical FOV stays fixed. Fitting the default view as if the render were
+    square keeps the (wrong, wider) horizontal FOV assumption, undershooting
+    the true horizontal extent and clipping the model left and right when the
+    render is actually portrait (issue #56)."""
+
+    source = build_far_camera_tall_glb(tmp_path)
+    portrait_width, portrait_height = 480, 1920
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source, aspect_ratio=portrait_width / portrait_height)
+        fitted_dir = tmp_path / "fitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="fitted-portrait",
+                op="render.image",
+                output_path=str(tmp_path / "fitted-portrait.png"),
+                width=portrait_width,
+                height=portrait_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(fitted_dir),
+        )
+        fitted = _mask_frame_coverage(fitted_dir / "fitted-portrait.components.png")
+
+        # Explicitly resetting to a square aspect reproduces the old framing
+        # mistake: the same portrait render clips this model left and right.
+        controller.execute(
+            SessionResetCommand(request_id="reset-square", op="session.reset", aspect_ratio=1)
+        )
+        unfitted_dir = tmp_path / "unfitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="unfitted-portrait",
+                op="render.image",
+                output_path=str(tmp_path / "unfitted-portrait.png"),
+                width=portrait_width,
+                height=portrait_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(unfitted_dir),
+        )
+        unfitted = _mask_frame_coverage(unfitted_dir / "unfitted-portrait.components.png")
+
+    # Declaring the true render aspect ratio up front keeps the model inside the
+    # frame with margin...
+    assert fitted["min_x"] >= 0.005
+    assert fitted["max_x"] <= 0.995
+
+    # ...while assuming a square render for the same portrait output clips it.
+    assert unfitted["min_x"] < 0.005 or unfitted["max_x"] > 0.995
+
+
+def test_default_view_keeps_orthographic_camera_outside_bounds_after_a_bare_rotate(
+    tmp_path: Path,
+) -> None:
+    """A symmetric cube viewed head-on has equal near- and far-corner depths
+    from the bounds center; fitting the orthographic standoff from the
+    farthest corner's absolute depth places the camera exactly on the near
+    face instead of backed off from it (issue #56)."""
+
+    source = build_centered_cube_ortho_glb(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source)
+        controller.execute(
+            ViewRotateCommand(
+                request_id="ortho-default-rotate",
+                op="view.rotate",
+                target_mm=(0, 0, 0),
+                axis="z",
+                degrees=45,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="ortho-default",
+                op="render.image",
+                output_path=str(tmp_path / "ortho-default.png"),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+
+    position = rendered.session.camera.pose.position_mm
+    distance_from_center = math.sqrt(sum(component**2 for component in position))
+
+    # The cube's bounding radius is sqrt(3) * 500 mm. A bare rotate preserves
+    # the auto-framed standoff, so the camera must remain outside that sphere in
+    # every later orbit direction rather than only clearing the original near face.
+    assert distance_from_center > math.sqrt(3) * 500 + 0.5
+
+    # The renewed clip range remains valid after the orbit.
+    assert rendered.session.camera.projection.near_clip_mm > 0
+    forward = rendered.session.camera_diagnostics.forward
+    depths = [
+        sum((corner[axis] - position[axis]) * forward[axis] for axis in range(3))
+        for corner in ((x, y, z) for x in (-500, 500) for y in (-500, 500) for z in (-500, 500))
+    ]
+    visible_depths = [depth for depth in depths if depth > 0]
+    assert rendered.session.camera.projection.near_clip_mm == pytest.approx(
+        max(0.1, min(visible_depths) * 0.5)
+    )
+    assert rendered.session.camera.projection.far_clip_mm >= max(visible_depths) * 1.5 - 0.1
+
+
+def test_default_view_fits_orthographic_camera_for_non_square_render(tmp_path: Path) -> None:
+    """Blender's ortho_scale, like a perspective sensor under sensor_fit="auto",
+    fits the requested render's limiting axis directly and derives the other
+    from the aspect ratio. Fitting as if the render were always square ignores
+    that derivation and can under-size the non-fitted axis (issue #56)."""
+
+    source = build_tall_box_ortho_glb(tmp_path)
+    landscape_width, landscape_height = 1920, 480
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source, aspect_ratio=landscape_width / landscape_height)
+        fitted_dir = tmp_path / "fitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="fitted-landscape",
+                op="render.image",
+                output_path=str(tmp_path / "fitted-landscape.png"),
+                width=landscape_width,
+                height=landscape_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(fitted_dir),
+        )
+        fitted = _mask_frame_coverage(fitted_dir / "fitted-landscape.components.png")
+
+        # Explicitly resetting to a square aspect reproduces the old framing
+        # mistake: the same landscape render clips this tall box top and bottom.
+        controller.execute(
+            SessionResetCommand(request_id="reset-square", op="session.reset", aspect_ratio=1)
+        )
+        unfitted_dir = tmp_path / "unfitted"
+        controller.render_image(
+            RenderImageCommand(
+                request_id="unfitted-landscape",
+                op="render.image",
+                output_path=str(tmp_path / "unfitted-landscape.png"),
+                width=landscape_width,
+                height=landscape_height,
+                samples=1,
+            ),
+            evaluator_output_dir=str(unfitted_dir),
+        )
+        unfitted = _mask_frame_coverage(unfitted_dir / "unfitted-landscape.components.png")
+
+    # Declaring the true render aspect ratio up front keeps the box inside the
+    # frame with margin...
+    assert fitted["min_y"] >= 0.005
+    assert fitted["max_y"] <= 0.995
+
+    # ...while assuming a square render for the same landscape output clips it.
+    assert unfitted["min_y"] < 0.005 or unfitted["max_y"] > 0.995
+
+
+def test_default_view_leaves_near_clip_margin_for_wide_fov_diagonal_fit(tmp_path: Path) -> None:
+    """A very wide lens viewing a cube along its body diagonal converges the
+    per-corner screen-space fit to (but not past) the nearest corner's own
+    depth, since that corner sits almost exactly on the view axis; the fix's
+    explicit clearance term backs the camera off an extra margin so the fixed
+    near-clip floor doesn't slice through that corner (issue #56)."""
+
+    source = build_diagonal_cube_wide_lens_glb(tmp_path)
+    half_extent_mm = 500.0
+    corners = [
+        (x, y, z)
+        for x in (-half_extent_mm, half_extent_mm)
+        for y in (-half_extent_mm, half_extent_mm)
+        for z in (-half_extent_mm, half_extent_mm)
+    ]
+
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        controller.open_scene(source)
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="diagonal-wide",
+                op="render.image",
+                output_path=str(tmp_path / "diagonal-wide.png"),
+                width=256,
+                height=256,
+                samples=1,
+            )
+        )
+
+    position = rendered.session.camera.pose.position_mm
+    nearest_corner_distance = min(
+        math.sqrt(sum((corner[axis] - position[axis]) ** 2 for axis in range(3)))
+        for corner in corners
+    )
+
+    # The nearest corner stays strictly in front of the near clip plane instead
+    # of sitting exactly on (or behind) it.
+    assert nearest_corner_distance > rendered.session.camera.projection.near_clip_mm
+
+
+def test_framed_default_camera_recomputes_stale_depth_of_field_focus(tmp_path: Path) -> None:
+    """An explicit ``focus_distance_mm`` names a world-space point relative to
+    the source camera's own position. Re-framing dollies the camera to a new
+    position along the same forward axis, so carrying the distance over
+    unchanged would refocus on the wrong point instead of the one the source
+    camera actually named (issue #56).
+
+    glTF has no depth-of-field extension, so a real import can never produce
+    an imported camera with DOF enabled; ``framed_default_camera`` is
+    exercised directly (loaded by file path, bypassing the package's
+    pydantic-dependent ``__init__.py``, which is not importable inside
+    Blender's bundled Python) with a hand-built camera dict instead."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "probe_reframe_dof.py"
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+from mathutils import Vector
+
+position = Vector((5000.0, -5000.0, 1500.0))
+direction = Vector((0.0, 0.0, 0.0)) - position
+rotation = direction.to_track_quat('-Z', 'Y').normalized()
+original_distance = position.length
+
+camera = {{
+    "pose": {{
+        "position_mm": list(position),
+        "orientation_xyzw": [rotation.x, rotation.y, rotation.z, rotation.w],
+    }},
+    "projection": {{
+        "mode": "perspective",
+        "focal_length_mm": 50.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "sensor_fit": "auto",
+        "near_clip_mm": 0.5,
+        "far_clip_mm": 100000.0,
+        "depth_of_field": {{
+            "mode": "enabled",
+            "aperture_fstop": 2.8,
+            "focus_distance_mm": original_distance,
+        }},
+    }},
+}}
+root_bounds = {{
+    "minimum_mm": [-300.0, -300.0, -600.0],
+    "maximum_mm": [300.0, 300.0, 600.0],
+}}
+
+framed = worker.framed_default_camera(camera, root_bounds)
+new_position = Vector(framed["pose"]["position_mm"])
+print(json.dumps({{
+    "new_focus_distance_mm": framed["projection"]["depth_of_field"]["focus_distance_mm"],
+    "expected_focus_distance_mm": new_position.length,
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    # The world-space focus point named by the source camera stays fixed: the
+    # recomputed distance from the NEW (fitted) position matches it.
+    assert result["new_focus_distance_mm"] == pytest.approx(
+        result["expected_focus_distance_mm"], rel=1e-3
+    )
+
+
+def test_visible_root_bounds_excludes_originally_hidden_components(tmp_path: Path) -> None:
+    """``root_bounds`` spans every imported mesh including source-hidden
+    construction geometry or alternate configurations; framing the default
+    view against it can centre and back off the camera for objects the
+    default view never actually shows (issue #56).
+
+    glTF export does not round-trip ``hide_render``, so a real import can
+    never produce an originally-hidden component; ``visible_root_bounds`` is
+    exercised directly (loaded by file path, bypassing the package's
+    pydantic-dependent ``__init__.py``, which is not importable inside
+    Blender's bundled Python) against a hand-built component/visibility
+    state instead."""
+
+    script = tmp_path / "probe_visible_bounds.py"
+    repo_root = Path(__file__).resolve().parents[2]
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+small = bpy.context.object
+small.name = "visible_small"
+small.scale = (0.1, 0.1, 0.1)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+large = bpy.context.object
+large.name = "hidden_large"
+large.scale = (50, 50, 50)
+large.hide_render = True
+
+bpy.context.view_layer.update()
+
+worker.COMPONENT_OBJECTS = {{"small": small, "large": large}}
+worker.ORIGINAL_VISIBILITY = {{
+    "small": (small.hide_render, small.hide_viewport),
+    "large": (large.hide_render, large.hide_viewport),
+}}
+
+fallback = {{
+    "minimum_mm": [-50000.0, -50000.0, -50000.0],
+    "maximum_mm": [50000.0, 50000.0, 50000.0],
+}}
+bounds = worker.visible_root_bounds(fallback)
+print(json.dumps(bounds))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    bounds = json.loads(result_line)
+
+    # The 50 m hidden cube is excluded; only the 100 mm visible cube's bounds
+    # (half-extent 50 mm) remain.
+    assert bounds["minimum_mm"] == pytest.approx([-50.0, -50.0, -50.0], abs=0.01)
+    assert bounds["maximum_mm"] == pytest.approx([50.0, 50.0, 50.0], abs=0.01)
+
+
+def test_reset_session_reuses_the_open_aspect_ratio_when_omitted(tmp_path: Path) -> None:
+    """An internal caller (e.g. ``render_contact_sheet``'s cleanup path) issues
+    a bare ``session.reset`` with no ``aspect_ratio`` field. Treating that
+    omission as an implicit request for a square frame would silently
+    reframe a session opened with a non-square default back to 1.0; the
+    reset path instead reuses the aspect_ratio last established by
+    ``scene.open`` or an explicit ``session.reset`` (issue #56).
+
+    ``reset_session`` is exercised directly (loaded by file path, bypassing
+    the package's pydantic-dependent ``__init__.py``, which is not
+    importable inside Blender's bundled Python) with the expensive collaborators
+    (camera framing, illumination, render style) stubbed out, since this test
+    targets only the aspect_ratio bookkeeping, not scene reconstruction."""
+
+    script = tmp_path / "probe_reset_aspect_ratio.py"
+    repo_root = Path(__file__).resolve().parents[2]
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+captured_aspect_ratios = []
+
+def fake_framed_default_camera(camera, root_bounds, frame_fill=1.0, aspect_ratio=1.0):
+    captured_aspect_ratios.append(aspect_ratio)
+    return camera
+
+worker.framed_default_camera = fake_framed_default_camera
+worker.visible_root_bounds = lambda fallback: fallback
+worker.require_session = lambda: {{"root_bounds": {{}}}}
+worker.apply_camera = lambda camera, **kwargs: None
+worker.apply_illumination = lambda illumination: None
+worker.configure_render_style = lambda style: None
+worker.session_snapshot = lambda: {{}}
+
+worker.IMPORTED_CAMERA = {{}}
+worker.IMPORTED_ILLUMINATION = {{}}
+worker.DEFAULT_ASPECT_RATIO = 2.0
+
+worker.reset_session({{}})
+after_omitted = worker.DEFAULT_ASPECT_RATIO
+
+worker.reset_session({{"aspect_ratio": 0.5}})
+after_explicit = worker.DEFAULT_ASPECT_RATIO
+
+print(json.dumps({{
+    "captured_aspect_ratios": captured_aspect_ratios,
+    "after_omitted": after_omitted,
+    "after_explicit": after_explicit,
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    # Omitting aspect_ratio reuses the open-established default (2.0) rather than
+    # silently reframing to 1.0, and leaves that default unchanged...
+    assert result["captured_aspect_ratios"][0] == pytest.approx(2.0)
+    assert result["after_omitted"] == pytest.approx(2.0)
+
+    # ...while an explicit aspect_ratio is honored AND becomes the new default for
+    # any subsequent internal reset that omits the field.
+    assert result["captured_aspect_ratios"][1] == pytest.approx(0.5)
+    assert result["after_explicit"] == pytest.approx(0.5)
 
 
 def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:
@@ -2749,10 +3593,20 @@ def test_worker_orbit_without_projection_keeps_session_current_projection(
         )
     assert isinstance(continued, dict)
     continued_camera = Camera.model_validate(continued["camera"])
-    # The pose moved (new azimuth/elevation/distance) but the projection carried over
-    # from the previous orbit unchanged, without the caller restating it.
+    # The pose moved (new azimuth/elevation/distance) and the projection's mode and
+    # framing carried over without restating it. Bare motion renews clip planes so
+    # the inherited view remains valid from its new position.
     assert continued_camera.pose.position_mm != pytest.approx(established_camera.pose.position_mm)
-    assert continued_camera.projection == established_camera.projection
+    assert (
+        continued_camera.projection.model_copy(
+            update={
+                "near_clip_mm": established_camera.projection.near_clip_mm,
+                "far_clip_mm": established_camera.projection.far_clip_mm,
+            }
+        )
+        == established_camera.projection
+    )
+    assert 0 < continued_camera.projection.near_clip_mm < continued_camera.projection.far_clip_mm
 
 
 def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspective(
@@ -2778,7 +3632,17 @@ def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspect
         )
     assert isinstance(result, dict)
     camera = Camera.model_validate(result["camera"])
-    assert camera.projection == PerspectiveProjection()
+    projection = camera.projection
+    assert isinstance(projection, PerspectiveProjection)
+    # Auto-framing the default view (issue #56) fits the perspective clip planes to
+    # the scene on scene.open, and a bare orbit inherits that framed perspective
+    # rather than restating a projection. Every other intrinsic still lands on the
+    # standard perspective default; only the clip planes are geometry-derived.
+    assert (
+        projection.model_copy(update={"near_clip_mm": 0.5, "far_clip_mm": 100000.0})
+        == PerspectiveProjection()
+    )
+    assert 0.0 < projection.near_clip_mm < projection.far_clip_mm
 
 
 def _cli_orbit_camera(workspace: Path, request_id: str, *extra: str) -> Camera:
@@ -2892,8 +3756,18 @@ def test_cli_view_orbit_without_projection_flags_reuses_session_camera(tmp_path:
     assert "Missing option" not in bare_result.output
     assert stopped.exit_code == 0
     bare_camera = Camera.model_validate(json.loads(bare_result.stdout)["camera"])
-    # The 85mm perspective established above carries over untouched; only the pose moved.
-    assert bare_camera.projection == established.projection
+    # The 85mm perspective established above carries over; only the pose and the
+    # inherited clip range move with the camera.
+    assert (
+        bare_camera.projection.model_copy(
+            update={
+                "near_clip_mm": established.projection.near_clip_mm,
+                "far_clip_mm": established.projection.far_clip_mm,
+            }
+        )
+        == established.projection
+    )
+    assert 0 < bare_camera.projection.near_clip_mm < bare_camera.projection.far_clip_mm
     assert bare_camera.pose.position_mm != pytest.approx(established.pose.position_mm)
 
 
@@ -4017,6 +4891,7 @@ def test_occlusion_surface_scan_is_budgeted_and_ignores_in_frame_object_origin(
     source = build_dense_off_frame_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         target = next(
             component
             for component in manifest.components
@@ -4188,6 +5063,7 @@ def test_worker_ranks_actual_line_of_sight_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         visibility_before = controller.request(
             "component.visibility",
@@ -4218,6 +5094,7 @@ def test_worker_traces_through_ghosted_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="ghosted")
 
@@ -4232,6 +5109,7 @@ def test_worker_traces_through_alpha_blended_occluders(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path, blocker_alpha=0.2)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4656,6 +5534,7 @@ def test_worker_respects_gltf_alpha_mask_cutoff(
     )
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4672,6 +5551,7 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     source = build_label_occlusion_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
         label_source = by_name["WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"]
@@ -4690,6 +5570,7 @@ def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> No
     source = build_multi_surface_occlusion_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         blocker = by_name["multi-surface-blocker"]
         controller.request("component.display", component_ids=[blocker], mode="ghosted")
@@ -4706,6 +5587,7 @@ def test_worker_respects_backface_culling(tmp_path: Path, back_facing: bool) -> 
     source = build_backface_culling_glb(tmp_path, back_facing=back_facing)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
 
         ranking = controller.request("component.occluders", component_ids=[by_name["target"]])
@@ -4723,6 +5605,7 @@ def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
     source = build_backface_culling_glb(tmp_path, back_facing=True)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target"]
         culled = by_name["single-sided-blocker"]
@@ -4794,6 +5677,7 @@ def test_worker_counts_ghosted_focus_hits(tmp_path: Path) -> None:
     source = build_occluded_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
         by_name = {component.display_name: component.id for component in manifest.components}
         controller.request("component.display", component_ids=[by_name["target"]], mode="ghosted")
         controller.request("component.display", component_ids=[by_name["blocker"]], mode="hidden")

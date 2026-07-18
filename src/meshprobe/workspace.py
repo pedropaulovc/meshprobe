@@ -42,6 +42,8 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    ViewSetCommand,
+    command_payload,
 )
 from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
@@ -107,6 +109,7 @@ class SessionCheckpoint(BaseModel):
     source_sha256: str
     blender: str | None
     state_sha256: str
+    aspect_ratio: float = 1.0
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
     unit_scale: float = 1.0
 
@@ -411,6 +414,7 @@ class SessionManager:
         *,
         request_id: str = "open",
         blender: str | None = None,
+        aspect_ratio: float = 1.0,
         unit_scale: float = 1.0,
     ) -> OperationReceipt:
         with self._lock:
@@ -420,6 +424,7 @@ class SessionManager:
                 request_id=request_id,
                 op="scene.open",
                 source_path=str(source.expanduser().resolve(strict=True)),
+                aspect_ratio=aspect_ratio,
                 unit_scale=unit_scale,
             )
             service = self._new_service(selected_blender)
@@ -453,6 +458,7 @@ class SessionManager:
                 source_sha256=manifest.source_sha256,
                 blender=selected_blender,
                 state_sha256=snapshot.state_sha256,
+                aspect_ratio=aspect_ratio,
                 unit_scale=command.unit_scale,
             )
             atomic_json(files.metadata, metadata.model_dump(mode="json"))
@@ -486,6 +492,7 @@ class SessionManager:
                 Path(command.source_path),
                 request_id=command.request_id,
                 blender=blender,
+                aspect_ratio=command.aspect_ratio,
                 unit_scale=command.unit_scale,
             )
         with self._lock:
@@ -716,9 +723,14 @@ class SessionManager:
         current = self._services.get(name)
         if current is not None:
             return current
-        checkpoint, upgraded = _upgrade_checkpoint(
-            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+        persisted_checkpoint = SessionCheckpoint.model_validate_json(
+            files.checkpoint.read_text(encoding="utf-8")
         )
+        # Auto-framing introduced the aspect marker after schema v2 had already
+        # shipped. A checkpoint without it replays relative camera commands from
+        # the source camera, regardless of its numeric schema version.
+        pre_auto_frame_checkpoint = "aspect_ratio" not in persisted_checkpoint.model_fields_set
+        checkpoint, upgraded = _upgrade_checkpoint(persisted_checkpoint)
         service = self._new_service(checkpoint.blender)
         try:
             opened = service.execute(
@@ -726,6 +738,7 @@ class SessionManager:
                     request_id="recover-open",
                     op="scene.open",
                     source_path=checkpoint.source_path,
+                    aspect_ratio=checkpoint.aspect_ratio,
                     unit_scale=checkpoint.unit_scale,
                 )
             )
@@ -734,6 +747,17 @@ class SessionManager:
                 raise ValueError("source asset bundle changed since the session checkpoint")
             from meshprobe.protocol import COMMAND_ADAPTER
 
+            if pre_auto_frame_checkpoint:
+                # A v1 checkpoint predates default auto-framing. Its recorded relative
+                # camera commands therefore start from the source camera, not the new
+                # framed default. Restore that exact baseline before replaying them.
+                baseline = ViewSetCommand(
+                    request_id="recover-v1-source-camera",
+                    op="view.set",
+                    camera=manifest.imported_camera,
+                )
+                checkpoint.accepted_commands.insert(0, command_payload(baseline))
+                upgraded = True
             for raw in checkpoint.accepted_commands:
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
             if upgraded:
@@ -774,15 +798,16 @@ class SessionManager:
         # The framing aspect is the aspect_ratio of the last command that refit the camera
         # (see _refits_camera); the snapshot's camera_diagnostics.aspect_ratio can't be used
         # because view.move and bare view.rotate overwrite it with their own default while
-        # leaving the projection framed as before. Defaults to 1.0 (the framing a freshly
-        # opened session's camera carries) when nothing has refit the camera yet.
+        # leaving the projection framed as before. A freshly opened session is already
+        # framed with its checkpointed open/reset aspect ratio, so use that when nothing has
+        # refit the camera yet.
         checkpoint, _ = _upgrade_checkpoint(
             SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         for raw in reversed(checkpoint.accepted_commands):
             if _refits_camera(raw):
                 return float(raw.get("aspect_ratio", 1.0))
-        return 1.0
+        return checkpoint.aspect_ratio
 
     @classmethod
     def _aspect_ratio_warning(cls, command: RenderImageCommand, framed_aspect: float) -> str | None:
@@ -959,11 +984,13 @@ class SessionManager:
         )
         if isinstance(command, SessionResetCommand):
             checkpoint.accepted_commands.clear()
+            if "aspect_ratio" in command.model_fields_set:
+                checkpoint.aspect_ratio = command.aspect_ratio
         elif command.op in STATE_OPERATIONS:
             accepted = command
             if isinstance(command, IlluminationSetCommand):
                 accepted = command.model_copy(update={"illumination": snapshot.illumination})
-            checkpoint.accepted_commands.append(accepted.model_dump(mode="json"))
+            checkpoint.accepted_commands.append(command_payload(accepted))
         checkpoint.state_sha256 = snapshot.state_sha256
         atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
 
@@ -994,7 +1021,7 @@ class SessionManager:
             "request_id": command.request_id,
             "op": command.op,
             "status": status,
-            "command": command.model_dump(mode="json"),
+            "command": command_payload(command),
         }
         if result_path is not None:
             event["result_path"] = files.relative(result_path)

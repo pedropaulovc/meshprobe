@@ -59,11 +59,13 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    SessionResetCommand,
     ViewFrameCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
     ViewSetCommand,
+    command_payload,
 )
 from meshprobe.selectors import ComponentIndex
 from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
@@ -162,6 +164,7 @@ class BlenderController:
         self.graphics: GraphicsPlatform | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
+        self._aspect_ratio: float = 1.0
         self._unit_scale: float = 1.0
         self._manifest: SceneManifest | None = None
         self._source_snapshot: SourceSnapshot | None = None
@@ -272,11 +275,14 @@ class BlenderController:
             raise BlenderWorkerError("worker returned a non-object result")
         return result
 
-    def open_scene(self, source_path: str | Path, *, unit_scale: float = 1.0) -> SceneManifest:
+    def open_scene(
+        self, source_path: str | Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SceneManifest:
         source = Path(source_path).expanduser().resolve(strict=True)
         before = snapshot_source(source)
         self._source_path = None
         self._source_sha256 = None
+        self._aspect_ratio = aspect_ratio
         self._unit_scale = unit_scale
         self._manifest = None
         self._source_snapshot = None
@@ -286,6 +292,7 @@ class BlenderController:
                 "scene.open",
                 source_path=str(source),
                 source_sha256=before.sha256,
+                aspect_ratio=aspect_ratio,
                 unit_scale=unit_scale,
             )
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
@@ -295,6 +302,7 @@ class BlenderController:
                 "scene.open",
                 source_path=str(source),
                 source_sha256=before.sha256,
+                aspect_ratio=aspect_ratio,
                 unit_scale=unit_scale,
             )
         after_import = snapshot_source(source)
@@ -342,6 +350,7 @@ class BlenderController:
                     "scene.open",
                     source_path=str(source),
                     source_sha256=source_sha256,
+                    aspect_ratio=self._aspect_ratio,
                     unit_scale=self._unit_scale,
                 )
                 self.request("scene.export_normalized", output_path=str(output))
@@ -374,7 +383,11 @@ class BlenderController:
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
-            return self.open_scene(command.source_path, unit_scale=command.unit_scale)
+            return self.open_scene(
+                command.source_path,
+                aspect_ratio=command.aspect_ratio,
+                unit_scale=command.unit_scale,
+            )
         if isinstance(command, (ComponentFindCommand, ComponentInspectCommand)):
             if self._manifest is None:
                 raise BlenderWorkerError("cannot inspect components before a scene is open")
@@ -397,7 +410,7 @@ class BlenderController:
                 self._recover_session()
                 return self.query_occlusion(command)
         operation = command.op
-        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        arguments = command_payload(command, exclude={"request_id", "op"})
         if isinstance(command, IlluminationSetCommand):
             arguments["illumination"] = self._cache_environment_map(
                 command.illumination
@@ -407,7 +420,9 @@ class BlenderController:
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self._recover_session()
             result = self.request(operation, **arguments)
-        if operation == "session.reset":
+        if isinstance(command, SessionResetCommand):
+            if "aspect_ratio" in command.model_fields_set:
+                self._aspect_ratio = command.aspect_ratio
             self._accepted_commands.clear()
             snapshot = SessionSnapshot.model_validate(result)
             return {"reset": True, "state_sha256": snapshot.state_sha256}
@@ -1463,10 +1478,13 @@ class BlenderController:
             raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
         source_path = self._source_path
         source_sha256 = self._source_sha256
+        aspect_ratio = self._aspect_ratio
         accepted_commands = list(self._accepted_commands)
         self.close()
         self.start()
-        reopened = self.open_scene(source_path, unit_scale=self._unit_scale)
+        reopened = self.open_scene(
+            source_path, aspect_ratio=aspect_ratio, unit_scale=self._unit_scale
+        )
         if reopened.source_sha256 != source_sha256:
             self.close()
             self._source_path = None

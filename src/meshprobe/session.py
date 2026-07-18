@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 
-from meshprobe.camera import camera_diagnostics
+from meshprobe.camera import camera_diagnostics, framed_default_camera
 from meshprobe.models import (
     Camera,
     CameraPoseFrame,
@@ -47,13 +47,18 @@ class InspectionSession:
     Blender worker.
     """
 
-    def __init__(self, manifest: SceneManifest) -> None:
+    def __init__(self, manifest: SceneManifest, *, aspect_ratio: float = 1.0) -> None:
         self.manifest = manifest
+        self._aspect_ratio = aspect_ratio
         self._known_ids = frozenset(component.id for component in manifest.components)
         self.reset()
 
     def reset(self) -> SessionSnapshot:
-        self._camera = self.manifest.imported_camera
+        self._camera = framed_default_camera(
+            self.manifest.imported_camera,
+            self.manifest.root_bounds,
+            aspect_ratio=self._aspect_ratio,
+        )
         self._illumination = self.manifest.imported_illumination
         self._components = {
             component_id: ComponentVisualState() for component_id in sorted(self._known_ids)
@@ -124,7 +129,11 @@ class InspectionSession:
         )
         return SessionSnapshot(
             camera=self._camera,
-            camera_diagnostics=camera_diagnostics(self._camera, target_mm=target),
+            camera_diagnostics=camera_diagnostics(
+                self._camera,
+                target_mm=target,
+                aspect_ratio=self._aspect_ratio,
+            ),
             illumination=self._illumination,
             components=dict(self._components),
             state_sha256=hashlib.sha256(canonical).hexdigest(),

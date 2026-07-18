@@ -6,9 +6,11 @@ import math
 from typing import cast
 
 from meshprobe.models import (
+    Bounds,
     Camera,
     CameraDiagnostics,
     CameraPoseFrame,
+    DepthOfFieldMode,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
@@ -18,6 +20,206 @@ from meshprobe.models import (
 )
 
 _EPSILON = 1e-12
+
+# Fraction of the frame's limiting axis the model should occupy when the default
+# camera auto-frames the scene on open. 0.9 leaves a ~5% margin on every side —
+# comfortably clear of the edge, yet far tighter than an untouched source camera.
+DEFAULT_FRAME_FILL = 0.9
+
+
+def framed_default_camera(
+    camera: Camera,
+    bounds: Bounds,
+    *,
+    aspect_ratio: float = 1.0,
+    frame_fill: float = DEFAULT_FRAME_FILL,
+) -> Camera:
+    """Fit a source camera to the scene bounds while retaining its view direction.
+
+    This is deliberately renderer-independent so the in-memory session model has
+    the same initial camera as the Blender worker. The worker additionally
+    excludes source-hidden geometry before calling its equivalent fit.
+    """
+
+    minimum = bounds.minimum_mm
+    maximum = bounds.maximum_mm
+    center = cast(
+        Vec3,
+        tuple((low + high) / 2 for low, high in zip(minimum, maximum, strict=True)),
+    )
+    diagnostics = camera_diagnostics(camera, target_mm=center, aspect_ratio=aspect_ratio)
+    forward, right, up = diagnostics.forward, diagnostics.right, diagnostics.up
+    corners = _box_corners(minimum, maximum)
+    bounding_radius = max(
+        math.sqrt(sum((value - origin) ** 2 for value, origin in zip(corner, center, strict=True)))
+        for corner in corners
+    )
+    nearest_depth = min(
+        _dot(
+            cast(Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))),
+            forward,
+        )
+        for corner in corners
+    )
+    clearance = -nearest_depth + 1.0
+    projection = camera.projection
+
+    if isinstance(projection, OrthographicProjection):
+        half_width = max(
+            abs(
+                _dot(
+                    cast(
+                        Vec3,
+                        tuple(value - origin for value, origin in zip(corner, center, strict=True)),
+                    ),
+                    right,
+                )
+            )
+            for corner in corners
+        )
+        half_height = max(
+            abs(
+                _dot(
+                    cast(
+                        Vec3,
+                        tuple(value - origin for value, origin in zip(corner, center, strict=True)),
+                    ),
+                    up,
+                )
+            )
+            for corner in corners
+        )
+        required_half = (
+            max(half_width, half_height * aspect_ratio, 1.0)
+            if aspect_ratio >= 1
+            else max(half_height, half_width / aspect_ratio, 1.0)
+        )
+        projection = projection.model_copy(update={"scale_mm": 2 * required_half / frame_fill})
+        distance = max(clearance, bounding_radius + 1.0, 1.0)
+    else:
+        assert diagnostics.horizontal_fov_degrees is not None
+        assert diagnostics.vertical_fov_degrees is not None
+        distance = bounds_fit_distance_mm(
+            minimum_mm=minimum,
+            maximum_mm=maximum,
+            forward=forward,
+            right=right,
+            up=up,
+            horizontal_half_tan=math.tan(math.radians(diagnostics.horizontal_fov_degrees / 2)),
+            vertical_half_tan=math.tan(math.radians(diagnostics.vertical_fov_degrees / 2)),
+            frame_fill=frame_fill,
+        )
+
+    position = cast(
+        Vec3,
+        tuple(origin - axis * distance for origin, axis in zip(center, forward, strict=True)),
+    )
+    depths = [
+        _dot(
+            cast(
+                Vec3,
+                tuple(value - origin for value, origin in zip(corner, position, strict=True)),
+            ),
+            forward,
+        )
+        for corner in corners
+    ]
+    updates: dict[str, object] = {
+        "near_clip_mm": max(0.1, min(depths) * 0.5),
+        "far_clip_mm": max(depths) * 1.5,
+    }
+    if (
+        isinstance(projection, PerspectiveProjection)
+        and projection.depth_of_field.mode is DepthOfFieldMode.ENABLED
+        and projection.depth_of_field.focus_distance_mm is not None
+    ):
+        original_position = camera.pose.position_mm
+        focus_point = cast(
+            Vec3,
+            tuple(
+                origin + axis * projection.depth_of_field.focus_distance_mm
+                for origin, axis in zip(original_position, forward, strict=True)
+            ),
+        )
+        focus_distance = _dot(
+            cast(
+                Vec3,
+                tuple(point - origin for point, origin in zip(focus_point, position, strict=True)),
+            ),
+            forward,
+        )
+        updates["depth_of_field"] = projection.depth_of_field.model_copy(
+            update={"focus_distance_mm": max(0.1, focus_distance)}
+        )
+    projection = projection.model_copy(update=updates)
+    return camera.model_copy(
+        update={
+            "pose": camera.pose.model_copy(update={"position_mm": position}),
+            "projection": projection,
+        }
+    )
+
+
+def bounds_fit_distance_mm(
+    *,
+    minimum_mm: Vec3,
+    maximum_mm: Vec3,
+    forward: Vec3,
+    right: Vec3,
+    up: Vec3,
+    horizontal_half_tan: float,
+    vertical_half_tan: float,
+    frame_fill: float = DEFAULT_FRAME_FILL,
+) -> float:
+    """Smallest pinhole-camera distance that frames an axis-aligned box tightly.
+
+    Returns the distance, in millimetres, to place the camera along ``-forward``
+    from the box centre so every one of the box's eight corners stays within
+    ``frame_fill`` of the frame's limiting axis. ``forward``/``right``/``up`` are
+    the camera basis (unit) vectors; the half-tangents are ``tan(fov/2)`` for the
+    horizontal and vertical fields of view. A larger ``frame_fill`` frames the box
+    more tightly; the limiting axis reaches exactly ``frame_fill`` and the other
+    axis stays inside it, so the box never clips.
+    """
+
+    if not 0.0 < frame_fill <= 1.0:
+        raise ValueError("frame_fill must be within (0, 1]")
+    if horizontal_half_tan <= 0.0 or vertical_half_tan <= 0.0:
+        raise ValueError("half-angle tangents must be positive")
+    center = cast(
+        Vec3, tuple((low + high) / 2 for low, high in zip(minimum_mm, maximum_mm, strict=True))
+    )
+    distance = 0.0
+    nearest_depth = math.inf
+    for corner in _box_corners(minimum_mm, maximum_mm):
+        offset = cast(
+            Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))
+        )
+        depth = _dot(offset, forward)
+        nearest_depth = min(nearest_depth, depth)
+        horizontal = abs(_dot(offset, right)) / (horizontal_half_tan * frame_fill)
+        vertical = abs(_dot(offset, up)) / (vertical_half_tan * frame_fill)
+        distance = max(distance, horizontal - depth, vertical - depth)
+    # For a very wide field of view, the per-corner screen-space fit can converge
+    # to (but not exceed) the nearest corner's own depth — e.g. a box viewed along
+    # its diagonal has zero horizontal/vertical offset for that corner, so
+    # `horizontal - depth`/`vertical - depth` reduce to exactly `-depth`. Without
+    # an explicit clearance margin, that places the camera exactly on the corner.
+    clearance = -nearest_depth + 1.0
+    return max(distance, clearance)
+
+
+def _box_corners(minimum_mm: Vec3, maximum_mm: Vec3) -> list[Vec3]:
+    return [
+        (x, y, z)
+        for x in (minimum_mm[0], maximum_mm[0])
+        for y in (minimum_mm[1], maximum_mm[1])
+        for z in (minimum_mm[2], maximum_mm[2])
+    ]
+
+
+def _dot(left: Vec3, right: Vec3) -> float:
+    return sum(a * b for a, b in zip(left, right, strict=True))
 
 
 def orbit_camera(

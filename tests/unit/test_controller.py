@@ -233,7 +233,9 @@ def test_open_scene_validates_hash_and_manifest(
         lambda operation, **arguments: expected.model_dump(mode="json"),
     )
 
-    assert controller.open_scene(source) == expected
+    assert controller.open_scene(source, aspect_ratio=2.5) == expected
+    # Stored so a later crash recovery reopens with the same non-square framing.
+    assert controller._aspect_ratio == 2.5
 
 
 def test_open_scene_detects_source_mutation(tmp_path: Path, scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -346,10 +348,16 @@ def test_output_reader_is_bound_to_its_worker_generation() -> None:
 def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     controller = BlenderController()
     snapshot = InspectionSession(scene_manifest).snapshot()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def request(operation: str, **arguments: object) -> dict[str, object]:
+        calls.append((operation, arguments))
+        return snapshot.model_dump(mode="json")
+
     monkeypatch.setattr(
         controller,
         "request",
-        lambda operation, **arguments: snapshot.model_dump(mode="json"),
+        request,
     )
     target = scene_manifest.components[-1].id
 
@@ -370,6 +378,13 @@ def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -
     reset = controller.execute(SessionResetCommand(request_id="reset", op="session.reset"))
     assert reset == {"reset": True, "state_sha256": snapshot.state_sha256}
     assert controller._accepted_commands == []
+    assert calls[-1] == ("session.reset", {})
+
+    controller.execute(
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=2.5)
+    )
+    assert calls[-1] == ("session.reset", {"aspect_ratio": 2.5})
+    assert controller._aspect_ratio == 2.5
 
 
 def test_execute_returns_operation_local_state(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -936,20 +951,24 @@ def test_execute_routes_scene_open_through_checked_import(
     controller = BlenderController()
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")
-    opened: list[Path] = []
+    opened: list[tuple[Path, float]] = []
 
-    def open_scene(path: str | Path, *, unit_scale: float = 1.0) -> SceneManifest:
-        del unit_scale
-        opened.append(Path(path))
+    def open_scene(
+        path: str | Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SceneManifest:
+        assert unit_scale == 1.0
+        opened.append((Path(path), aspect_ratio))
         return scene_manifest
 
     monkeypatch.setattr(controller, "open_scene", open_scene)
     result = controller.execute(
-        SceneOpenCommand(request_id="open", op="scene.open", source_path=str(source))
+        SceneOpenCommand(
+            request_id="open", op="scene.open", source_path=str(source), aspect_ratio=2.5
+        )
     )
 
     assert result is scene_manifest
-    assert opened == [source]
+    assert opened == [(source, 2.5)]
 
 
 def test_execute_recovers_once_after_crash(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -994,6 +1013,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     source.write_bytes(b"model")
     controller._source_path = source
     controller._source_sha256 = "source-hash"
+    controller._aspect_ratio = 2.5
     controller._accepted_commands = [
         ("component.mark", {"component_ids": ["one"], "mode": "selected"}),
         ("component.display", {"component_ids": ["one"], "mode": "hidden"}),
@@ -1002,9 +1022,11 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
 
-    def open_scene(path: Path, *, unit_scale: float = 1.0) -> SimpleNamespace:
-        del unit_scale
-        calls.append(("open", path))
+    def open_scene(
+        path: Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SimpleNamespace:
+        assert unit_scale == 1.0
+        calls.append(("open", path, aspect_ratio))
         return SimpleNamespace(source_sha256="source-hash")
 
     monkeypatch.setattr(controller, "open_scene", open_scene)
@@ -1019,7 +1041,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     assert calls == [
         "close",
         "start",
-        ("open", source),
+        ("open", source, 2.5),
         ("component.mark", {"component_ids": ["one"], "mode": "selected"}),
         ("component.display", {"component_ids": ["one"], "mode": "hidden"}),
     ]
@@ -1048,8 +1070,10 @@ def test_recover_session_retains_replay_log_when_replay_crashes(
     monkeypatch.setattr(controller, "close", lambda: None)
     monkeypatch.setattr(controller, "start", lambda: {})
 
-    def reopen(path: Path, *, unit_scale: float = 1.0) -> SimpleNamespace:
-        del unit_scale
+    def reopen(
+        path: Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
+    ) -> SimpleNamespace:
+        del path, aspect_ratio, unit_scale
         controller._accepted_commands.clear()
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1076,7 +1100,9 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         controller,
         "open_scene",
-        lambda path, *, unit_scale=1.0: SimpleNamespace(source_sha256="replacement-hash"),
+        lambda path, *, aspect_ratio=1.0, unit_scale=1.0: SimpleNamespace(
+            source_sha256="replacement-hash"
+        ),
     )
     monkeypatch.setattr(
         controller,

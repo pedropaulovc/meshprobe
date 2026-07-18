@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command, SceneOpenCommand
+from meshprobe.protocol import Command, SceneOpenCommand, command_payload
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -46,7 +46,7 @@ class MeshProbeClient:
         self.blender = str(Path(resolved_blender).resolve()) if resolved_blender else blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
-        wire = command.model_dump(mode="json")
+        wire = command_payload(command)
         # Keep an ordinary open's wire format identical to the pre-upgrade one: a daemon that
         # was already running before `unit_scale` existed validates commands with
         # extra="forbid" and would reject the unknown field, breaking every plain open until
@@ -62,11 +62,11 @@ class MeshProbeClient:
                 blender=self.blender,
             )
         except ValueError as error:
-            if not self._old_daemon_rejected_unit_scale(command, error):
+            if not self._old_daemon_rejected_camera_option(command, error):
                 raise
             # `close_all` is part of the original daemon protocol and checkpoints sessions before
             # stopping it. Restart through that known action, then retry against the new daemon so
-            # an explicit --unit-scale works across an in-place client upgrade.
+            # explicit camera options work across an in-place client upgrade.
             self.close_all()
             payload = self.request(
                 "execute",
@@ -77,13 +77,13 @@ class MeshProbeClient:
         return OperationReceipt.model_validate(payload)
 
     @staticmethod
-    def _old_daemon_rejected_unit_scale(command: Command, error: ValueError) -> bool:
-        if not isinstance(command, SceneOpenCommand) or command.unit_scale == 1.0:
-            return False
+    def _old_daemon_rejected_camera_option(command: Command, error: ValueError) -> bool:
         message = str(error).lower()
-        return "unit_scale" in message and (
-            "extra" in message or "unknown" in message or "forbid" in message
-        )
+        if "extra" not in message and "unknown" not in message and "forbid" not in message:
+            return False
+        if "unit_scale" in message and isinstance(command, SceneOpenCommand):
+            return command.unit_scale != 1.0
+        return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set
 
     def resolve_component(self, session: str, value: str) -> str:
         payload = self.request("resolve", session=session, value=value)

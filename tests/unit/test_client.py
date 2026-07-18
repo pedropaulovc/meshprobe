@@ -9,7 +9,13 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
-from meshprobe.protocol import SceneOpenCommand
+from meshprobe.models import PerspectiveProjection
+from meshprobe.protocol import (
+    RenderImageCommand,
+    SceneOpenCommand,
+    SessionResetCommand,
+    ViewOrbitCommand,
+)
 from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
 
 
@@ -279,6 +285,43 @@ def test_execute_restarts_old_daemon_for_overridden_unit_scale(
     ]
 
 
+def test_execute_restarts_old_daemon_for_explicit_aspect_ratio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append({"action": action, **arguments})
+        if (
+            action == "execute"
+            and len([call for call in captured if call["action"] == "execute"]) == 1
+        ):
+            raise ValueError("aspect_ratio: Extra inputs are not permitted")
+        return {"session": "review", "op": "session.reset"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    client.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=2.5),
+    )
+
+    assert close_all_calls == 1
+    execute_commands = [call["command"] for call in captured if call["action"] == "execute"]
+    assert execute_commands == [
+        {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
+        {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
+    ]
+
+
 def test_close_all_waits_for_graceful_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -386,3 +429,101 @@ def test_windows_pid_liveness_does_not_send_ctrl_c(monkeypatch: pytest.MonkeyPat
 
     assert MeshProbeClient._pid_alive(42)
     assert not MeshProbeClient._pid_alive(41)
+
+
+def test_execute_omits_only_the_new_default_aspect_ratio_from_the_wire_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An already-running daemon from a previous version validates commands with
+    # extra="forbid" and may not know about a newly added field (e.g.
+    # aspect_ratio); sending it unconditionally would reject every command from
+    # an upgraded client until the daemon is restarted.
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "scene.open"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    client.execute(
+        "review",
+        SceneOpenCommand(request_id="open", op="scene.open", source_path="/models/assembly.glb"),
+    )
+    assert "aspect_ratio" not in captured["command"]
+
+    client.execute(
+        "review",
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path="/models/assembly.glb",
+            aspect_ratio=2.5,
+        ),
+    )
+    assert captured["command"]["aspect_ratio"] == 2.5
+
+    client.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset"),
+    )
+    assert "aspect_ratio" not in captured["command"]
+
+    client.execute(
+        "review",
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=2.5),
+    )
+    assert captured["command"]["aspect_ratio"] == 2.5
+
+
+def test_execute_keeps_established_default_values_on_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "render.image"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+    client.execute(
+        "review",
+        RenderImageCommand(request_id="render", op="render.image", output_path="/tmp/render.png"),
+    )
+    assert captured["command"]["width"] == 2576
+    assert captured["command"]["height"] == 2576
+
+
+def test_execute_keeps_nested_discriminator_fields_at_their_default_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A field left at its declared default is safe to omit only at the TOP level of
+    # the command — a naive recursive `exclude_defaults` would also strip a nested
+    # submodel's own default-valued fields, including a discriminator field like
+    # `Projection.mode` (defaults to "perspective"), leaving
+    # `COMMAND_ADAPTER.validate_python()` unable to tell which union member to parse.
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "view.orbit"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    client.execute(
+        "review",
+        ViewOrbitCommand(
+            request_id="orbit",
+            op="view.orbit",
+            target_mm=(0.0, 0.0, 0.0),
+            azimuth_degrees=0.0,
+            elevation_degrees=0.0,
+            distance_mm=1000.0,
+            projection=PerspectiveProjection(),
+        ),
+    )
+
+    assert captured["command"]["projection"]["mode"] == "perspective"

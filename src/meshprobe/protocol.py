@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self, get_args
+from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -48,6 +48,7 @@ class CommandModel(BaseModel):
 class SceneOpenCommand(CommandModel):
     op: Literal["scene.open"]
     source_path: str
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
     unit_scale: PositiveFiniteFloat = Field(
         default=1.0,
         description="Multiplier applied to the imported geometry at import time, before any "
@@ -210,6 +211,7 @@ class RenderContactSheetCommand(CommandModel):
 
 class SessionResetCommand(CommandModel):
     op: Literal["session.reset"]
+    aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
 
 
 type Command = Annotated[
@@ -231,6 +233,17 @@ type Command = Annotated[
     | SessionResetCommand,
     Field(discriminator="op"),
 ]
+
+
+def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
+    """Serialize a command without turning an omitted framing aspect into an explicit one."""
+    payload = command.model_dump(mode="json", exclude=exclude)
+    if isinstance(command, (SceneOpenCommand, SessionResetCommand)) and (
+        "aspect_ratio" not in command.model_fields_set
+    ):
+        payload.pop("aspect_ratio")
+    return payload
+
 
 COMMAND_ADAPTER: TypeAdapter[Command] = TypeAdapter(Command)
 

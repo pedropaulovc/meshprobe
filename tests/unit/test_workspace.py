@@ -34,6 +34,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     ViewFrameCommand,
     ViewRotateCommand,
+    ViewSetCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -55,14 +56,16 @@ class FakeSessionService:
         self.closed = False
         self.killed = False
         self.graphics = graphics
+        self.received_commands: list[Command] = []
 
     @property
     def worker_pid(self) -> int | None:
         return None if self.closed or self.killed else 4242
 
     def execute(self, command: Command) -> CommandResponse:
+        self.received_commands.append(command)
         if isinstance(command, SceneOpenCommand):
-            self.session = InspectionSession(self.manifest)
+            self.session = InspectionSession(self.manifest, aspect_ratio=command.aspect_ratio)
             result: JsonValue = self.manifest.model_dump(mode="json")
         elif isinstance(command, SessionSnapshotCommand):
             assert self.session is not None
@@ -84,6 +87,9 @@ class FakeSessionService:
         elif isinstance(command, (ViewFrameCommand, ViewRotateCommand)):
             assert self.session is not None
             result = {"state_sha256": self.session.snapshot().state_sha256}
+        elif isinstance(command, ViewSetCommand):
+            assert self.session is not None
+            result = self.session.set_camera(command.camera).model_dump(mode="json")
         elif isinstance(command, SessionResetCommand):
             assert self.session is not None
             result = self.session.reset().model_dump(mode="json")
@@ -199,6 +205,35 @@ def test_session_manager_writes_compact_queryable_state(
     }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_session_manager_execute_propagates_open_aspect_ratio_to_the_worker(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.execute(
+        "review",
+        SceneOpenCommand(
+            request_id="open",
+            op="scene.open",
+            source_path=str(source),
+            aspect_ratio=2.5,
+        ),
+    )
+
+    assert len(services) == 1
+    received = services[0].received_commands[0]
+    assert isinstance(received, SceneOpenCommand)
+    assert received.aspect_ratio == 2.5
 
 
 def test_find_receipt_reports_match_count(tmp_path: Path, scene_manifest: SceneManifest) -> None:
@@ -520,6 +555,31 @@ def test_render_image_does_not_warn_within_the_aspect_ratio_tolerance(
             height=1000,
         ),
     )
+    assert receipt.warnings == ()
+
+
+def test_render_image_uses_the_checkpointed_open_aspect_before_any_view_refit(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source, aspect_ratio=2.0)
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matches-open-framing",
+            op="render.image",
+            output_path=str(tmp_path / "matches-open-framing.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+
     assert receipt.warnings == ()
 
 
@@ -971,6 +1031,175 @@ def test_closed_and_killed_sessions_recover_checkpoint_with_default_render_style
     assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
     recovered.close("default")
     assert services[-1].closed
+
+
+def test_recovery_reopens_the_worker_with_the_checkpointed_aspect_ratio(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.kill("default")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "default",
+        SessionSnapshotCommand(request_id="after-kill", op="session.snapshot"),
+    )
+
+    recover_open = services[-1].received_commands[0]
+    assert isinstance(recover_open, SceneOpenCommand)
+    assert recover_open.aspect_ratio == 2.5
+
+
+def test_recovery_reopens_with_a_later_session_reset_aspect_ratio(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.execute(
+        "default",
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=0.5),
+    )
+    manager.kill("default")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "default",
+        SessionSnapshotCommand(request_id="after-kill", op="session.snapshot"),
+    )
+
+    recover_open = services[-1].received_commands[0]
+    assert isinstance(recover_open, SceneOpenCommand)
+    assert recover_open.aspect_ratio == 0.5
+
+
+def test_bare_reset_preserves_the_checkpointed_open_aspect_ratio(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    # A reset that omits --aspect-ratio must not clobber the open aspect with 1.0.
+    manager.execute(
+        "default",
+        SessionResetCommand(request_id="reset", op="session.reset"),
+    )
+    manager.kill("default")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "default",
+        SessionSnapshotCommand(request_id="after-kill", op="session.snapshot"),
+    )
+
+    recover_open = services[-1].received_commands[0]
+    assert isinstance(recover_open, SceneOpenCommand)
+    assert recover_open.aspect_ratio == 2.5
+
+
+def test_bare_reset_stays_omitted_in_durable_events(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    def factory() -> FakeSessionService:
+        return FakeSessionService(scene_manifest)
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.execute("default", SessionResetCommand(request_id="reset", op="session.reset"))
+
+    events = [
+        json.loads(line)
+        for line in (root / "sessions" / "default" / "events.jsonl").read_text().splitlines()
+    ]
+    assert "aspect_ratio" not in events[-1]["command"]
+
+
+@pytest.mark.parametrize("schema_version", (1, 2))
+def test_checkpoint_without_framing_marker_restores_the_source_camera_before_replaying(
+    tmp_path: Path, scene_manifest: SceneManifest, schema_version: int
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("review", source)
+    manager.close("review")
+    checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["schema_version"] = schema_version
+    checkpoint.pop("aspect_ratio")
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recover", op="session.snapshot"),
+    )
+
+    recovered_commands = services[-1].received_commands
+    assert isinstance(recovered_commands[0], SceneOpenCommand)
+    assert isinstance(recovered_commands[1], ViewSetCommand)
+    assert recovered_commands[1].camera == scene_manifest.imported_camera
+
+    upgraded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert upgraded["schema_version"] == 2
+    assert upgraded["accepted_commands"][0] == {
+        "request_id": "recover-v1-source-camera",
+        "op": "view.set",
+        "camera": scene_manifest.imported_camera.model_dump(mode="json"),
+        "focus_component_ids": [],
+        "aspect_ratio": 1.0,
+    }
+
+    recovered.kill("review")
+    restarted = SessionManager(root, service_factory=factory)
+    restarted.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recover-again", op="session.snapshot"),
+    )
+    restarted_commands = services[-1].received_commands
+    assert isinstance(restarted_commands[0], SceneOpenCommand)
+    assert isinstance(restarted_commands[1], ViewSetCommand)
+    assert restarted_commands[1].camera == scene_manifest.imported_camera
 
 
 def test_failed_checkpoint_upgrade_kills_untracked_recovery_worker(

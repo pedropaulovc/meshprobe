@@ -21,6 +21,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    SessionResetCommand,
     SessionSnapshotCommand,
     ViewFrameCommand,
     ViewRotateCommand,
@@ -54,7 +55,7 @@ class FakeEvaluationService:
             }
         elif operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
-        elif operation in {"illumination.set", "view.rotate", "view.frame"}:
+        elif operation in {"illumination.set", "session.reset", "view.rotate", "view.frame"}:
             result = {"state_sha256": "2" * 64}
         elif operation == "component.occlusion":
             result = {
@@ -211,6 +212,17 @@ def test_broker_records_view_rotate_as_a_normal_trace_event(tmp_path: Path) -> N
     assert rotated.ok
     assert active.events[-1].operation is Operation.VIEW_ROTATE
     assert active.events[-1].status is TraceStatus.ACCEPTED
+
+
+def test_broker_trace_preserves_an_omitted_reset_aspect_ratio(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+
+    reset = active.execute(SessionResetCommand(request_id="reset", op="session.reset"))
+
+    assert reset.ok
+    arguments = active.events[-1].arguments
+    assert isinstance(arguments, dict)
+    assert "aspect_ratio" not in arguments
 
 
 def test_broker_records_view_frame_as_a_normal_trace_event(tmp_path: Path) -> None:
