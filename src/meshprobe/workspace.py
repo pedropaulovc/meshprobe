@@ -779,10 +779,10 @@ class SessionManager:
         return (
             f"render.image requested {command.width}x{command.height} (aspect ratio "
             f"{render_aspect:.4g}), but the session camera was last framed for aspect ratio "
-            f"{framed_aspect:.4g} by view.orbit/view.frame/view.set. "
-            "The render will reframe to the requested resolution instead of matching that "
-            "framing; re-run view-orbit or view-frame with a matching --aspect-ratio first "
-            "if the tight framing matters."
+            f"{framed_aspect:.4g} by view.orbit/view.frame/view.set (or a view.rotate that set "
+            "a projection). The render will reframe to the requested resolution instead of "
+            "matching that framing; re-run whichever framing command you used with a matching "
+            "--aspect-ratio first if the tight framing matters."
         )
 
     def _require_files(self, name: str) -> SessionFiles:
