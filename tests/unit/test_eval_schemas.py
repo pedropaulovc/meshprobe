@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -81,7 +83,7 @@ def test_answer_evidence_and_state_require_context() -> None:
 
 
 def test_episode_and_ground_truth_reject_ambiguous_operation_contracts() -> None:
-    fields = {
+    fields: dict[str, Any] = {
         "episode_id": "episode_0001",
         "model_file": "fixture.glb",
         "model_sha256": "a" * 64,
@@ -100,7 +102,7 @@ def test_episode_and_ground_truth_reject_ambiguous_operation_contracts() -> None
     with pytest.raises(ValidationError, match="first required"):
         EpisodeSpec(**fields, required_operations=(Operation.SESSION_SNAPSHOT,))
 
-    truth_fields = {
+    truth_fields: dict[str, Any] = {
         "episode_id": "episode_0001",
         "model_sha256": "a" * 64,
         "generator_family": "fixture",
@@ -128,7 +130,7 @@ def test_episode_and_ground_truth_reject_ambiguous_operation_contracts() -> None
 
 
 def test_trace_status_requires_consistent_error_fields() -> None:
-    fields = {
+    fields: dict[str, Any] = {
         "sequence": 1,
         "request_id": "request",
         "operation": Operation.SCENE_OPEN,
@@ -171,7 +173,7 @@ def test_corpus_and_tier_manifests_reject_duplicate_or_incomplete_membership() -
         importer_sha256="d" * 64,
         render_engines=("eevee",),
     )
-    tier = {
+    tier: dict[str, Any] = {
         "tier": CorpusTier.SMOKE,
         "corpus_version": "test-v1",
         "corpus_manifest_sha256": "e" * 64,
