@@ -31,9 +31,8 @@ from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
-# ``gpu.init()`` is load-bearing for graphics platform probing below and is absent
-# before Blender 5.2. Do not lower this floor without making that initialization
-# optional and adding CI coverage for the proposed older Blender LTS.
+# Blender 5.2 is the oldest version exercised by CI. Do not lower this floor
+# without a real test run on the proposed older Blender LTS.
 MINIMUM_BLENDER_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
@@ -1769,10 +1768,8 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     function (no ``bpy``/``gpu`` access) so it stays unit-testable outside a
     real Blender process — see ``tests/unit/test_blender_worker.py``.
 
-    Call this before touching any version-sensitive Blender API (e.g.
-    ``gpu.init()``, added in Blender 5.2 — see issue #93): an unsupported
-    Blender otherwise fails deep inside a call like that with a raw
-    ``AttributeError`` and no hint that the Blender version is the problem.
+    Call this before touching version-sensitive Blender APIs so an unsupported
+    Blender produces a clear version error instead of an engine-specific failure.
     """
     if version[:2] >= MINIMUM_BLENDER_VERSION:
         return
