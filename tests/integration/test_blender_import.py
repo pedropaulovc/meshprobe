@@ -3146,7 +3146,7 @@ def test_eevee_hardware_policy_rejects_software_renderer(
     output = tmp_path / "eevee-software.png"
     with BlenderController(timeout_seconds=120) as controller:
         assert controller.graphics is not None
-        assert controller.graphics.device_class.value == "software"
+        assert controller.graphics.device_class.value == "unknown"
         assert "llvmpipe" in controller.graphics.renderer.casefold()
         controller.open_scene(source)
         with pytest.raises(BlenderWorkerError, match="hardware graphics required"):
@@ -3176,11 +3176,11 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
     with BlenderController(timeout_seconds=120) as controller:
         assert controller.graphics is not None
         assert controller.graphics.device_class.value == "software"
-        assert "software compatibility mode" in controller.graphics.renderer
+        assert "compatibility mode (GPU unavailable)" in controller.graphics.renderer
         assert controller.graphics.warnings
         compatibility_warning = controller.graphics.warnings[0]
         assert compatibility_warning.startswith("Blender 4.2")
-        assert "software compatibility mode" in compatibility_warning
+        assert "compatibility mode without GPU telemetry" in compatibility_warning
         assert "hardware_required and screen_edges require Blender 5.2" in compatibility_warning
         controller.open_scene(source)
         controller.execute(SessionResetCommand(request_id="blender-4.2-reset", op="session.reset"))
@@ -3200,7 +3200,7 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
                 )
             )
             assert isinstance(rendered, RenderManifest)
-            assert rendered.device == "graphics_software"
+            assert rendered.device == "graphics_unknown"
             assert Image.open(rendered.color.path).size == (64, 64)
 
         with pytest.raises(BlenderWorkerError, match="hardware graphics required"):

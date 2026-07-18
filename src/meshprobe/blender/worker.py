@@ -1779,8 +1779,8 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     function (no ``bpy``/``gpu`` access) so it stays unit-testable outside a
     real Blender process — see ``tests/unit/test_blender_worker.py``.
 
-    Blender 4.2 through 5.1 run in software-only compatibility mode. They must not
-    call GPU telemetry or the GPU compositor path, which require Blender 5.2.
+    Blender 4.2 through 5.1 run in bounded compatibility mode. They cannot call
+    GPU telemetry or the GPU compositor path, which require Blender 5.2.
     """
     if version[:2] >= MINIMUM_BLENDER_VERSION:
         return
@@ -1808,14 +1808,14 @@ def initialize_graphics_platform() -> dict[str, Any]:
         detected = bpy.app.version_string
         return {
             "vendor": "unavailable",
-            "renderer": f"Blender {detected} software compatibility mode",
+            "renderer": f"Blender {detected} compatibility mode (GPU unavailable)",
             "version": detected,
             "backend": "unavailable",
             "blender_device_type": "unavailable",
-            "device_class": "software",
+            "device_class": "unknown",
             "warnings": [
-                f"Blender {detected} runs in software compatibility mode: hardware_required "
-                "and screen_edges require Blender 5.2 or newer."
+                f"Blender {detected} runs in compatibility mode without GPU telemetry: "
+                "hardware_required and screen_edges require Blender 5.2 or newer."
             ],
         }
     gpu.init()

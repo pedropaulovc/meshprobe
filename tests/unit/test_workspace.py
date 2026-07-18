@@ -309,6 +309,41 @@ def test_contact_sheet_records_worker_default_render_style(
     assert sheet_state["render_style"] == RenderStyleState().model_dump(mode="json")
 
 
+def test_render_image_records_the_workers_resolved_style(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class FallbackStyleService(FakeSessionService):
+        def execute(self, command: Command) -> CommandResponse:
+            if isinstance(command, RenderImageCommand):
+                assert self.session is not None
+                return CommandResponse(
+                    request_id=command.request_id,
+                    op=command.op,
+                    result={"style": "shaded"},
+                )
+            return super().execute(command)
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FallbackStyleService(scene_manifest),
+    )
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path=str(tmp_path / "frame.png"),
+        ),
+    )
+
+    files = SessionFiles(manager.root, "review")
+    state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert state["render_style"]["style"] == "shaded"
+
+
 def _fake_graphics_platform() -> GraphicsPlatform:
     return GraphicsPlatform(
         vendor="Microsoft",

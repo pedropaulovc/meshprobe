@@ -103,17 +103,17 @@ def test_require_supported_blender_version_accepts_supported_versions(
     worker_module.require_supported_blender_version(version)  # must not raise
 
 
-def test_initialize_graphics_platform_uses_software_compatibility_before_gpu_init(
+def test_initialize_graphics_platform_reports_unknown_compatibility_device_before_gpu_init(
     worker_module: types.ModuleType,
 ) -> None:
     worker_module.bpy.app = types.SimpleNamespace(version=(4, 2, 0), version_string="4.2.0")
     worker_module.gpu.init = pytest.fail
     platform = worker_module.initialize_graphics_platform()
 
-    assert platform["device_class"] == "software"
-    assert platform["renderer"] == "Blender 4.2.0 software compatibility mode"
+    assert platform["device_class"] == "unknown"
+    assert platform["renderer"] == "Blender 4.2.0 compatibility mode (GPU unavailable)"
     assert platform["warnings"] == [
-        "Blender 4.2.0 runs in software compatibility mode: hardware_required and "
+        "Blender 4.2.0 runs in compatibility mode without GPU telemetry: hardware_required and "
         "screen_edges require Blender 5.2 or newer."
     ]
 
