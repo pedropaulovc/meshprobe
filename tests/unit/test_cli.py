@@ -42,6 +42,68 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def test_schema_per_command_lookup_returns_only_that_command() -> None:
+    """Regression test for #98: `schema view-orbit` used to not exist at all, forcing a
+    grep of the whole `--kind commands` dump for e.g. PerspectiveProjection."""
+    result = runner.invoke(app, ["schema", "view-orbit"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+
+    # Just the ViewOrbitCommand fragment, not the whole discriminated union.
+    assert payload["title"] == "ViewOrbitCommand"
+    assert "discriminator" not in payload
+    assert "PerspectiveProjection" in payload["$defs"]
+
+    full_dump = runner.invoke(app, ["schema", "--kind", "commands"])
+    assert result.stdout != full_dump.stdout
+    assert len(result.stdout) < len(full_dump.stdout)
+
+
+def test_schema_per_command_lookup_accepts_the_protocol_op_name() -> None:
+    result = runner.invoke(app, ["schema", "component.occlusion"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["title"] == "ComponentOcclusionCommand"
+
+
+def test_schema_per_command_lookup_accepts_a_cli_alias() -> None:
+    # "occlusion" is the CLI subcommand name; the op is "component.occlusion".
+    result = runner.invoke(app, ["schema", "occlusion"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["title"] == "ComponentOcclusionCommand"
+
+
+def test_schema_per_command_lookup_defaults_to_results_kind_when_asked() -> None:
+    result = runner.invoke(app, ["schema", "view-orbit", "--kind", "results"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["required"] == ["request_id", "op", "result"]
+    assert payload["properties"]["op"]["const"] == "view.orbit"
+
+
+def test_schema_per_command_lookup_supports_yaml_output() -> None:
+    result = runner.invoke(app, ["schema", "view-orbit", "--yaml"])
+    assert result.exit_code == 0
+    payload = yaml.safe_load(result.stdout)
+    assert payload["title"] == "ViewOrbitCommand"
+
+
+def test_schema_unknown_command_name_reports_a_clear_error() -> None:
+    result = runner.invoke(app, ["schema", "bogus-command"])
+    assert result.exit_code != 0
+    output = unstyle(result.output)
+    assert "bogus-command" in output
+    assert "view-orbit" in output
+    assert "schema --kind commands" in output
+    # No stack trace leaked to the user.
+    assert "Traceback" not in output
+
+
+def test_schema_kind_state_rejects_a_per_command_lookup() -> None:
+    result = runner.invoke(app, ["schema", "view-orbit", "--kind", "state"])
+    assert result.exit_code != 0
+    assert "Traceback" not in unstyle(result.output)
+
+
 def _property_description(envelope: dict[str, object], model: str, field: str) -> str:
     defs = envelope.get("$defs", {})
     assert isinstance(defs, dict)
