@@ -98,12 +98,26 @@ def _semantic_result(operation: Operation, result: JsonValue) -> JsonValue:
     if operation not in {Operation.RENDER_IMAGE, Operation.RENDER_CONTACT_SHEET}:
         return result
     normalized = _without_render_variance(result)
-    if isinstance(normalized, dict):
-        # A trace recorded before `warnings` existed has no such key; a fresh
-        # render always emits `warnings: []` when nothing is wrong. Treat the two
-        # as equivalent so legacy no-warning traces still replay clean.
-        normalized.setdefault("warnings", [])
+    if not isinstance(normalized, dict):
+        return normalized
+    # A render manifest recorded before `warnings` existed has no such key; a
+    # fresh render always emits `warnings: []` when nothing is wrong. Treat the
+    # two as equivalent so legacy no-warning traces still replay clean. A
+    # render.image result IS a render manifest; a render.contact_sheet result
+    # nests one per panel under `panels[*].render`.
+    _backfill_missing_warnings(normalized)
+    panels = normalized.get("panels")
+    if isinstance(panels, list):
+        for panel in panels:
+            if isinstance(panel, dict):
+                render = panel.get("render")
+                if isinstance(render, dict):
+                    _backfill_missing_warnings(render)
     return normalized
+
+
+def _backfill_missing_warnings(manifest: dict[str, JsonValue]) -> None:
+    manifest.setdefault("warnings", [])
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:

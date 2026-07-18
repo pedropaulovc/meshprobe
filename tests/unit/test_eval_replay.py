@@ -159,3 +159,39 @@ def test_render_replay_treats_a_missing_warnings_key_as_no_warnings() -> None:
     assert _semantic_result(Operation.RENDER_IMAGE, legacy_no_warnings_key) != _semantic_result(
         Operation.RENDER_IMAGE, fresh_with_warning
     )
+
+
+def test_render_replay_treats_a_missing_panel_warnings_key_as_no_warnings() -> None:
+    # render.contact_sheet nests one render manifest per panel under
+    # panels[*].render; a legacy trace recorded before warnings existed lacks the
+    # key on EACH nested panel render, not just at the top level.
+    legacy_no_warnings_key = {
+        "panels": [
+            {"caption": "front", "render": {"state_sha256": "a" * 64}},
+            {"caption": "back", "render": {"state_sha256": "b" * 64}},
+        ],
+    }
+    fresh_empty_warnings = {
+        "panels": [
+            {"caption": "front", "render": {"state_sha256": "a" * 64, "warnings": []}},
+            {"caption": "back", "render": {"state_sha256": "b" * 64, "warnings": []}},
+        ],
+    }
+
+    assert _semantic_result(
+        Operation.RENDER_CONTACT_SHEET, legacy_no_warnings_key
+    ) == _semantic_result(Operation.RENDER_CONTACT_SHEET, fresh_empty_warnings)
+
+    # A real regression (a new warning fires on one panel) must still be detected.
+    fresh_with_warning = {
+        "panels": [
+            {
+                "caption": "front",
+                "render": {"state_sha256": "a" * 64, "warnings": ["something is wrong"]},
+            },
+            {"caption": "back", "render": {"state_sha256": "b" * 64, "warnings": []}},
+        ],
+    }
+    assert _semantic_result(
+        Operation.RENDER_CONTACT_SHEET, legacy_no_warnings_key
+    ) != _semantic_result(Operation.RENDER_CONTACT_SHEET, fresh_with_warning)

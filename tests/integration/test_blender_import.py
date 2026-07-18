@@ -3593,6 +3593,43 @@ def test_empty_frame_warning_ignores_fully_transparent_geometry(tmp_path: Path) 
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
 
+def test_empty_frame_warning_catches_alpha_masked_cutout_below_threshold(tmp_path: Path) -> None:
+    # A shown component whose material is alphaMode=MASK with a constant alpha
+    # BELOW alphaCutoff is discarded entirely by the color render (issue #64
+    # re-review); the foreground mask must agree, not paint it opaque and
+    # suppress the empty-frame warning.
+    source = build_occluded_glb(
+        tmp_path,
+        blocker_alpha=0.2,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-alpha-masked-only",
+                op="render.image",
+                output_path=str(tmp_path / "alpha-masked-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
 def test_empty_frame_warning_does_not_erase_opaque_geometry_behind_transparency(
     tmp_path: Path,
 ) -> None:
