@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
-from meshprobe.protocol import SceneOpenCommand
+from meshprobe.models import PerspectiveProjection
+from meshprobe.protocol import SceneOpenCommand, ViewOrbitCommand
 from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
 
 
@@ -333,3 +334,36 @@ def test_execute_omits_default_valued_fields_from_the_wire_payload(
         ),
     )
     assert captured["command"]["aspect_ratio"] == 2.5
+
+
+def test_execute_keeps_nested_discriminator_fields_at_their_default_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A field left at its declared default is safe to omit only at the TOP level of
+    # the command — a naive recursive `exclude_defaults` would also strip a nested
+    # submodel's own default-valued fields, including a discriminator field like
+    # `Projection.mode` (defaults to "perspective"), leaving
+    # `COMMAND_ADAPTER.validate_python()` unable to tell which union member to parse.
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, Any]:
+        captured.update(arguments)
+        return {"session": "review", "op": "view.orbit"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    client.execute(
+        "review",
+        ViewOrbitCommand(
+            request_id="orbit",
+            op="view.orbit",
+            target_mm=(0.0, 0.0, 0.0),
+            azimuth_degrees=0.0,
+            elevation_degrees=0.0,
+            distance_mm=1000.0,
+            projection=PerspectiveProjection(),
+        ),
+    )
+
+    assert captured["command"]["projection"]["mode"] == "perspective"

@@ -2485,6 +2485,89 @@ print(json.dumps(bounds))
     assert bounds["maximum_mm"] == pytest.approx([50.0, 50.0, 50.0], abs=0.01)
 
 
+def test_reset_session_reuses_the_open_aspect_ratio_when_omitted(tmp_path: Path) -> None:
+    """An internal caller (e.g. ``render_contact_sheet``'s cleanup path) issues
+    a bare ``session.reset`` with no ``aspect_ratio`` field. Treating that
+    omission as an implicit request for a square frame would silently
+    reframe a session opened with a non-square default back to 1.0; the
+    reset path instead reuses the aspect_ratio last established by
+    ``scene.open`` or an explicit ``session.reset`` (issue #56).
+
+    ``reset_session`` is exercised directly (loaded by file path, bypassing
+    the package's pydantic-dependent ``__init__.py``, which is not
+    importable inside Blender's bundled Python) with the expensive collaborators
+    (camera framing, illumination, render style) stubbed out, since this test
+    targets only the aspect_ratio bookkeeping, not scene reconstruction."""
+
+    script = tmp_path / "probe_reset_aspect_ratio.py"
+    repo_root = Path(__file__).resolve().parents[2]
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+captured_aspect_ratios = []
+
+def fake_framed_default_camera(camera, root_bounds, frame_fill=1.0, aspect_ratio=1.0):
+    captured_aspect_ratios.append(aspect_ratio)
+    return camera
+
+worker.framed_default_camera = fake_framed_default_camera
+worker.visible_root_bounds = lambda fallback: fallback
+worker.require_session = lambda: {{"root_bounds": {{}}}}
+worker.apply_camera = lambda camera: None
+worker.apply_illumination = lambda illumination: None
+worker.configure_render_style = lambda style: None
+worker.session_snapshot = lambda: {{}}
+
+worker.IMPORTED_CAMERA = {{}}
+worker.IMPORTED_ILLUMINATION = {{}}
+worker.DEFAULT_ASPECT_RATIO = 2.0
+
+worker.reset_session({{}})
+after_omitted = worker.DEFAULT_ASPECT_RATIO
+
+worker.reset_session({{"aspect_ratio": 0.5}})
+after_explicit = worker.DEFAULT_ASPECT_RATIO
+
+print(json.dumps({{
+    "captured_aspect_ratios": captured_aspect_ratios,
+    "after_omitted": after_omitted,
+    "after_explicit": after_explicit,
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    # Omitting aspect_ratio reuses the open-established default (2.0) rather than
+    # silently reframing to 1.0, and leaves that default unchanged...
+    assert result["captured_aspect_ratios"][0] == pytest.approx(2.0)
+    assert result["after_omitted"] == pytest.approx(2.0)
+
+    # ...while an explicit aspect_ratio is honored AND becomes the new default for
+    # any subsequent internal reset that omits the field.
+    assert result["captured_aspect_ratios"][1] == pytest.approx(0.5)
+    assert result["after_explicit"] == pytest.approx(0.5)
+
+
 def test_zero_energy_lights_fall_back_to_valid_preset(tmp_path: Path) -> None:
     source = build_zero_light_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:

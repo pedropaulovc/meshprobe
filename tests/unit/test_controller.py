@@ -936,19 +936,21 @@ def test_execute_routes_scene_open_through_checked_import(
     controller = BlenderController()
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")
-    opened: list[Path] = []
+    opened: list[tuple[Path, float]] = []
 
-    def open_scene(path: str | Path) -> SceneManifest:
-        opened.append(Path(path))
+    def open_scene(path: str | Path, aspect_ratio: float = 1.0) -> SceneManifest:
+        opened.append((Path(path), aspect_ratio))
         return scene_manifest
 
     monkeypatch.setattr(controller, "open_scene", open_scene)
     result = controller.execute(
-        SceneOpenCommand(request_id="open", op="scene.open", source_path=str(source))
+        SceneOpenCommand(
+            request_id="open", op="scene.open", source_path=str(source), aspect_ratio=2.5
+        )
     )
 
     assert result is scene_manifest
-    assert opened == [source]
+    assert opened == [(source, 2.5)]
 
 
 def test_execute_recovers_once_after_crash(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]

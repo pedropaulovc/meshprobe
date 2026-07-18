@@ -71,6 +71,10 @@ ORIGINAL_MESHES: dict[str, bpy.types.Mesh] = {}
 ORIGINAL_VISIBILITY: dict[str, tuple[bool, bool]] = {}
 COMPONENT_STATES: dict[str, dict[str, Any]] = {}
 IMPORTED_CAMERA: dict[str, Any] | None = None
+# The aspect_ratio last established by scene.open or an explicit session.reset —
+# an internal session.reset that omits the field (e.g. render_contact_sheet's
+# cleanup pass) reuses this instead of silently reframing to a square default.
+DEFAULT_ASPECT_RATIO: float = 1.0
 CURRENT_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
 CURRENT_CAMERA_OPERATION: dict[str, Any] | None = None
@@ -381,7 +385,15 @@ def framed_default_camera(
         # landscape (>= 1) render fits horizontally (the vertical extent is scaled
         # down by aspect_ratio), a portrait render fits vertically. Fitting as if
         # aspect_ratio were always 1 ignores that derivation and can under-size the
-        # non-fitted axis, clipping it in the requested render.
+        # non-fitted axis, clipping it in the requested render. Verified against a
+        # live Blender `Camera.view_frame()` probe: an ORTHO camera with the
+        # default (unset) sensor_fit="AUTO" genuinely halves the non-fitted axis
+        # by aspect_ratio rather than treating scale_mm as always-vertical, which
+        # is what this codebase's renderer-independent `camera_diagnostics` model
+        # (camera.py) assumes — a separate, pre-existing inconsistency between
+        # that model and the real renderer, out of scope here since fixing the
+        # renderer to match the model breaks actual rendered output (confirmed:
+        # doing so clips this file's landscape orthographic fixture vertically).
         if aspect_ratio >= 1:
             required_half = max(half_width, half_height * aspect_ratio, 1.0)
         else:
@@ -1723,8 +1735,13 @@ def session_snapshot() -> dict[str, Any]:
 def reset_session(command: dict[str, Any]) -> dict[str, Any]:
     if IMPORTED_CAMERA is None or IMPORTED_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
-    global CURRENT_CAMERA_OPERATION
+    global CURRENT_CAMERA_OPERATION, DEFAULT_ASPECT_RATIO
     CURRENT_CAMERA_OPERATION = None
+    aspect_ratio = command.get("aspect_ratio")
+    if aspect_ratio is None:
+        aspect_ratio = DEFAULT_ASPECT_RATIO
+    else:
+        DEFAULT_ASPECT_RATIO = aspect_ratio
     for component_id, obj in COMPONENT_OBJECTS.items():
         restore_mesh(component_id)
         clear_component_label(component_id)
@@ -1740,7 +1757,7 @@ def reset_session(command: dict[str, Any]) -> dict[str, Any]:
         framed_default_camera(
             IMPORTED_CAMERA,
             visible_root_bounds(require_session()["root_bounds"]),
-            aspect_ratio=command.get("aspect_ratio", 1.0),
+            aspect_ratio=aspect_ratio,
         )
     )
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
@@ -3265,8 +3282,9 @@ def initialize_session(
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_OPERATION
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
-    global OVERRIDE_MATERIALS, EMISSION_MATERIALS
+    global OVERRIDE_MATERIALS, EMISSION_MATERIALS, DEFAULT_ASPECT_RATIO
 
+    DEFAULT_ASPECT_RATIO = aspect_ratio
     MANIFEST = manifest
     objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
     path_objects = set(objects)

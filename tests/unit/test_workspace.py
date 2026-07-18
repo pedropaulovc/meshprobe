@@ -969,6 +969,66 @@ def test_closed_and_killed_sessions_recover_checkpoint_with_default_render_style
     assert services[-1].closed
 
 
+def test_recovery_reopens_the_worker_with_the_checkpointed_aspect_ratio(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.kill("default")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "default",
+        SessionSnapshotCommand(request_id="after-kill", op="session.snapshot"),
+    )
+
+    recover_open = services[-1].received_commands[0]
+    assert isinstance(recover_open, SceneOpenCommand)
+    assert recover_open.aspect_ratio == 2.5
+
+
+def test_recovery_reopens_with_a_later_session_reset_aspect_ratio(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.execute(
+        "default",
+        SessionResetCommand(request_id="reset", op="session.reset", aspect_ratio=0.5),
+    )
+    manager.kill("default")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "default",
+        SessionSnapshotCommand(request_id="after-kill", op="session.snapshot"),
+    )
+
+    recover_open = services[-1].received_commands[0]
+    assert isinstance(recover_open, SceneOpenCommand)
+    assert recover_open.aspect_ratio == 0.5
+
+
 def test_failed_checkpoint_upgrade_kills_untracked_recovery_worker(
     tmp_path: Path,
     scene_manifest: SceneManifest,

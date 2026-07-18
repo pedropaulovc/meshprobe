@@ -366,7 +366,7 @@ class BlenderController:
 
     def execute(self, command: Command) -> object:
         if isinstance(command, SceneOpenCommand):
-            return self.open_scene(command.source_path)
+            return self.open_scene(command.source_path, aspect_ratio=command.aspect_ratio)
         if isinstance(command, (ComponentFindCommand, ComponentInspectCommand)):
             if self._manifest is None:
                 raise BlenderWorkerError("cannot inspect components before a scene is open")

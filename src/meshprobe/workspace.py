@@ -105,6 +105,7 @@ class SessionCheckpoint(BaseModel):
     source_sha256: str
     blender: str | None
     state_sha256: str
+    aspect_ratio: float = 1.0
     accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -450,6 +451,7 @@ class SessionManager:
                 source_sha256=manifest.source_sha256,
                 blender=selected_blender,
                 state_sha256=snapshot.state_sha256,
+                aspect_ratio=aspect_ratio,
             )
             atomic_json(files.metadata, metadata.model_dump(mode="json"))
             atomic_json(files.scene, manifest.model_dump(mode="json"))
@@ -716,6 +718,7 @@ class SessionManager:
                     request_id="recover-open",
                     op="scene.open",
                     source_path=checkpoint.source_path,
+                    aspect_ratio=checkpoint.aspect_ratio,
                 )
             )
             manifest = SceneManifest.model_validate(opened.result)
@@ -941,6 +944,7 @@ class SessionManager:
         )
         if isinstance(command, SessionResetCommand):
             checkpoint.accepted_commands.clear()
+            checkpoint.aspect_ratio = command.aspect_ratio
         elif command.op in STATE_OPERATIONS:
             accepted = command
             if isinstance(command, IlluminationSetCommand):

@@ -46,16 +46,23 @@ class MeshProbeClient:
         self.blender = str(Path(resolved_blender).resolve()) if resolved_blender else blender
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
-        # Omit fields left at their declared default: an already-running daemon
+        # Omit top-level fields the caller never set: an already-running daemon
         # from a previous version validates commands with `extra="forbid"` and may
         # not know about a newly added field, so sending it unconditionally (as
         # `model_dump` does by default) would reject the command until the daemon
-        # is restarted. A field equal to its own default behaves identically
-        # whether sent or omitted, so this is safe for any existing field too.
+        # is restarted. `model_dump(exclude_defaults=True)` would do this too, but
+        # it recurses into nested submodels and strips THEIR default-valued fields
+        # as well — including discriminator fields like `Projection.mode`, whose
+        # absence breaks `COMMAND_ADAPTER.validate_python()` on the receiving end.
+        # `model_fields_set` only reflects what was set on this top-level model, so
+        # filtering by it leaves every nested submodel dumped in full.
+        full_command = command.model_dump(mode="json")
         payload = self.request(
             "execute",
             session=session,
-            command=command.model_dump(mode="json", exclude_defaults=True),
+            command={
+                key: value for key, value in full_command.items() if key in command.model_fields_set
+            },
             blender=self.blender,
         )
         return OperationReceipt.model_validate(payload)
