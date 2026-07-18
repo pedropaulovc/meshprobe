@@ -27,11 +27,11 @@ def test_parse_blender_version(path: Path, expected: tuple[int, int, int] | None
     assert parse_blender_version(path) == expected
 
 
-def test_min_supported_blender_version_is_five_two() -> None:
-    # Pinned to issue #93's unsupported-version handling: Blender < 5.2 is not
+def test_min_supported_blender_version_is_four_two() -> None:
+    # Pinned to the worker compatibility floor: Blender < 4.2 is not
     # supported by the worker script, so discovery must never silently prefer
     # an older install.
-    assert MIN_SUPPORTED_BLENDER_VERSION == (5, 2)
+    assert MIN_SUPPORTED_BLENDER_VERSION == (4, 2)
 
 
 def test_discover_windows_blender_prefers_newest_supported() -> None:
@@ -47,8 +47,8 @@ def test_discover_windows_blender_prefers_newest_supported() -> None:
 
 def test_discover_windows_blender_skips_unsupported_versions() -> None:
     candidates = [
-        Path("C:/Program Files/Blender Foundation/Blender 4.5/blender.exe"),
         Path("C:/Program Files/Blender Foundation/Blender 3.6/blender.exe"),
+        Path("C:/Program Files/Blender Foundation/Blender 4.1/blender.exe"),
     ]
     assert _discover_windows_blender(candidates) is None
 
@@ -68,12 +68,12 @@ def test_discover_windows_blender_empty_candidates_returns_none() -> None:
 
 
 def test_discover_windows_blender_boundary_version_is_supported() -> None:
-    candidates = [Path("C:/Program Files/Blender Foundation/Blender 5.2/blender.exe")]
+    candidates = [Path("C:/Program Files/Blender Foundation/Blender 4.2/blender.exe")]
     assert _discover_windows_blender(candidates) == candidates[0]
 
 
 def test_discover_windows_blender_just_below_boundary_is_unsupported() -> None:
-    candidates = [Path("C:/Program Files/Blender Foundation/Blender 5.1.9/blender.exe")]
+    candidates = [Path("C:/Program Files/Blender Foundation/Blender 4.1.9/blender.exe")]
     assert _discover_windows_blender(candidates) is None
 
 

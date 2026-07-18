@@ -125,3 +125,18 @@ def test_software_compatibility_rejects_screen_edges_before_bpy_access(
 
     with pytest.raises(RuntimeError, match=r"screen_edges requires Blender 5.2 or newer"):
         worker_module.configure_render_style({"style": "screen_edges"})
+
+
+def test_software_compatibility_rejects_evaluator_passes_before_rendering(
+    worker_module: types.ModuleType,
+) -> None:
+    worker_module.bpy.app = types.SimpleNamespace(version=(4, 2, 0))
+    worker_module.__dict__["require_session"] = lambda: {"source_sha256": "source"}
+
+    with pytest.raises(RuntimeError, match=r"evaluator passes require Blender 5.2 or newer"):
+        worker_module.render_image(
+            {
+                "output_path": "/tmp/output.png",
+                "evaluator_output_dir": "/tmp/evaluator",
+            }
+        )

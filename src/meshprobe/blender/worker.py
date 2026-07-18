@@ -1580,7 +1580,11 @@ def reset_session() -> dict[str, Any]:
         }
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
-    configure_render_style({})
+    # Blender 4.2 cannot use the GPU compositor-backed default screen_edges
+    # style. Resetting a session must remain available for the supported
+    # shaded/contact-sheet flows without changing the modern runtime default.
+    reset_style = "shaded" if uses_software_compatibility_mode(bpy.app.version) else "screen_edges"
+    configure_render_style({"style": reset_style})
     return session_snapshot()
 
 
@@ -2600,6 +2604,13 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
+    if command.get("evaluator_output_dir") is not None and uses_software_compatibility_mode(
+        bpy.app.version
+    ):
+        raise RuntimeError(
+            "evaluator passes require Blender 5.2 or newer; Blender 4.2 software "
+            "compatibility mode supports shaded and shaded_edges renders only"
+        )
     with temporary_render_style():
         device = configure_render(command)
         configure_render_style(command)

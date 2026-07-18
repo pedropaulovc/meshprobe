@@ -3183,6 +3183,10 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
         assert "software compatibility mode" in compatibility_warning
         assert "hardware_required and screen_edges require Blender 5.2" in compatibility_warning
         controller.open_scene(source)
+        reset = controller.execute(
+            SessionResetCommand(request_id="blender-4.2-reset", op="session.reset")
+        )
+        assert reset["reset"] is True
 
         for style in (RenderStyle.SHADED, RenderStyle.SHADED_EDGES):
             output = tmp_path / f"blender-4.2-{style.value}.png"
@@ -3229,6 +3233,22 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
                     style=RenderStyle.SCREEN_EDGES,
                 )
             )
+        evaluator_dir = tmp_path / "blender-4.2-evaluator"
+        with pytest.raises(BlenderWorkerError, match=r"evaluator passes require Blender 5.2"):
+            controller.render_image(
+                RenderImageCommand(
+                    request_id="blender-4.2-evaluator",
+                    op="render.image",
+                    output_path=str(tmp_path / "blender-4.2-evaluator.png"),
+                    width=64,
+                    height=64,
+                    samples=1,
+                    engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SHADED,
+                ),
+                evaluator_output_dir=evaluator_dir,
+            )
+        assert not evaluator_dir.exists()
 
 
 def test_focused_contact_sheet_has_nine_manifested_panels_and_restores_state(
