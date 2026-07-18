@@ -114,7 +114,7 @@ jobs:
       - run: uv sync --locked --all-groups
       - run: uv run ruff format --check .
       - run: uv run ruff check .
-      - run: uv run mypy src
+      - run: uv run mypy src tests
 
   windows:
     runs-on: windows-latest
