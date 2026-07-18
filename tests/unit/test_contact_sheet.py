@@ -184,6 +184,66 @@ def test_prepare_caption_lines_adds_no_note_when_nothing_is_truncated() -> None:
     assert lines == ("Occluders removed:", "1. blocker-1", "2. blocker-2", "3. blocker-3")
 
 
+def test_prepare_caption_lines_lets_a_larger_budget_show_full_wrapped_entries() -> None:
+    # A caller who opts into a taller panel (custom_3x3 --panel-height 4096)
+    # already gets a scaled-up max_lines from _caption_line_caps; the one-
+    # line-per-entry truncation fallback must only kick in when the full wrap
+    # doesn't fit that scaled budget, not unconditionally — otherwise the
+    # enlarged panel silently loses text it has room to show in full.
+    font = ImageFont.load_default(size=30)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    width = 1188
+
+    long_name = (
+        "Assembly_Main/SubAssy_DriveTrain/SubAssy_GearBox_v2/"
+        "Component_HelicalGear48Teeth_Left_Instance003"
+    )
+    caption = f"Occluders removed:\n1. {long_name}\n2. Bracket_Mounting_Left\n3. Housing_Cover_Top"
+
+    # A generous budget (as a caller-scaled max_lines for a large panel would
+    # provide) must let the long entry wrap across its full physical lines
+    # instead of being truncated to one, and adds no note since nothing was cut.
+    lines = _prepare_caption_lines(draw, caption, font, width, max_lines=20)
+
+    assert _CAPTION_TRUNCATION_NOTE not in lines
+    assert not any(line.endswith("…") for line in lines)
+    assert long_name.replace(" ", "") in "".join(lines).replace(" ", "")
+
+
+def test_compose_contact_sheet_handles_truncated_caption_alongside_callouts(
+    tmp_path: Path,
+) -> None:
+    # Regression: when a panel's caption is long enough to trigger both the
+    # default max_caption_lines cap AND the extra truncation-note line (5
+    # lines total at the default budget), a panel that ALSO carries callouts
+    # must not crash — the legend simply gets however little band space (down
+    # to zero) remains after the caption, instead of _cap_lines indexing an
+    # empty slice.
+    long_name = (
+        "Assembly_Main/SubAssy_DriveTrain/SubAssy_GearBox_v2/"
+        "Component_HelicalGear48Teeth_Left_Instance003"
+    )
+    caption = f"Occluders removed:\n1. {long_name}\n2. Bracket_Mounting_Left\n3. Housing_Cover_Top"
+    callout = ContactSheetCallout(
+        number=1,
+        component_id="cmp_target",
+        label="target",
+        image_xy=(0.5, 0.5),
+    )
+    default_panel = RenderContactSheetCommand.model_fields["panel_width"].default
+    panels = []
+    for index in range(9):
+        path = tmp_path / f"crash-panel-{index}.png"
+        Image.new("RGB", (8, 8), "black").save(path)
+        panels.append((path, caption if index == 0 else "Panel", (callout,) if index == 0 else ()))
+
+    output = tmp_path / "crash-sheet.png"
+    # Must not raise.
+    compose_contact_sheet(tuple(panels), output, default_panel, default_panel)
+
+    assert Image.open(output).size[0] > 0
+
+
 def test_compose_contact_sheet_caps_caption_growth_at_default_panel_size(tmp_path: Path) -> None:
     long_label = "selected-component-" + "x" * 230
     callouts = tuple(

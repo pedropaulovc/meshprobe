@@ -50,6 +50,8 @@ def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
     """Bound how many lines a caption band contributes, so an arbitrarily long
     component display name or callout legend cannot grow the composed sheet past
     its intended size."""
+    if limit <= 0:
+        return ()
     if len(lines) <= limit:
         return lines
     truncated = list(lines[:limit])
@@ -92,36 +94,39 @@ def _prepare_caption_lines(
 ) -> tuple[str, ...]:
     """Wrap `caption` for the caption band, capped at `max_lines`.
 
-    A caption with multiple `\\n`-separated entries (e.g. one line per removed
-    occluder) is treated specially: each entry is truncated to at most ONE
-    physical line instead of being allowed to wrap across several, so one
-    long entry can't consume the whole line budget and crowd its siblings out
-    of view entirely (the ellipsis on an entry still marks that entry as cut).
-    When anything was cut this way — an entry truncated, or more entries exist
-    than fit — an extra note line is appended pointing at the untruncated data
+    Every paragraph (a `\\n`-separated entry, e.g. one line per removed
+    occluder) is wrapped in full first. If the total physical-line count
+    already fits `max_lines` — including a caller-scaled budget for a larger
+    panel — nothing is truncated at all, so an enlarged sheet still gets the
+    room its scaled cap grants it.
+
+    Only when the full wrap doesn't fit does a fallback kick in: each
+    paragraph is truncated to at most ONE physical line, so a single long
+    entry can't consume the whole budget and crowd its siblings out of view
+    entirely (the ellipsis on an entry still marks that entry as cut). If
+    that STILL doesn't fit (more entries than `max_lines` even at one line
+    each), trailing entries are dropped too. Whenever anything was cut this
+    way, an extra note line is appended pointing at the untruncated data
     (`panel.caption` in the render result always holds every entry in full;
-    only what's burned into the image can be capped). The note is added ON TOP
-    of `max_lines`, never by displacing an entry that would otherwise have
-    fit — the point is to never silently drop a default-budget entry just to
-    make room for the note. A single-paragraph caption with no `\\n` keeps the
-    previous plain wrap-then-cap behavior, since there are no sibling entries
-    it could crowd out.
+    only what's burned into the image can be capped) — added ON TOP of
+    `max_lines`, never by displacing an entry that would otherwise have fit,
+    so a default-budget entry is never silently dropped just to make room for
+    the note. A single-paragraph caption with no `\\n` keeps the previous
+    plain wrap-then-cap behavior, since there are no sibling entries it could
+    crowd out.
     """
     paragraphs = caption.splitlines() or [""]
     if len(paragraphs) <= 1:
         return _cap_lines(_wrap_text(draw, caption, font, width), max_lines)
-    single_line_paragraphs: list[str] = []
-    any_entry_truncated = False
-    for paragraph in paragraphs:
-        wrapped = _wrap_text(draw, paragraph, font, width)
-        if len(wrapped) > 1:
-            single_line_paragraphs.append(f"{wrapped[0].rstrip()}…")
-            any_entry_truncated = True
-        else:
-            single_line_paragraphs.append(wrapped[0] if wrapped else "")
+    wrapped_paragraphs = tuple(_wrap_text(draw, p, font, width) or ("",) for p in paragraphs)
+    full_lines = tuple(line for wrapped in wrapped_paragraphs for line in wrapped)
+    if len(full_lines) <= max_lines:
+        return full_lines
+    single_line_paragraphs = [
+        f"{wrapped[0].rstrip()}…" if len(wrapped) > 1 else wrapped[0]
+        for wrapped in wrapped_paragraphs
+    ]
     count_truncated = len(single_line_paragraphs) > max_lines
-    if not any_entry_truncated and not count_truncated:
-        return tuple(single_line_paragraphs)
     shown = single_line_paragraphs[:max_lines]
     if count_truncated and shown and not shown[-1].endswith("…"):
         shown = [*shown[:-1], f"{shown[-1].rstrip()}…"]
