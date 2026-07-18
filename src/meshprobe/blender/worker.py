@@ -1900,6 +1900,12 @@ def render_screen_edges(path: Path, settings: dict[str, Any]) -> None:
         group.links.new(mask_output, dilate.inputs["Mask"])
         mask_output = dilate.outputs["Mask"]
 
+    opacity = group.nodes.new("ShaderNodeMath")
+    opacity.operation = "MULTIPLY"
+    opacity.inputs[1].default_value = 0.5
+    group.links.new(mask_output, opacity.inputs[0])
+    mask_output = opacity.outputs["Value"]
+
     line_color = group.nodes.new("CompositorNodeRGB")
     color = settings["line_color"]
     line_color.outputs["Color"].default_value = (
