@@ -1091,6 +1091,26 @@ def test_bare_reset_preserves_the_checkpointed_open_aspect_ratio(
     assert recover_open.aspect_ratio == 2.5
 
 
+def test_bare_reset_stays_omitted_in_durable_events(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    def factory() -> FakeSessionService:
+        return FakeSessionService(scene_manifest)
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("default", source, aspect_ratio=2.5)
+    manager.execute("default", SessionResetCommand(request_id="reset", op="session.reset"))
+
+    events = [
+        json.loads(line)
+        for line in (root / "sessions" / "default" / "events.jsonl").read_text().splitlines()
+    ]
+    assert "aspect_ratio" not in events[-1]["command"]
+
+
 def test_v1_checkpoint_recovery_restores_the_source_camera_before_replaying(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
@@ -1123,6 +1143,27 @@ def test_v1_checkpoint_recovery_restores_the_source_camera_before_replaying(
     assert isinstance(recovered_commands[0], SceneOpenCommand)
     assert isinstance(recovered_commands[1], ViewSetCommand)
     assert recovered_commands[1].camera == scene_manifest.imported_camera
+
+    upgraded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert upgraded["schema_version"] == 2
+    assert upgraded["accepted_commands"][0] == {
+        "request_id": "recover-v1-source-camera",
+        "op": "view.set",
+        "camera": scene_manifest.imported_camera.model_dump(mode="json"),
+        "focus_component_ids": [],
+        "aspect_ratio": 1.0,
+    }
+
+    recovered.kill("review")
+    restarted = SessionManager(root, service_factory=factory)
+    restarted.execute(
+        "review",
+        SessionSnapshotCommand(request_id="recover-again", op="session.snapshot"),
+    )
+    restarted_commands = services[-1].received_commands
+    assert isinstance(restarted_commands[0], SceneOpenCommand)
+    assert isinstance(restarted_commands[1], ViewSetCommand)
+    assert restarted_commands[1].camera == scene_manifest.imported_camera
 
 
 def test_failed_checkpoint_upgrade_kills_untracked_recovery_worker(

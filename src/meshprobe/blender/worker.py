@@ -412,11 +412,11 @@ def framed_default_camera(
         for corner_y in (minimum[1], maximum[1])
         for corner_z in (minimum[2], maximum[2])
     ]
-    half_extent = max((high - low) / 2 for low, high in zip(minimum, maximum, strict=True))
+    bounding_radius = max((corner - center).length for corner in corners)
 
     # The nearest bound's depth (most negative, i.e. closest to the camera along
     # -forward) sets a floor on how far back the camera must sit: fitting only
-    # against the far/aggregate extent (as `half_extent` alone does) can still
+    # against a coarse aggregate extent can still
     # place the camera on or inside a bound that is very close along this specific
     # viewing axis (a corner or a thin, view-aligned object), which then gets
     # clipped regardless of the near_clip_mm floor below.
@@ -446,7 +446,7 @@ def framed_default_camera(
         else:
             required_half = max(half_height, half_width / aspect_ratio, 1.0)
         framed_projection["scale_mm"] = 2.0 * required_half / frame_fill
-        standoff = max(clearance, half_extent, 1.0)
+        standoff = max(clearance, bounding_radius + 1.0, 1.0)
         position = center - forward * standoff
     else:
         horizontal_half_tan, vertical_half_tan = _perspective_half_tangents(
@@ -464,7 +464,7 @@ def framed_default_camera(
         framed_projection = deepcopy(projection)
 
     # Recompute clip planes from the actual camera position (not the aggregate
-    # half_extent) for both projections alike: `clearance` above guarantees
+    # fitted aggregate distance) for both projections alike: `clearance` above guarantees
     # min(depths) >= 1.0, so near_clip_mm (half that) always sits strictly in
     # front of the nearest surface instead of relying on its own 0.1 mm floor to
     # save a degenerate fit.

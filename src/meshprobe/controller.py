@@ -65,6 +65,7 @@ from meshprobe.protocol import (
     ViewOrbitCommand,
     ViewRotateCommand,
     ViewSetCommand,
+    command_payload,
 )
 from meshprobe.selectors import ComponentIndex
 from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
@@ -409,12 +410,7 @@ class BlenderController:
                 self._recover_session()
                 return self.query_occlusion(command)
         operation = command.op
-        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
-        if (
-            isinstance(command, SessionResetCommand)
-            and "aspect_ratio" not in command.model_fields_set
-        ):
-            arguments.pop("aspect_ratio")
+        arguments = command_payload(command, exclude={"request_id", "op"})
         if isinstance(command, IlluminationSetCommand):
             arguments["illumination"] = self._cache_environment_map(
                 command.illumination

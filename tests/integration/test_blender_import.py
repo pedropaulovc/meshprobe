@@ -2503,7 +2503,9 @@ def test_default_view_fits_perspective_camera_for_non_square_render(tmp_path: Pa
     assert unfitted["min_x"] < 0.005 or unfitted["max_x"] > 0.995
 
 
-def test_default_view_backs_orthographic_camera_off_the_near_face(tmp_path: Path) -> None:
+def test_default_view_keeps_orthographic_camera_outside_bounds_after_a_bare_rotate(
+    tmp_path: Path,
+) -> None:
     """A symmetric cube viewed head-on has equal near- and far-corner depths
     from the bounds center; fitting the orthographic standoff from the
     farthest corner's absolute depth places the camera exactly on the near
@@ -2515,6 +2517,15 @@ def test_default_view_backs_orthographic_camera_off_the_near_face(tmp_path: Path
         artifact_cache_root=tmp_path / "cache",
     ) as controller:
         controller.open_scene(source)
+        controller.execute(
+            ViewRotateCommand(
+                request_id="ortho-default-rotate",
+                op="view.rotate",
+                target_mm=(0, 0, 0),
+                axis="z",
+                degrees=45,
+            )
+        )
         rendered = controller.render_image(
             RenderImageCommand(
                 request_id="ortho-default",
@@ -2529,12 +2540,13 @@ def test_default_view_backs_orthographic_camera_off_the_near_face(tmp_path: Path
     position = rendered.session.camera.pose.position_mm
     distance_from_center = math.sqrt(sum(component**2 for component in position))
 
-    # The cube's half-extent is 500 mm; the old formula put the camera exactly
-    # there (on the near face). The fix backs it off by a clearance margin.
-    assert distance_from_center > 500.5
+    # The cube's bounding radius is sqrt(3) * 500 mm. A bare rotate preserves
+    # the auto-framed standoff, so the camera must remain outside that sphere in
+    # every later orbit direction rather than only clearing the original near face.
+    assert distance_from_center > math.sqrt(3) * 500 + 0.5
 
-    # And the near clip plane sits well in front of the (now backed-off) face.
-    assert rendered.session.camera.projection.near_clip_mm < 1.0
+    # The renewed clip range remains valid after the orbit.
+    assert rendered.session.camera.projection.near_clip_mm > 0
 
 
 def test_default_view_fits_orthographic_camera_for_non_square_render(tmp_path: Path) -> None:

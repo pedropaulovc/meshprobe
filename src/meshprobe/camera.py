@@ -50,7 +50,10 @@ def framed_default_camera(
     diagnostics = camera_diagnostics(camera, target_mm=center, aspect_ratio=aspect_ratio)
     forward, right, up = diagnostics.forward, diagnostics.right, diagnostics.up
     corners = _box_corners(minimum, maximum)
-    half_extent = max((high - low) / 2 for low, high in zip(minimum, maximum, strict=True))
+    bounding_radius = max(
+        math.sqrt(sum((value - origin) ** 2 for value, origin in zip(corner, center, strict=True)))
+        for corner in corners
+    )
     nearest_depth = min(
         _dot(
             cast(Vec3, tuple(value - origin for value, origin in zip(corner, center, strict=True))),
@@ -92,7 +95,7 @@ def framed_default_camera(
             else max(half_height, half_width / aspect_ratio, 1.0)
         )
         projection = projection.model_copy(update={"scale_mm": 2 * required_half / frame_fill})
-        distance = max(clearance, half_extent, 1.0)
+        distance = max(clearance, bounding_radius + 1.0, 1.0)
     else:
         assert diagnostics.horizontal_fov_degrees is not None
         assert diagnostics.vertical_fov_degrees is not None

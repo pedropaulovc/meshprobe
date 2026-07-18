@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self, get_args
+from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -233,6 +233,17 @@ type Command = Annotated[
     | SessionResetCommand,
     Field(discriminator="op"),
 ]
+
+
+def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
+    """Serialize a command without turning an omitted framing aspect into an explicit one."""
+    payload = command.model_dump(mode="json", exclude=exclude)
+    if isinstance(command, (SceneOpenCommand, SessionResetCommand)) and (
+        "aspect_ratio" not in command.model_fields_set
+    ):
+        payload.pop("aspect_ratio")
+    return payload
+
 
 COMMAND_ADAPTER: TypeAdapter[Command] = TypeAdapter(Command)
 

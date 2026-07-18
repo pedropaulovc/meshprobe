@@ -42,6 +42,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     ViewSetCommand,
+    command_payload,
 )
 from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
@@ -749,13 +750,13 @@ class SessionManager:
                 # A v1 checkpoint predates default auto-framing. Its recorded relative
                 # camera commands therefore start from the source camera, not the new
                 # framed default. Restore that exact baseline before replaying them.
-                service.execute(
-                    ViewSetCommand(
-                        request_id="recover-v1-source-camera",
-                        op="view.set",
-                        camera=manifest.imported_camera,
-                    )
+                baseline = ViewSetCommand(
+                    request_id="recover-v1-source-camera",
+                    op="view.set",
+                    camera=manifest.imported_camera,
                 )
+                checkpoint.accepted_commands.insert(0, command_payload(baseline))
+                upgraded = True
             for raw in checkpoint.accepted_commands:
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
             if upgraded:
@@ -981,7 +982,7 @@ class SessionManager:
             accepted = command
             if isinstance(command, IlluminationSetCommand):
                 accepted = command.model_copy(update={"illumination": snapshot.illumination})
-            checkpoint.accepted_commands.append(accepted.model_dump(mode="json"))
+            checkpoint.accepted_commands.append(command_payload(accepted))
         checkpoint.state_sha256 = snapshot.state_sha256
         atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
 
@@ -1012,7 +1013,7 @@ class SessionManager:
             "request_id": command.request_id,
             "op": command.op,
             "status": status,
-            "command": command.model_dump(mode="json"),
+            "command": command_payload(command),
         }
         if result_path is not None:
             event["result_path"] = files.relative(result_path)

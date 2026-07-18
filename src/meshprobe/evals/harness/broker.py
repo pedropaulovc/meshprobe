@@ -23,6 +23,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
+    command_payload,
 )
 from meshprobe.service import CommandResponse
 
@@ -200,7 +201,7 @@ class EvaluationBroker:
             request_id=command.request_id,
             operation=Operation(command.op),
             status=status,
-            arguments=command.model_dump(mode="json", exclude={"request_id", "op"}),
+            arguments=command_payload(command, exclude={"request_id", "op"}),
             result=private_result,
             error_code=error_code,
             state_before_sha256=state_before,
