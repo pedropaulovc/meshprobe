@@ -1449,6 +1449,33 @@ def test_rejected_bare_orbit_preserves_live_camera_state(tmp_path: Path) -> None
     assert after == before
 
 
+def test_accepted_bare_orbit_clears_the_previous_motion_receipt(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        controller.execute(
+            ViewMoveCommand(
+                request_id="move",
+                op="view.move",
+                world_delta_mm=(100, 0, 0),
+            )
+        )
+        orbit = controller.execute(
+            ViewOrbitCommand(
+                request_id="orbit",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=45,
+                elevation_degrees=30,
+                distance_mm=2_000,
+            )
+        )
+        snapshot = controller.request("session.snapshot")["session"]
+
+    assert isinstance(orbit, dict)
+    assert snapshot["camera_operation"] is None
+
+
 def test_gltf_source_frame_rotation_maps_y_to_world_z(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:

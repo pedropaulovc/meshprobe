@@ -748,6 +748,7 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
     # CURRENT_CAMERA is guaranteed set here.
     if CURRENT_CAMERA is None:
         raise ValueError("session camera is not initialized")
+    global CURRENT_CAMERA_OPERATION
     target = Vector(value / MILLIMETERS_PER_METER for value in command["target_mm"])
     azimuth = math.radians(command["azimuth_degrees"])
     elevation = math.radians(command["elevation_degrees"])
@@ -790,12 +791,14 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
     }
     if requested_projection is None:
         _fit_reused_projection_to_scene(camera, position, rotation)
-    return apply_camera(
+    apply_camera(
         camera,
         focus_component_ids,
         aspect_ratio,
         command["target_mm"],
     )
+    CURRENT_CAMERA_OPERATION = None
+    return session_snapshot()
 
 
 def move_camera(command: dict[str, Any]) -> dict[str, Any]:
