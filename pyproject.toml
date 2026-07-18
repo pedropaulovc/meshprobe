@@ -38,6 +38,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/meshprobe"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/memory"]
+
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
