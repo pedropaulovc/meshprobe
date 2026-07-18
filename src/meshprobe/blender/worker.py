@@ -1702,9 +1702,9 @@ def temporary_render_style() -> Iterator[None]:
 
 def configure_render_style(command: dict[str, Any]) -> None:
     scene = bpy.context.scene
-    style = command.get("style", "shaded")
+    style = command.get("style", "screen_edges")
     scene.render.use_freestyle = style == "shaded_edges"
-    if style == "shaded":
+    if style in {"shaded", "screen_edges"}:
         return
     if style != "shaded_edges":
         raise ValueError(f"unknown render style: {style}")
@@ -1846,6 +1846,145 @@ def render_still(path: Path) -> None:
     bpy.ops.render.render(write_still=True)
     if not path.is_file():
         raise RuntimeError(f"Blender did not publish render output: {path}")
+
+
+@contextmanager
+def temporary_screen_edge_compositor(
+    path: Path,
+    settings: dict[str, Any],
+) -> Iterator[str]:
+    scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
+    original_group = scene.compositing_node_group
+    original_compositor_device = scene.render.compositor_device
+    original_pass_z = view_layer.use_pass_z
+    original_pass_normal = view_layer.use_pass_normal
+    group = None
+    try:
+        group = bpy.data.node_groups.new(
+            f"MeshProbeScreenEdges-{path.stem}",
+            "CompositorNodeTree",
+        )
+        scene.compositing_node_group = group
+        scene.render.compositor_device = "GPU"
+        view_layer.use_pass_z = True
+        view_layer.use_pass_normal = True
+        configure_screen_edge_nodes(group, path, settings)
+        yield f"{path.stem}.screen-edges"
+    finally:
+        scene.compositing_node_group = original_group
+        scene.render.compositor_device = original_compositor_device
+        view_layer.use_pass_z = original_pass_z
+        view_layer.use_pass_normal = original_pass_normal
+        if group is not None:
+            bpy.data.node_groups.remove(group)
+
+
+def configure_screen_edge_nodes(
+    group: bpy.types.NodeTree,
+    path: Path,
+    settings: dict[str, Any],
+) -> None:
+    """Build an experimental GPU compositor depth/normal edge pass."""
+
+    render_layers = group.nodes.new("CompositorNodeRLayers")
+
+    normalized_depth = group.nodes.new("CompositorNodeNormalize")
+    depth_sobel = group.nodes.new("CompositorNodeFilter")
+    # Blender 5.2 exposes the filter choice as a menu socket, not a node property.
+    depth_sobel.inputs["Type"].default_value = "Sobel"
+    depth_luminance = group.nodes.new("CompositorNodeRGBToBW")
+    depth_threshold = group.nodes.new("ShaderNodeMath")
+    depth_threshold.operation = "GREATER_THAN"
+    depth_threshold.inputs[1].default_value = 0.01
+    group.links.new(render_layers.outputs["Depth"], normalized_depth.inputs["Value"])
+    group.links.new(normalized_depth.outputs["Value"], depth_sobel.inputs["Image"])
+    group.links.new(depth_sobel.outputs["Image"], depth_luminance.inputs["Image"])
+    group.links.new(depth_luminance.outputs["Val"], depth_threshold.inputs[0])
+
+    normal_sobel = group.nodes.new("CompositorNodeFilter")
+    normal_sobel.inputs["Type"].default_value = "Sobel"
+    normal_luminance = group.nodes.new("CompositorNodeRGBToBW")
+    normal_threshold = group.nodes.new("ShaderNodeMath")
+    normal_threshold.operation = "GREATER_THAN"
+    normal_threshold.inputs[1].default_value = 0.3
+    group.links.new(render_layers.outputs["Normal"], normal_sobel.inputs["Image"])
+    group.links.new(normal_sobel.outputs["Image"], normal_luminance.inputs["Image"])
+    group.links.new(normal_luminance.outputs["Val"], normal_threshold.inputs[0])
+
+    combined = group.nodes.new("ShaderNodeMath")
+    combined.operation = "MAXIMUM"
+    group.links.new(depth_threshold.outputs["Value"], combined.inputs[0])
+    group.links.new(normal_threshold.outputs["Value"], combined.inputs[1])
+
+    mask_output = combined.outputs["Value"]
+    dilation_size = max(0, round(float(settings["line_width"]) - 1.0))
+    if dilation_size:
+        dilate = group.nodes.new("CompositorNodeDilateErode")
+        dilate.inputs["Size"].default_value = dilation_size
+        group.links.new(mask_output, dilate.inputs["Mask"])
+        mask_output = dilate.outputs["Mask"]
+
+    anti_alias = group.nodes.new("CompositorNodeAntiAliasing")
+    group.links.new(mask_output, anti_alias.inputs["Image"])
+    mask_output = anti_alias.outputs["Image"]
+
+    opacity = group.nodes.new("ShaderNodeMath")
+    opacity.operation = "MULTIPLY"
+    opacity.inputs[1].default_value = 0.85
+    group.links.new(mask_output, opacity.inputs[0])
+    mask_output = opacity.outputs["Value"]
+
+    line_color = group.nodes.new("CompositorNodeRGB")
+    color = settings["line_color"]
+    line_color.outputs["Color"].default_value = (
+        *(srgb_channel_to_linear(int(color[offset : offset + 2], 16)) for offset in (1, 3, 5)),
+        1.0,
+    )
+    mix = group.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    group.links.new(mask_output, mix.inputs[0])
+    group.links.new(render_layers.outputs["Image"], mix.inputs[6])
+    group.links.new(line_color.outputs["Color"], mix.inputs[7])
+
+    file_output = group.nodes.new("CompositorNodeOutputFile")
+    file_output.directory = str(path.parent)
+    file_output.file_name = f"{path.stem}.screen-edges"
+    file_output.use_file_extension = True
+    file_output.format.file_format = "OPEN_EXR_MULTILAYER"
+    file_output.file_output_items.new("RGBA", "Image")
+    group.links.new(mix.outputs[2], file_output.inputs["Image"])
+
+
+def render_screen_edges(
+    path: Path,
+    settings: dict[str, Any],
+) -> None:
+    """Render an experimental GPU compositor depth/normal edge pass."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="meshprobe-screen-edges-") as temporary_directory:
+        temporary_path = Path(temporary_directory) / path.name
+        prefix = f"{temporary_path.stem}.screen-edges"
+        with temporary_screen_edge_compositor(temporary_path, settings) as configured_prefix:
+            if configured_prefix != prefix:
+                raise RuntimeError(f"unexpected screen-edge output prefix: {configured_prefix}")
+            bpy.ops.render.render()
+        candidates = [
+            candidate
+            for candidate in temporary_path.parent.iterdir()
+            if candidate.name.startswith(prefix) and candidate.suffix.lower() == ".exr"
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"expected one screen-edge output for {prefix}, found "
+                f"{sorted(candidate.name for candidate in candidates)}"
+            )
+        composited = bpy.data.images.load(str(candidates[0]), check_existing=False)
+        try:
+            composited.save_render(str(path), scene=bpy.context.scene)
+        finally:
+            bpy.data.images.remove(composited)
 
 
 def luminance_summary(path: Path) -> dict[str, float]:
@@ -2191,6 +2330,16 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
 
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
+    style = command.setdefault("style", "screen_edges")
+    shaded_edges = command.setdefault(
+        "shaded_edges",
+        {
+            "line_color": "#202020",
+            "line_width": 1.5,
+            "crease_angle_degrees": 120,
+            "edge_types": ["silhouette", "border", "crease", "material_boundary"],
+        },
+    )
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
@@ -2200,7 +2349,10 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         backdrop = display_referred_background()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
-        render_still(output)
+        if style == "screen_edges":
+            render_screen_edges(output, shaded_edges)
+        else:
+            render_still(output)
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
@@ -2219,16 +2371,8 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "height": command["height"],
         "samples": command["samples"],
         "engine": command["engine"],
-        "style": command.get("style", "shaded"),
-        "shaded_edges": command.get(
-            "shaded_edges",
-            {
-                "line_color": "#202020",
-                "line_width": 1.5,
-                "crease_angle_degrees": 120,
-                "edge_types": ["silhouette", "border", "crease", "material_boundary"],
-            },
-        ),
+        "style": style,
+        "shaded_edges": shaded_edges,
         "device": device,
         "graphics_policy": command["graphics_policy"],
         "graphics": graphics_platform(),
@@ -3219,7 +3363,7 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "render.style":
         require_session()
         configure_render_style(command)
-        return {"style": command.get("style", "shaded")}
+        return {"style": command.get("style", "screen_edges")}
     if operation == "scene.export_normalized":
         return export_normalized(command)
     if operation == "component.visibility":

@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.models import RenderStyle
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -135,9 +136,9 @@ def test_render_image_style_help_documents_shaded_edges_cost() -> None:
     result = runner.invoke(app, ["render-image", "--help"])
 
     assert result.exit_code == 0
-    help_text = unstyle(result.stdout)
+    help_text = " ".join(unstyle(result.stdout).split())
     assert "shaded_edges" in help_text
-    assert "slower" in help_text
+    assert "slower" in help_text.casefold()
     assert "visible components" in help_text
 
 
@@ -545,6 +546,29 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert isinstance(render_command, RenderImageCommand)
     assert open_command.source_path == str(source.resolve())
     assert render_command.output_path == str((tmp_path / "relative/render.png").resolve())
+    assert render_command.style is RenderStyle.SCREEN_EDGES
+
+
+@pytest.mark.parametrize("terminal_width", [80, 120])
+def test_render_help_explains_style_policy_at_common_widths(terminal_width: int) -> None:
+    result = runner.invoke(
+        app,
+        ["render-image", "--help"],
+        env={"COLUMNS": str(terminal_width)},
+    )
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.output).split())
+    assert "Choose a style:" in help_text
+    assert "screen_edges (default): Fast GPU depth/normal edge pass" in help_text
+    assert "shaded_edges: Slower geometry-aware Freestyle lines" in help_text
+    assert "shaded: Unmodified shaded image with no edge overlay" in help_text
+    assert "--style STYLE" in help_text
+    assert "See the style guide" in help_text
+    assert (
+        "cost increases with the number of visible components, not output resolution" in help_text
+    )
+    assert "[default: screen_edges]" in help_text
 
 
 def test_render_cli_builds_resolved_shaded_edges_style(

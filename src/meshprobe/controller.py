@@ -42,6 +42,7 @@ from meshprobe.models import (
     PresetIllumination,
     Projection,
     RenderManifest,
+    RenderStyle,
     SceneManifest,
     SessionSnapshot,
 )
@@ -1209,6 +1210,7 @@ class BlenderController:
             height=command.panel_height,
             samples=command.samples,
             engine=command.engine.value,
+            style=RenderStyle.SHADED.value,
             graphics_policy=command.graphics_policy.value,
             evaluator_output_dir=evaluator_dir,
         )

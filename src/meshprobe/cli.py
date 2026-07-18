@@ -201,6 +201,7 @@ app = typer.Typer(
     help="Read-only 3D model inspection for AI agents.",
     no_args_is_help=True,
     cls=GlobalOptionGroup,
+    rich_markup_mode="markdown",
 )
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
@@ -1366,14 +1367,10 @@ def render_image(
         RenderStyle,
         typer.Option(
             "--style",
-            help=(
-                "shaded is fast; shaded_edges adds Freestyle outlines that separate "
-                "same-color adjacent parts but renders markedly slower (single-threaded, "
-                "CPU-bound; cost scales with the number of visible components, not "
-                "resolution). Narrow the visible set or drop --edge-types to speed it up."
-            ),
+            metavar="STYLE",
+            help="See the style guide above.",
         ),
-    ] = RenderStyle.SHADED,
+    ] = RenderStyle.SCREEN_EDGES,
     edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
     edge_width: Annotated[float, typer.Option("--edge-width", min=0.01, max=10)] = 1.5,
     crease_angle: Annotated[
@@ -1397,6 +1394,17 @@ def render_image(
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
     """Render the selected session to an image artifact.
+
+    **Choose a style:**
+
+    - `screen_edges` (default): Fast GPU depth/normal edge pass for routine inspection.
+    - `shaded_edges`: Slower geometry-aware Freestyle lines for final confirmation,
+      especially when separating same-color adjacent parts.
+    - `shaded`: Unmodified shaded image with no edge overlay.
+
+    Freestyle is single-threaded and CPU-bound. Its cost increases with the number of
+    visible components, not output resolution. Narrow the visible set or `--edge-types`
+    to reduce final-confirmation time.
 
     The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
     a too-dark or blown-out frame can be detected without inspecting pixels. See

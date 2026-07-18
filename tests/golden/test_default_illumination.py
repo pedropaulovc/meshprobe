@@ -14,6 +14,7 @@ from meshprobe.models import (
     OrthographicProjection,
     PresetIllumination,
     RenderEngine,
+    RenderStyle,
 )
 from meshprobe.protocol import (
     IlluminationSetCommand,
@@ -118,6 +119,7 @@ def test_default_preset_is_legible_from_every_orbit(tmp_path: Path) -> None:
                     height=192,
                     samples=8,
                     engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SHADED,
                 ),
                 evaluator_output_dir=tmp_path / "eval",
             )

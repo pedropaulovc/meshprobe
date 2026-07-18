@@ -1,0 +1,20 @@
+{
+  "crop": [
+    372,
+    164,
+    650,
+    860
+  ],
+  "freestyle_changed_pixels": 14970,
+  "freestyle_only_pixels": 561,
+  "freestyle_pixels_recalled_by_screen": 0.9625250501002004,
+  "freestyle_seconds": 50.71,
+  "intersection_over_union": 0.45824322605266504,
+  "screen_changed_pixels": 30883,
+  "screen_only_pixels": 16474,
+  "screen_seconds": 10.61,
+  "shared_changed_pixels": 14409,
+  "speedup": 4.7794533459000945,
+  "threshold": 24,
+  "total_pixels": 1048576
+}
