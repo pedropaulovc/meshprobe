@@ -3146,7 +3146,7 @@ def test_eevee_hardware_policy_rejects_software_renderer(
     output = tmp_path / "eevee-software.png"
     with BlenderController(timeout_seconds=120) as controller:
         assert controller.graphics is not None
-        assert controller.graphics.device_class.value == "unknown"
+        assert controller.graphics.device_class.value == "software"
         assert "llvmpipe" in controller.graphics.renderer.casefold()
         controller.open_scene(source)
         with pytest.raises(BlenderWorkerError, match="hardware graphics required"):
