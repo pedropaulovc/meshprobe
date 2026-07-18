@@ -7,11 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-18
+
 ### Added
 
 - A plausibility warning on `scene.open` when the imported root bounds span more than 50 m or
   less than 1 mm, the classic signature of a millimeter/meter unit mistake, plus a `--unit-scale`
   CLI option to correct a wrong-unit asset without a re-export cycle.
+- Blender 4.2 support for software-compatible rendering, with an honest unknown-graphics status
+  where that Blender version cannot report a platform. Hardware-required work remains rejected
+  unless hardware is actually observed.
+- Automatic default camera framing on open and reset so the model fills the render without
+  clipping. The session retains its chosen framing aspect ratio through movement, recovery, and
+  daemon upgrades.
+- `view.frame` and `view-frame` for fitting an absolute perspective or orthographic view to
+  selected components; `--focus` on other view commands remains a diagnostic and does not move
+  the camera.
+- `view-rotate --frame camera` for rotations relative to the active camera basis.
+- Fast `screen_edges` inspection rendering, now the default style, plus `shaded_edges` for
+  configurable CAD-style edges.
+- `--background-srgb` for exact display-referred backgrounds; component name and derived orbit
+  angle fields in durable session state; glob selectors for `display`, `mark`, `render-sheet`,
+  `focus`, and `occlusion`.
+- `meshprobe --version`, `python -m meshprobe`, per-command schema lookup, and Windows Blender
+  auto-discovery.
+- Result-envelope schemas in `meshprobe schema` and CLI help, so automation can validate command
+  responses without inferring their wrapper shape.
+- Warnings for effectively empty render frames and for a render resolution whose aspect ratio
+  differs from the camera framing.
+
+### Changed
+
+- Default render resolution is now 2576 × 2576 for inspection output.
+- `view-orbit --projection-json` is optional; a bare orbit inherits the active projection, while
+  `--focal-length` and `--ortho-scale` provide concise projection overrides.
+- `view-rotate` defaults to the source frame, and the default highlight color is deep pink.
+- Root-level CLI options can appear after a subcommand.
+- `neutral_studio` is brighter for scenes without source lighting.
+- A `find` command that matches nothing reports an explicit zero match count in its default
+  receipt rather than looking like an unavailable result.
+
+### Fixed
+
+- View framing and camera diagnostics now use the correct projection geometry for perspective and
+  orthographic cameras, including non-square renders and clip-plane refreshes after motion.
+- Invalid raw camera aspect values and rejected camera commands leave existing session state
+  unchanged.
+- Evaluator depth and normal passes no longer pay for Freestyle, and foreground masks correctly
+  sample textured alpha cutouts.
+- Render-style fallbacks and durable checkpoints retain the worker-resolved style and legacy
+  source-camera baseline across recovery.
+- GPU probing fails clearly on unsupported Blender versions instead of calling unavailable APIs.
+- The GPU-adapter compatibility warning is emitted once per worker, rather than once for every
+  command in an affected session.
+- Public and private qualification manifests are repinned to the 0.4.0 runtime.
 
 ## [0.3.0] - 2026-07-17
 
@@ -86,6 +135,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pedropaulovc/meshprobe/releases/tag/v0.2.0
