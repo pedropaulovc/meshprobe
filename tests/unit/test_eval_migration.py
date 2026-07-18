@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ import meshprobe.evals.ergonomics as ergonomics
 from meshprobe.evals.ergonomics import ergonomics_report_markdown, select_paired_episodes
 from meshprobe.evals.factory import build_corpus, validate_corpus
 from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.evals.harness.attempts import prepare_attempt_files
 from meshprobe.evals.migration import (
     audit_migration,
     codify_opaque_family,
@@ -482,7 +485,7 @@ def test_ergonomics_attempt_persists_exact_prompt(tmp_path: Path) -> None:
     prompt = "inspect this assigned model exactly"
     path = tmp_path / "prompt.txt"
 
-    persisted = ergonomics.prepare_attempt_files(tmp_path, prompt)
+    persisted = prepare_attempt_files(tmp_path, prompt)
 
     assert persisted.prompt == path
     assert path.read_text(encoding="utf-8") == prompt
@@ -557,7 +560,7 @@ def test_ergonomics_mounts_complete_blender_distribution(
     shim = tmp_path / "bin" / "blender"
     shim.parent.mkdir()
     shim.symlink_to(executable)
-    monkeypatch.setattr(ergonomics.shutil, "which", lambda name: str(shim))
+    monkeypatch.setattr(shutil, "which", lambda name: str(shim))
 
     assert ergonomics._blender_runtime() == runtime
 
@@ -572,10 +575,14 @@ def test_ergonomics_runtime_preflight_checks_mount_boundary(
     (models / "model.glb").write_bytes(b"model")
     observed: list[tuple[str, ...]] = []
 
+    def fake_sandboxed_agent_command(command: tuple[str, ...], **kwargs: object) -> tuple[str, ...]:
+        observed.append(command)
+        return ("/bin/true",)
+
     monkeypatch.setattr(
         ergonomics,
         "_sandboxed_agent_command",
-        lambda command, **kwargs: observed.append(command) or ("/bin/true",),
+        fake_sandboxed_agent_command,
     )
 
     assert ergonomics._preflight_runtime_boundary(corpus, tmp_path / "run", tmp_path) == (
@@ -624,19 +631,58 @@ def test_ergonomics_time_to_open_uses_acknowledged_event(tmp_path: Path) -> None
     assert ergonomics._time_to_open_seconds(tmp_path, started) == 4.25
 
 
+def _fake_ergonomics_attempt(
+    *, provider_error: str, meshprobe_operations: int, raw_stream_path: str
+) -> ergonomics.ErgonomicsAttempt:
+    return ergonomics.ErgonomicsAttempt(
+        episode_id="episode",
+        difficulty=Difficulty.BASIC,
+        agent=ergonomics.ErgonomicsAgent.CLAUDE,
+        attempt=1,
+        token_limit=1000,
+        command=("claude",),
+        return_code=1,
+        provider_error=provider_error,
+        metrics=ergonomics.ErgonomicsMetrics(
+            answer_gate=False,
+            evidence_gate=False,
+            structured_output=False,
+            elapsed_seconds=0.0,
+            tokens=ergonomics.TokenUsage(),
+            commands=(),
+            help_calls=0,
+            invalid_calls=0,
+            retries=0,
+            short_ref_uses=0,
+            rg_calls=0,
+            jq_calls=0,
+            yq_calls=0,
+            bytes_read=0,
+            raw_reads=0,
+            full_file_reads=0,
+            redundant_calls=0,
+            meshprobe_operations=meshprobe_operations,
+            renders=0,
+            receipt_path_uses=0,
+        ),
+        prompt_path="prompt.txt",
+        raw_stream_path=raw_stream_path,
+    )
+
+
 def test_ergonomics_retries_only_no_progress_provider_failures(tmp_path: Path) -> None:
     stream = tmp_path / "stream.jsonl"
     stream.write_text('{"type":"rate_limit_event"}\n', encoding="utf-8")
     (tmp_path / "stderr.log").write_text("", encoding="utf-8")
 
-    no_progress = SimpleNamespace(
+    no_progress = _fake_ergonomics_attempt(
         provider_error="timeout after 180 seconds",
-        metrics=SimpleNamespace(meshprobe_operations=0),
+        meshprobe_operations=0,
         raw_stream_path=str(stream),
     )
-    semantic_overrun = SimpleNamespace(
+    semantic_overrun = _fake_ergonomics_attempt(
         provider_error="timeout after 180 seconds",
-        metrics=SimpleNamespace(meshprobe_operations=4),
+        meshprobe_operations=4,
         raw_stream_path=str(stream),
     )
 
@@ -825,7 +871,7 @@ def test_ergonomics_preflight_probes_exact_models(monkeypatch: pytest.MonkeyPatc
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr(ergonomics.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
 
     result = ergonomics.preflight_agents()
 
@@ -860,7 +906,7 @@ def test_ergonomics_preflight_surfaces_unsupported_model(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr(ergonomics.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
 
     with pytest.raises(RuntimeError, match=r"luna.*not supported"):
         ergonomics.preflight_agents()

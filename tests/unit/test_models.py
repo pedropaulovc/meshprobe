@@ -13,7 +13,10 @@ from meshprobe.models import (
     ContactSheetManifest,
     CustomIllumination,
     DepthOfField,
+    DepthOfFieldMode,
+    EdgeType,
     EnvironmentMap,
+    IlluminationPreset,
     MarkMode,
     OccluderRemovalStep,
     OcclusionEvidence,
@@ -186,12 +189,12 @@ def test_perspective_depth_of_field_requires_one_focus_source() -> None:
     assert projection.depth_of_field.focus is not None
     assert projection.depth_of_field.focus.component_id == "cmp_focus"
 
-    exact = DepthOfField(mode="enabled", aperture_fstop=3.8, focus_distance_mm=750)
+    exact = DepthOfField(mode=DepthOfFieldMode.ENABLED, aperture_fstop=3.8, focus_distance_mm=750)
     assert exact.focus_distance_mm == 750
     with pytest.raises(ValidationError, match="exactly one focus"):
-        DepthOfField(mode="enabled", aperture_fstop=3.8)
+        DepthOfField(mode=DepthOfFieldMode.ENABLED, aperture_fstop=3.8)
     with pytest.raises(ValidationError, match="cannot declare"):
-        DepthOfField(mode="disabled", focus_distance_mm=100)
+        DepthOfField(mode=DepthOfFieldMode.DISABLED, focus_distance_mm=100)
 
 
 def test_camera_basis_must_be_orthonormal_and_right_handed() -> None:
@@ -352,7 +355,9 @@ def test_custom_illumination_records_background_and_ambient_separately() -> None
 
 
 def test_preset_illumination_accepts_display_referred_background() -> None:
-    illumination = PresetIllumination(preset="neutral_studio", background_srgb=(1, 1, 1))
+    illumination = PresetIllumination(
+        preset=IlluminationPreset.NEUTRAL_STUDIO, background_srgb=(1, 1, 1)
+    )
 
     assert illumination.background_srgb == (1, 1, 1)
     assert illumination.background_rgb is None
@@ -362,14 +367,14 @@ def test_preset_illumination_accepts_display_referred_background() -> None:
 def test_preset_illumination_rejects_display_and_linear_background_together() -> None:
     with pytest.raises(ValidationError, match="cannot be combined"):
         PresetIllumination(
-            preset="neutral_studio",
+            preset=IlluminationPreset.NEUTRAL_STUDIO,
             background_srgb=(1, 1, 1),
             background_rgb=(0.5, 0.5, 0.5),
         )
 
     with pytest.raises(ValidationError, match="cannot be combined"):
         PresetIllumination(
-            preset="neutral_studio",
+            preset=IlluminationPreset.NEUTRAL_STUDIO,
             background_srgb=(1, 1, 1),
             background_strength=2.0,
         )
@@ -377,7 +382,7 @@ def test_preset_illumination_rejects_display_and_linear_background_together() ->
 
 def test_preset_illumination_rejects_out_of_range_display_background() -> None:
     with pytest.raises(ValidationError):
-        PresetIllumination(preset="neutral_studio", background_srgb=(1.5, 0, 0))
+        PresetIllumination(preset=IlluminationPreset.NEUTRAL_STUDIO, background_srgb=(1.5, 0, 0))
 
 
 def test_custom_illumination_accepts_content_addressed_environment_only() -> None:
@@ -633,7 +638,7 @@ def test_shaded_edges_style_rejects_duplicate_or_empty_edge_types() -> None:
     with pytest.raises(ValidationError, match="at least one"):
         ShadedEdgesStyle(edge_types=())
     with pytest.raises(ValidationError, match="must be unique"):
-        ShadedEdgesStyle(edge_types=("crease", "crease"))
+        ShadedEdgesStyle(edge_types=(EdgeType.CREASE, EdgeType.CREASE))
 
 
 def test_evidence_manifest_schema_tracks_camera_operation_contract() -> None:
