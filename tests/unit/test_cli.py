@@ -24,6 +24,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewRotateCommand,
     ViewSetCommand,
@@ -855,12 +856,69 @@ def test_view_rotate_accepts_camera_frame_and_rejects_component(
     assert component.exit_code == 2
     assert "component" in component.output
 
-    # --help advertises exactly the honored frames; it no longer promises component.
+    # --help advertises exactly the honored --frame choices; it no longer promises
+    # component there (the word can still appear elsewhere, e.g. --focus's
+    # view-frame disclaimer).
     help_result = runner.invoke(app, ["view-rotate", "--help"])
     help_text = " ".join(unstyle(help_result.stdout).replace("│", " ").split())
     assert "camera" in help_text
-    assert "source|world|camera" in help_text
-    assert "component" not in help_text
+    assert "[source|world|camera]" in help_text
+
+
+def test_view_frame_builds_component_framing_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-frame",
+            "c2",
+            "--azimuth",
+            "60",
+            "--elevation",
+            "20",
+            "--margin",
+            "1.4",
+            "--projection-json",
+            '{"mode":"orthographic","scale_mm":100}',
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewFrameCommand)
+    assert command.focus_component_ids == ("component-id",)
+    assert command.azimuth_degrees == 60
+    assert command.elevation_degrees == 20
+    assert command.margin == 1.4
+    assert command.projection.mode == "orthographic"
+
+
+def test_view_frame_defaults_to_isometric_perspective(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "view-frame", "c2"])
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewFrameCommand)
+    assert command.azimuth_degrees == 45
+    assert command.elevation_degrees == 30
+    assert command.margin == 1.25
+    assert command.projection.mode == "perspective"
+
+
+def test_view_focus_help_disclaims_reframing(monkeypatch: pytest.MonkeyPatch) -> None:
+    for verb in ("view-set", "view-orbit", "view-move", "view-rotate"):
+        result = runner.invoke(app, [verb, "--help"])
+        assert result.exit_code == 0
+        help_text = " ".join(unstyle(result.stdout).replace("│", " ").split())
+        assert "does NOT move or reframe the camera" in help_text
+        assert "use view-frame to frame a component" in help_text
 
 
 def test_close_and_kill_have_distinct_selected_and_all_semantics(

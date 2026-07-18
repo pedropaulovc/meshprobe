@@ -18,6 +18,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionSnapshotCommand,
+    ViewFrameCommand,
     ViewRotateCommand,
 )
 from meshprobe.service import CommandResponse
@@ -49,7 +50,7 @@ class FakeEvaluationService:
             }
         elif operation == "session.snapshot":
             result = {"session": {"state_sha256": "1" * 64}}
-        elif operation in {"illumination.set", "view.rotate"}:
+        elif operation in {"illumination.set", "view.rotate", "view.frame"}:
             result = {"state_sha256": "2" * 64}
         elif operation == "component.occlusion":
             result = {
@@ -205,6 +206,22 @@ def test_broker_records_view_rotate_as_a_normal_trace_event(tmp_path: Path) -> N
 
     assert rotated.ok
     assert active.events[-1].operation is Operation.VIEW_ROTATE
+    assert active.events[-1].status is TraceStatus.ACCEPTED
+
+
+def test_broker_records_view_frame_as_a_normal_trace_event(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+
+    framed = active.execute(
+        ViewFrameCommand(
+            request_id="frame",
+            op="view.frame",
+            focus_component_ids=("component-1",),
+        )
+    )
+
+    assert framed.ok
+    assert active.events[-1].operation is Operation.VIEW_FRAME
     assert active.events[-1].status is TraceStatus.ACCEPTED
 
 

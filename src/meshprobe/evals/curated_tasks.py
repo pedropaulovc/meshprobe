@@ -274,7 +274,8 @@ def _prompt(model: CuratedModelTruth, index: int) -> str:
         )
     return (
         f"Perform a complete inspection of {target!r}, using {reference!r} as the comparison and "
-        f"{occluder!r} as the removable foreground component. Exercise every MeshProbe operation, "
+        f"{occluder!r} as the removable foreground component. Exercise every evaluated MeshProbe "
+        "operation, "
         "including a neutral 85 mm perspective context state and an orthographic raking-left "
         "state with the occluder hidden and target highlighted, still renders, a focused 3x3 "
         "contact sheet, and a final session reset. Return all three stable IDs and paths with "

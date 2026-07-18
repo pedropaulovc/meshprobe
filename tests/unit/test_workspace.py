@@ -28,6 +28,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    ViewFrameCommand,
 )
 from meshprobe.selectors import ComponentIndex, ComponentSelector, SelectorKind
 from meshprobe.service import CommandResponse
@@ -75,6 +76,9 @@ class FakeSessionService:
                 component.model_dump(mode="json")
                 for component in ComponentIndex(self.manifest).find(command.selector)
             ]
+        elif isinstance(command, ViewFrameCommand):
+            assert self.session is not None
+            result = {"state_sha256": self.session.snapshot().state_sha256}
         elif isinstance(command, SessionResetCommand):
             assert self.session is not None
             result = self.session.reset().model_dump(mode="json")
@@ -225,6 +229,35 @@ def test_find_receipt_reports_match_count(tmp_path: Path, scene_manifest: SceneM
     assert hit.match_count == 1
     assert miss.match_count == 0
     assert snapshot.match_count is None
+
+
+def test_view_frame_is_recorded_for_checkpoint_recovery(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    manager.open("review", source)
+    component_id = manager.resolve_component("review", "c2")
+
+    manager.execute(
+        "review",
+        ViewFrameCommand(
+            request_id="frame",
+            op="view.frame",
+            focus_component_ids=(component_id,),
+        ),
+    )
+
+    checkpoint = json.loads(
+        (tmp_path / ".meshprobe" / "sessions" / "review" / "checkpoint.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [command["op"] for command in checkpoint["accepted_commands"]] == ["view.frame"]
 
 
 def test_contact_sheet_records_worker_default_render_style(
