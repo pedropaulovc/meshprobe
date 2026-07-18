@@ -2630,6 +2630,17 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
             )
         )
         screen_edge_runtime = controller.request("session.runtime")
+        raw_default_arguments = RenderImageCommand(
+            request_id="raw-default-screen-edges",
+            op="render.image",
+            output_path=str(tmp_path / "screen[front].png"),
+            width=320,
+            height=240,
+            samples=1,
+        ).model_dump(mode="json", exclude={"request_id", "op", "style"})
+        raw_default = RenderManifest.model_validate(
+            controller.request("render.image", **raw_default_arguments)
+        )
         failed_screen_command = RenderImageCommand(
             request_id="render-screen-edges-invalid-setup",
             op="render.image",
@@ -2663,6 +2674,8 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
     assert plain.session.camera == screen_edged.session.camera
     assert edged.style is RenderStyle.SHADED_EDGES
     assert screen_edged.style is RenderStyle.SCREEN_EDGES
+    assert raw_default.style is RenderStyle.SCREEN_EDGES
+    assert Path(raw_default.color.path).is_file()
     assert edged.shaded_edges == ShadedEdgesStyle()
     assert edge_runtime["render"]["use_freestyle"] is True
     assert screen_edge_runtime["render"]["use_freestyle"] is False

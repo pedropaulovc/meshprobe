@@ -1970,7 +1970,11 @@ def render_screen_edges(
             if configured_prefix != prefix:
                 raise RuntimeError(f"unexpected screen-edge output prefix: {configured_prefix}")
             bpy.ops.render.render()
-        candidates = list(temporary_path.parent.glob(f"{prefix}*.exr"))
+        candidates = [
+            candidate
+            for candidate in temporary_path.parent.iterdir()
+            if candidate.name.startswith(prefix) and candidate.suffix.lower() == ".exr"
+        ]
         if len(candidates) != 1:
             raise RuntimeError(
                 f"expected one screen-edge output for {prefix}, found "
@@ -2326,6 +2330,7 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
 
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
+    style = command.setdefault("style", "screen_edges")
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
@@ -2335,7 +2340,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         backdrop = display_referred_background()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
-        if command.get("style") == "screen_edges":
+        if style == "screen_edges":
             render_screen_edges(output, command["shaded_edges"])
         else:
             render_still(output)
@@ -2357,7 +2362,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "height": command["height"],
         "samples": command["samples"],
         "engine": command["engine"],
-        "style": command.get("style", "screen_edges"),
+        "style": style,
         "shaded_edges": command.get(
             "shaded_edges",
             {
