@@ -115,6 +115,10 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
+      - name: Install software EGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1
       - name: Install Blender 4.2 LTS from official release
         run: |
           archive="$RUNNER_TEMP/blender-4.2.22-linux-x64.tar.xz"
