@@ -57,6 +57,13 @@ STATE_OPERATIONS = frozenset(
     }
 )
 
+# The ops that refit the camera to an aspect ratio, so their aspect_ratio is the
+# intended framing. view.move/view.rotate reuse the current projection without
+# refitting, so their aspect_ratio only feeds diagnostics and must NOT be read as
+# the framing aspect — a bare move after a wide orbit would otherwise reset the
+# tracked framing to its 1.0 default and false-warn a matching render.
+FRAMING_OPERATIONS = frozenset({"view.set", "view.orbit", "view.frame"})
+
 
 class RendererContinuity(StrEnum):
     PRESERVED = "preserved"
@@ -488,7 +495,9 @@ class SessionManager:
             artifacts = self._artifact_paths(command.op, response.result)
             warnings: tuple[str, ...] = ()
             if isinstance(command, RenderImageCommand):
-                aspect_warning = self._aspect_ratio_warning(command, snapshot)
+                aspect_warning = self._aspect_ratio_warning(
+                    command, self._framed_aspect_ratio(files)
+                )
                 if aspect_warning is not None:
                     warnings = (*warnings, aspect_warning)
             if self._graphics_warned_worker_pids.get(name) != service.worker_pid:
@@ -728,18 +737,30 @@ class SessionManager:
         return SessionSnapshot.model_validate(payload["session"])
 
     # A render's width/height diverging from the aspect ratio the camera was framed with
-    # (view.orbit/view.frame/view.set/view.move/view.rotate all take an aspect_ratio) does
-    # not stretch or crop pixels: Blender derives the render's real field of view from the
-    # actual resolution, so a mismatch silently reframes the shot instead (extra padding, or
-    # a tighter crop, on whichever axis the framing aspect didn't pin). >1% relative
-    # difference is treated as a deliberate divergence worth flagging.
+    # (view.orbit/view.frame/view.set take an aspect_ratio that refits the camera) does not
+    # stretch or crop pixels: Blender derives the render's real field of view from the actual
+    # resolution, so a mismatch silently reframes the shot instead (extra padding, or a
+    # tighter crop, on whichever axis the framing aspect didn't pin). >1% relative difference
+    # is treated as a deliberate divergence worth flagging.
     _ASPECT_RATIO_RELATIVE_TOLERANCE = 0.01
 
+    @staticmethod
+    def _framed_aspect_ratio(files: SessionFiles) -> float:
+        # The framing aspect is the aspect_ratio of the last command that refit the camera
+        # (see FRAMING_OPERATIONS); the snapshot's camera_diagnostics.aspect_ratio can't be
+        # used because view.move/view.rotate overwrite it with their own default while
+        # leaving the projection framed as before. Defaults to 1.0 (the framing a freshly
+        # opened session's camera carries) when nothing has refit the camera yet.
+        checkpoint, _ = _upgrade_checkpoint(
+            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+        )
+        for raw in reversed(checkpoint.accepted_commands):
+            if raw.get("op") in FRAMING_OPERATIONS:
+                return float(raw.get("aspect_ratio", 1.0))
+        return 1.0
+
     @classmethod
-    def _aspect_ratio_warning(
-        cls, command: RenderImageCommand, snapshot: SessionSnapshot
-    ) -> str | None:
-        framed_aspect = snapshot.camera_diagnostics.aspect_ratio
+    def _aspect_ratio_warning(cls, command: RenderImageCommand, framed_aspect: float) -> str | None:
         render_aspect = command.width / command.height
         relative_difference = abs(render_aspect - framed_aspect) / framed_aspect
         if relative_difference <= cls._ASPECT_RATIO_RELATIVE_TOLERANCE:
@@ -747,7 +768,7 @@ class SessionManager:
         return (
             f"render.image requested {command.width}x{command.height} (aspect ratio "
             f"{render_aspect:.4g}), but the session camera was last framed for aspect ratio "
-            f"{framed_aspect:.4g} by view.orbit/view.frame/view.set/view.move/view.rotate. "
+            f"{framed_aspect:.4g} by view.orbit/view.frame/view.set. "
             "The render will reframe to the requested resolution instead of matching that "
             "framing; re-run view-orbit or view-frame with a matching --aspect-ratio first "
             "if the tight framing matters."

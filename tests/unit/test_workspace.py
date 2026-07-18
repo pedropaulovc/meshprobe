@@ -486,6 +486,46 @@ def test_render_image_does_not_warn_within_the_aspect_ratio_tolerance(
     assert receipt.warnings == ()
 
 
+def test_render_image_reads_framing_aspect_from_the_last_refit_not_the_snapshot(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    # The framing aspect must come from the last camera-refitting command's aspect_ratio
+    # (recorded in the checkpoint), NOT from snapshot.camera_diagnostics: view.move/
+    # view.rotate overwrite that diagnostics field with their own default while leaving the
+    # projection framed as before, so trusting it would false-warn a render that still
+    # matches the framing. FakeSessionService's snapshot reports the default 1.0 aspect
+    # regardless of the view.frame below, so a render matching the framed 2.0 only stays
+    # quiet if the warning reads the checkpoint.
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        ViewFrameCommand(
+            request_id="frame-wide",
+            op="view.frame",
+            focus_component_ids=(scene_manifest.components[0].id,),
+            aspect_ratio=2.0,
+        ),
+    )
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matches-framing",
+            op="render.image",
+            output_path=str(tmp_path / "matches-framing.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+    assert receipt.warnings == ()
+
+
 def test_recreated_worker_resets_durable_render_style(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
