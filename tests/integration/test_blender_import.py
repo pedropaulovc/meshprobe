@@ -1232,10 +1232,53 @@ def test_raw_rotation_uses_source_frame_by_default(tmp_path: Path) -> None:
     assert rotated["camera"]["projection"] == PerspectiveProjection().model_dump(mode="json")
 
 
+def test_camera_frame_rotation_axis_follows_current_facing(tmp_path: Path) -> None:
+    from meshprobe.camera import camera_local_axis_world, camera_local_point_world
+
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        # From opposite sides of the model, the camera-local axis a --frame camera
+        # rotation acts on must track the camera's current facing — that is what keeps
+        # the on-screen effect (and its sign) invariant, unlike a world-frame axis.
+        for azimuth in (0.0, 180.0):
+            controller.request(
+                "view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=azimuth,
+                elevation_degrees=10.0,
+                distance_mm=500.0,
+                projection={"mode": "perspective"},
+            )
+            before = controller.request("session.snapshot")["session"]
+            orientation = tuple(before["camera"]["pose"]["orientation_xyzw"])
+            position = tuple(before["camera"]["pose"]["position_mm"])
+            rotated = controller.request(
+                "view.rotate",
+                target_mm=(0, 0, 0),
+                axis="x",
+                degrees=15,
+                frame="camera",
+                projection={"mode": "perspective"},
+            )
+            receipt = rotated["camera_operation"]
+            assert receipt["frame"] == "camera"
+            # Blender resolves the rotation in single precision, so compare against the
+            # double-precision reference with a float32-scale tolerance, not machine eps.
+            expected_axis = camera_local_axis_world(orientation, (1.0, 0.0, 0.0))
+            assert receipt["axis_world"] == pytest.approx(list(expected_axis), abs=1e-5)
+            # A camera-local target of (0, 0, 0) resolves to the camera position, so the
+            # pivot is the camera itself and its position is unchanged by the rotation. A
+            # wrong (world-origin) pivot would swing the camera ~130mm, far above 1e-3.
+            expected_pivot = camera_local_point_world(orientation, position, (0.0, 0.0, 0.0))
+            assert expected_pivot == pytest.approx(position, abs=1e-9)
+            assert rotated["camera"]["pose"]["position_mm"] == pytest.approx(position, abs=1e-3)
+
+
 @pytest.mark.parametrize(
     ("invalid_field", "invalid_value", "error"),
     [
-        ("frame", "component", "camera rotation frame must be source or world"),
+        ("frame", "component", "camera rotation frame must be source, world, or camera"),
         ("degrees", math.nan, "degrees must be finite"),
         ("degrees", math.inf, "degrees must be finite"),
         ("target_mm", (math.nan, 0, 0), "target_mm must contain three finite numbers"),

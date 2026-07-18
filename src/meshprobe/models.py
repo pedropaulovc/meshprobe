@@ -75,6 +75,20 @@ class CoordinateFrame(StrEnum):
     COMPONENT = "component"
 
 
+class RotationFrame(StrEnum):
+    """Frames a view-rotate axis/target may be expressed in.
+
+    A strict subset of CoordinateFrame: the frames view-rotate actually honors. The
+    component frame is intentionally absent — rotating around a target component's local
+    axes is not implemented, so advertising it in the CLI would repeat the mismatch of
+    issue #65.
+    """
+
+    SOURCE = "source"
+    WORLD = "world"
+    CAMERA = "camera"
+
+
 class CameraPoseFrame(StrEnum):
     SOURCE = "source"
     WORLD = "world"
