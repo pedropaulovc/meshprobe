@@ -233,7 +233,9 @@ def test_open_scene_validates_hash_and_manifest(
         lambda operation, **arguments: expected.model_dump(mode="json"),
     )
 
-    assert controller.open_scene(source) == expected
+    assert controller.open_scene(source, aspect_ratio=2.5) == expected
+    # Stored so a later crash recovery reopens with the same non-square framing.
+    assert controller._aspect_ratio == 2.5
 
 
 def test_open_scene_detects_source_mutation(tmp_path: Path, scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -995,6 +997,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     source.write_bytes(b"model")
     controller._source_path = source
     controller._source_sha256 = "source-hash"
+    controller._aspect_ratio = 2.5
     controller._accepted_commands = [
         ("component.mark", {"component_ids": ["one"], "mode": "selected"}),
         ("component.display", {"component_ids": ["one"], "mode": "hidden"}),
@@ -1003,8 +1006,8 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(controller, "close", lambda: calls.append("close"))
     monkeypatch.setattr(controller, "start", lambda: calls.append("start"))
 
-    def open_scene(path: Path) -> SimpleNamespace:
-        calls.append(("open", path))
+    def open_scene(path: Path, aspect_ratio: float = 1.0) -> SimpleNamespace:
+        calls.append(("open", path, aspect_ratio))
         return SimpleNamespace(source_sha256="source-hash")
 
     monkeypatch.setattr(controller, "open_scene", open_scene)
@@ -1019,7 +1022,7 @@ def test_recover_session_replays_commands_in_order(tmp_path: Path, monkeypatch) 
     assert calls == [
         "close",
         "start",
-        ("open", source),
+        ("open", source, 2.5),
         ("component.mark", {"component_ids": ["one"], "mode": "selected"}),
         ("component.display", {"component_ids": ["one"], "mode": "hidden"}),
     ]
@@ -1048,7 +1051,7 @@ def test_recover_session_retains_replay_log_when_replay_crashes(
     monkeypatch.setattr(controller, "close", lambda: None)
     monkeypatch.setattr(controller, "start", lambda: {})
 
-    def reopen(path: Path) -> SimpleNamespace:
+    def reopen(path: Path, aspect_ratio: float = 1.0) -> SimpleNamespace:
         controller._accepted_commands.clear()
         return SimpleNamespace(source_sha256="source-hash")
 
@@ -1075,7 +1078,7 @@ def test_recover_session_rejects_replaced_source(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(
         controller,
         "open_scene",
-        lambda path: SimpleNamespace(source_sha256="replacement-hash"),
+        lambda path, aspect_ratio=1.0: SimpleNamespace(source_sha256="replacement-hash"),
     )
     monkeypatch.setattr(
         controller,

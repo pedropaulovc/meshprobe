@@ -944,7 +944,8 @@ class SessionManager:
         )
         if isinstance(command, SessionResetCommand):
             checkpoint.accepted_commands.clear()
-            checkpoint.aspect_ratio = command.aspect_ratio
+            if "aspect_ratio" in command.model_fields_set:
+                checkpoint.aspect_ratio = command.aspect_ratio
         elif command.op in STATE_OPERATIONS:
             accepted = command
             if isinstance(command, IlluminationSetCommand):

@@ -621,6 +621,46 @@ def test_flat_cli_uses_named_session_and_compact_receipts(
     assert isinstance(client.commands[1], SessionSnapshotCommand)
 
 
+def test_open_omits_aspect_ratio_unless_explicitly_provided(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    default_open = runner.invoke(app, ["--session", "review", "open", str(source)])
+    explicit_open = runner.invoke(
+        app, ["--session", "review", "open", str(source), "--aspect-ratio", "2.0"]
+    )
+
+    assert default_open.exit_code == 0
+    assert explicit_open.exit_code == 0
+    default_command, explicit_command = client.commands
+    # Omitting --aspect-ratio must leave the field unset so the client filters it out
+    # of the wire payload — an older daemon validating with extra="forbid" still accepts.
+    assert "aspect_ratio" not in default_command.model_fields_set
+    assert "aspect_ratio" in explicit_command.model_fields_set
+    assert explicit_command.aspect_ratio == 2.0
+
+
+def test_reset_omits_aspect_ratio_unless_explicitly_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    default_reset = runner.invoke(app, ["--session", "review", "reset"])
+    explicit_reset = runner.invoke(app, ["--session", "review", "reset", "--aspect-ratio", "0.5"])
+
+    assert default_reset.exit_code == 0
+    assert explicit_reset.exit_code == 0
+    default_command, explicit_command = client.commands
+    assert "aspect_ratio" not in default_command.model_fields_set
+    assert "aspect_ratio" in explicit_command.model_fields_set
+    assert explicit_command.aspect_ratio == 0.5
+
+
 def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

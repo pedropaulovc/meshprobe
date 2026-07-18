@@ -162,6 +162,7 @@ class BlenderController:
         self.graphics: GraphicsPlatform | None = None
         self._source_path: Path | None = None
         self._source_sha256: str | None = None
+        self._aspect_ratio: float = 1.0
         self._manifest: SceneManifest | None = None
         self._source_snapshot: SourceSnapshot | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
@@ -276,6 +277,7 @@ class BlenderController:
         before = snapshot_source(source)
         self._source_path = None
         self._source_sha256 = None
+        self._aspect_ratio = aspect_ratio
         self._manifest = None
         self._source_snapshot = None
         self._accepted_commands.clear()
@@ -335,7 +337,12 @@ class BlenderController:
             except (BlenderWorkerCrashed, BlenderWorkerTimeout):
                 self.close()
                 self.start()
-                self.request("scene.open", source_path=str(source), source_sha256=source_sha256)
+                self.request(
+                    "scene.open",
+                    source_path=str(source),
+                    source_sha256=source_sha256,
+                    aspect_ratio=self._aspect_ratio,
+                )
                 self.request("scene.export_normalized", output_path=str(output))
 
         entry = self._artifact_cache.publish(
@@ -1455,10 +1462,11 @@ class BlenderController:
             raise BlenderWorkerCrashed("cannot recover a worker before a scene is open")
         source_path = self._source_path
         source_sha256 = self._source_sha256
+        aspect_ratio = self._aspect_ratio
         accepted_commands = list(self._accepted_commands)
         self.close()
         self.start()
-        reopened = self.open_scene(source_path)
+        reopened = self.open_scene(source_path, aspect_ratio=aspect_ratio)
         if reopened.source_sha256 != source_sha256:
             self.close()
             self._source_path = None

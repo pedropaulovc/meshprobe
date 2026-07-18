@@ -871,19 +871,20 @@ def open_scene(
     ctx: typer.Context,
     source: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     blender: Annotated[str | None, typer.Option("--blender")] = None,
-    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    aspect_ratio: Annotated[float | None, typer.Option("--aspect-ratio", min=0.01)] = None,
 ) -> None:
     """Open a model in the selected durable session."""
 
     from meshprobe.protocol import SceneOpenCommand
 
+    overrides = {} if aspect_ratio is None else {"aspect_ratio": aspect_ratio}
     _execute(
         ctx,
         SceneOpenCommand(
             request_id=_request_id("open"),
             op="scene.open",
             source_path=str(source.expanduser().resolve(strict=True)),
-            aspect_ratio=aspect_ratio,
+            **overrides,
         ),
         blender=blender,
     )
@@ -1692,15 +1693,14 @@ def occlusion(
 @app.command("reset")
 def reset(
     ctx: typer.Context,
-    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    aspect_ratio: Annotated[float | None, typer.Option("--aspect-ratio", min=0.01)] = None,
 ) -> None:
     """Reset visual state to the imported scene defaults."""
 
+    overrides = {} if aspect_ratio is None else {"aspect_ratio": aspect_ratio}
     _execute(
         ctx,
-        SessionResetCommand(
-            request_id=_request_id("reset"), op="session.reset", aspect_ratio=aspect_ratio
-        ),
+        SessionResetCommand(request_id=_request_id("reset"), op="session.reset", **overrides),
     )
 
 
