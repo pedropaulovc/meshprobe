@@ -776,9 +776,12 @@ def test_frame_camera_corner_projection_tightly_fits_depth_elongated_bounds() ->
     diagnostics = camera_diagnostics(camera, target_mm=(0.0, 0.0, 0.0), aspect_ratio=1.0)
     horizontal_tan = math.tan(math.radians(cast(float, diagnostics.horizontal_fov_degrees) / 2))
     vertical_tan = math.tan(math.radians(cast(float, diagnostics.vertical_fov_degrees) / 2))
-    normalized_extents = []
+    normalized_extents: list[float] = []
     for corner in BlenderController._bounds_corners(bounds):
-        relative = tuple(corner[axis] - camera.pose.position_mm[axis] for axis in range(3))
+        relative = cast(
+            tuple[float, float, float],
+            tuple(corner[axis] - camera.pose.position_mm[axis] for axis in range(3)),
+        )
         depth = BlenderController._dot(relative, diagnostics.forward)
         horizontal = abs(BlenderController._dot(relative, diagnostics.right)) / (
             depth * horizontal_tan
