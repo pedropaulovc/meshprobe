@@ -7,6 +7,9 @@ name = "meshprobe"
 version = "0.3.0"
 description = "Read-only 3D model inspection tools for AI agents"
 readme = "README.md"
+# Python 3.12 is deliberate: PEP 695 ``type`` aliases in artifacts.py, models.py,
+# protocol.py, and evals/harness/adapters.py do not parse on older interpreters.
+# Python 3.10 also lacks the ``Self`` and ``StrEnum`` APIs used throughout src/.
 requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [

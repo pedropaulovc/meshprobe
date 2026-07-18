@@ -62,17 +62,15 @@ def worker_module() -> Iterator[types.ModuleType]:
                 sys.modules[name] = previous
 
 
-def test_minimum_blender_version_is_5_2(worker_module: types.ModuleType) -> None:
-    assert worker_module.MINIMUM_BLENDER_VERSION == (5, 2)
+def test_minimum_blender_version_is_4_2(worker_module: types.ModuleType) -> None:
+    assert worker_module.MINIMUM_BLENDER_VERSION == (4, 2)
 
 
 @pytest.mark.parametrize(
     "version",
     [
-        (4, 5, 10),
-        (5, 0, 0),
-        (5, 1, 2),
-        (5, 1, 999),
+        (4, 1, 10),
+        (3, 6, 0),
     ],
 )
 def test_require_supported_blender_version_rejects_old_versions(
@@ -83,13 +81,16 @@ def test_require_supported_blender_version_rejects_old_versions(
     message = str(excinfo.value)
     detected = ".".join(str(component) for component in version)
     assert detected in message
-    assert "MeshProbe requires Blender >= 5.2" in message
-    assert "5.2 LTS" in message
+    assert "MeshProbe requires Blender >= 4.2" in message
+    assert "4.2 LTS" in message
 
 
 @pytest.mark.parametrize(
     "version",
     [
+        (4, 2, 0),
+        (4, 2, 1),
+        (5, 1, 99),
         (5, 2, 0),
         (5, 2, 1),
         (5, 3, 0),
@@ -102,14 +103,40 @@ def test_require_supported_blender_version_accepts_supported_versions(
     worker_module.require_supported_blender_version(version)  # must not raise
 
 
-def test_initialize_graphics_platform_checks_version_before_gpu_init(
+def test_initialize_graphics_platform_reports_unknown_compatibility_device_before_gpu_init(
     worker_module: types.ModuleType,
 ) -> None:
-    """The version check must run before any gpu.* call, so an old Blender
+    worker_module.bpy.app = types.SimpleNamespace(version=(4, 2, 0), version_string="4.2.0")
+    worker_module.gpu.init = pytest.fail
+    platform = worker_module.initialize_graphics_platform()
 
-    fails with the clear RuntimeError instead of an AttributeError from
-    inside gpu.init() (issue #93).
-    """
-    worker_module.bpy.app = types.SimpleNamespace(version=(5, 1, 2))
-    with pytest.raises(RuntimeError, match=r"Blender 5\.1\.2 is unsupported"):
-        worker_module.initialize_graphics_platform()
+    assert platform["device_class"] == "unknown"
+    assert platform["renderer"] == "Blender 4.2.0 compatibility mode (GPU unavailable)"
+    assert platform["warnings"] == [
+        "Blender 4.2.0 runs in compatibility mode without GPU telemetry: hardware_required and "
+        "screen_edges require Blender 5.2 or newer."
+    ]
+
+
+def test_software_compatibility_rejects_screen_edges_before_bpy_access(
+    worker_module: types.ModuleType,
+) -> None:
+    worker_module.bpy.app = types.SimpleNamespace(version=(4, 2, 0))
+
+    with pytest.raises(RuntimeError, match=r"screen_edges requires Blender 5.2 or newer"):
+        worker_module.configure_render_style({"style": "screen_edges"})
+
+
+def test_software_compatibility_rejects_evaluator_passes_before_rendering(
+    worker_module: types.ModuleType,
+) -> None:
+    worker_module.bpy.app = types.SimpleNamespace(version=(4, 2, 0))
+    worker_module.__dict__["require_session"] = lambda: {"source_sha256": "source"}
+
+    with pytest.raises(RuntimeError, match=r"evaluator passes require Blender 5.2 or newer"):
+        worker_module.render_image(
+            {
+                "output_path": "/tmp/output.png",
+                "evaluator_output_dir": "/tmp/evaluator",
+            }
+        )

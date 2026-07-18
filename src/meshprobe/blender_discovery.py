@@ -24,7 +24,7 @@ install:
    Foundation" folder layout.
 
 Among everything found, prefers the newest version >= MIN_SUPPORTED_BLENDER_VERSION
-(5.2, the real minimum per issue #93's unsupported-version handling) rather than
+(4.2, the compatibility floor) rather than
 the newest overall -- an older, unsupported Blender found this way would just
 fail later with a more confusing error than a plain "not found".
 
@@ -53,11 +53,11 @@ __all__ = [
     "parse_blender_version",
 ]
 
-# Kept in sync with issue #93's unsupported-Blender-version handling: Blender
-# older than 5.2 is not supported by meshprobe's worker script, so
+# Kept in sync with the worker's compatibility floor: Blender older than 4.2
+# is not supported by meshprobe's worker script, so
 # auto-discovery must not silently pick an older install and fail later with a
 # confusing downstream error.
-MIN_SUPPORTED_BLENDER_VERSION: tuple[int, int] = (5, 2)
+MIN_SUPPORTED_BLENDER_VERSION: tuple[int, int] = (4, 2)
 
 BlenderVersion = tuple[int, int, int]
 

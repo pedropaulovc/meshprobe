@@ -31,7 +31,11 @@ from bpy_extras.object_utils import world_to_camera_view  # type: ignore[import-
 from mathutils import Matrix, Quaternion, Vector  # type: ignore[import-not-found]
 
 PROTOCOL_VERSION = 2
-MINIMUM_BLENDER_VERSION = (5, 2)
+# Blender 4.2 runs in a bounded software-only compatibility mode. Its background
+# GPU API lacks ``gpu.init()``, so graphics telemetry, hardware-required EEVEE,
+# and the GPU compositor's ``screen_edges`` style require Blender 5.2 or newer.
+MINIMUM_BLENDER_VERSION = (4, 2)
+GPU_INITIALIZATION_MINIMUM_VERSION = (5, 2)
 MILLIMETERS_PER_METER = 1_000.0
 PRESET_REFERENCE_SPAN_MM = 5_000.0
 # The classic CAD-export bug: glTF's spec unit is meters, but a source authored in
@@ -1623,7 +1627,11 @@ def reset_session() -> dict[str, Any]:
         }
     apply_camera(deepcopy(IMPORTED_CAMERA))
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
-    configure_render_style({})
+    # Blender 4.2 cannot use the GPU compositor-backed default screen_edges
+    # style. Resetting a session must remain available for the supported
+    # shaded/contact-sheet flows without changing the modern runtime default.
+    reset_style = "shaded" if uses_software_compatibility_mode(bpy.app.version) else "screen_edges"
+    configure_render_style({"style": reset_style})
     return session_snapshot()
 
 
@@ -1764,8 +1772,13 @@ def temporary_render_style() -> Iterator[None]:
 
 
 def configure_render_style(command: dict[str, Any]) -> None:
-    scene = bpy.context.scene
     style = command.get("style", "screen_edges")
+    if style == "screen_edges" and uses_software_compatibility_mode(bpy.app.version):
+        raise RuntimeError(
+            "screen_edges requires Blender 5.2 or newer; use shaded or shaded_edges "
+            "with Blender 4.2 software compatibility mode"
+        )
+    scene = bpy.context.scene
     scene.render.use_freestyle = style == "shaded_edges"
     if style in {"shaded", "screen_edges"}:
         return
@@ -1813,10 +1826,8 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     function (no ``bpy``/``gpu`` access) so it stays unit-testable outside a
     real Blender process — see ``tests/unit/test_blender_worker.py``.
 
-    Call this before touching any version-sensitive Blender API (e.g.
-    ``gpu.init()``, added in Blender 5.2 — see issue #93): an unsupported
-    Blender otherwise fails deep inside a call like that with a raw
-    ``AttributeError`` and no hint that the Blender version is the problem.
+    Blender 4.2 through 5.1 run in bounded compatibility mode. They cannot call
+    GPU telemetry or the GPU compositor path, which require Blender 5.2.
     """
     if version[:2] >= MINIMUM_BLENDER_VERSION:
         return
@@ -1824,8 +1835,12 @@ def require_supported_blender_version(version: tuple[int, int, int]) -> None:
     minimum = ".".join(str(component) for component in MINIMUM_BLENDER_VERSION)
     raise RuntimeError(
         f"Blender {detected} is unsupported — MeshProbe requires Blender >= {minimum}. "
-        "Install Blender 5.2 LTS or newer."
+        "Install Blender 4.2 LTS or newer."
     )
+
+
+def uses_software_compatibility_mode(version: tuple[int, int, int]) -> bool:
+    return version[:2] < GPU_INITIALIZATION_MINIMUM_VERSION
 
 
 def graphics_platform() -> dict[str, Any]:
@@ -1836,6 +1851,20 @@ def graphics_platform() -> dict[str, Any]:
 
 def initialize_graphics_platform() -> dict[str, Any]:
     require_supported_blender_version(bpy.app.version)
+    if uses_software_compatibility_mode(bpy.app.version):
+        detected = bpy.app.version_string
+        return {
+            "vendor": "unavailable",
+            "renderer": f"Blender {detected} compatibility mode (GPU unavailable)",
+            "version": detected,
+            "backend": "unavailable",
+            "blender_device_type": "unavailable",
+            "device_class": "unknown",
+            "warnings": [
+                f"Blender {detected} runs in compatibility mode without GPU telemetry: "
+                "hardware_required and screen_edges require Blender 5.2 or newer."
+            ],
+        }
     gpu.init()
     vendor = str(gpu.platform.vendor_get())
     renderer = str(gpu.platform.renderer_get())
@@ -2610,6 +2639,17 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
     style = command.setdefault("style", "screen_edges")
+    compatibility_warnings: list[str] = []
+    if style == "screen_edges" and uses_software_compatibility_mode(bpy.app.version):
+        # The public protocol's default is screen_edges. Blender 4.2 lacks its
+        # GPU compositor, so honor the usable default-render path with the
+        # closest portable style and make the downgrade visible in the result.
+        style = "shaded"
+        command["style"] = style
+        compatibility_warnings.append(
+            "Blender 4.2 software compatibility mode rendered shaded instead of "
+            "screen_edges; screen_edges requires Blender 5.2 or newer."
+        )
     shaded_edges = command.setdefault(
         "shaded_edges",
         {
@@ -2622,6 +2662,13 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
     output = Path(command["output_path"]).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("render.image output_path must end in .png")
+    if command.get("evaluator_output_dir") is not None and uses_software_compatibility_mode(
+        bpy.app.version
+    ):
+        raise RuntimeError(
+            "evaluator passes require Blender 5.2 or newer; Blender 4.2 software "
+            "compatibility mode supports shaded and shaded_edges renders only"
+        )
     with temporary_render_style():
         device = configure_render(command)
         configure_render_style(command)
@@ -2662,7 +2709,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "evaluator": evaluator,
         "luminance": luminance,
         "foreground": foreground,
-        "warnings": empty_frame_warnings(foreground),
+        "warnings": [*compatibility_warnings, *empty_frame_warnings(foreground)],
         "resolved_depth_of_field": resolved_depth_of_field(),
     }
 

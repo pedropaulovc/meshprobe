@@ -918,7 +918,7 @@ class RenderManifest(ContractModel):
     engine: RenderEngine
     style: RenderStyle = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
-    device: Literal["graphics_hardware", "graphics_software", "cuda"]
+    device: Literal["graphics_hardware", "graphics_software", "graphics_unknown", "cuda"]
     graphics_policy: GraphicsPolicy
     graphics: GraphicsPlatform
     blender_version: Annotated[str, StringConstraints(min_length=1, max_length=128)]

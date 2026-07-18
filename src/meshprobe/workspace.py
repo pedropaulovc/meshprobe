@@ -28,6 +28,7 @@ from meshprobe.models import (
     GraphicsPlatform,
     Illumination,
     MarkMode,
+    RenderStyle,
     RenderStyleState,
     SceneManifest,
     SessionSnapshot,
@@ -510,7 +511,7 @@ class SessionManager:
             self._write_state(
                 files,
                 snapshot,
-                render_style=self._render_style(command, renderer_continuity),
+                render_style=self._render_style(command, renderer_continuity, response),
             )
             self._update_checkpoint(files, command, snapshot)
             self._update_metadata(files, status="active", worker_pid=service.worker_pid)
@@ -829,11 +830,18 @@ class SessionManager:
     def _render_style(
         command: Command,
         renderer_continuity: RendererContinuity,
+        response: CommandResponse,
     ) -> RenderStyleState | None:
         if renderer_continuity is RendererContinuity.RECREATED_DURING_SNAPSHOT:
             return RenderStyleState()
         if isinstance(command, RenderImageCommand):
-            return RenderStyleState(style=command.style, shaded_edges=command.shaded_edges)
+            style = command.style
+            if isinstance(response.result, dict):
+                resolved_style = response.result.get("style")
+                if isinstance(resolved_style, str):
+                    with suppress(ValueError):
+                        style = RenderStyle(resolved_style)
+            return RenderStyleState(style=style, shaded_edges=command.shaded_edges)
         if isinstance(command, (RenderContactSheetCommand, SessionResetCommand)):
             return RenderStyleState()
         if renderer_continuity is RendererContinuity.RECREATED_BEFORE_SNAPSHOT:
