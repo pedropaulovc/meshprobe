@@ -159,6 +159,75 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_shape_key_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "shape-key.glb"
+    script = tmp_path / "build_shape_key.py"
+    script.write_text(
+        f"""
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=2.0)
+obj = bpy.context.object
+obj.name = 'morphing-cube'
+obj.shape_key_add(name='Basis')
+target = obj.shape_key_add(name='wide')
+for vertex in target.data:
+    vertex.co.x *= 2.0
+obj.active_shape_key_index = 1
+obj.active_shape_key.value = 1.0
+
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_morph=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
+def shape_key_span(path: Path, tmp_path: Path) -> float:
+    script = tmp_path / "shape_key_span.py"
+    script.write_text(
+        f"""
+import bpy
+import json
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath={json.dumps(str(path))})
+mesh = next(obj.data for obj in bpy.context.scene.objects if obj.type == 'MESH')
+key = mesh.shape_keys.key_blocks['wide']
+span = max(vertex.co.x for vertex in key.data) - min(vertex.co.x for vertex in key.data)
+print(f"SHAPE_KEY_SPAN={{span}}")
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    prefix = "SHAPE_KEY_SPAN="
+    return float(
+        next(
+            line.removeprefix(prefix)
+            for line in completed.stdout.splitlines()
+            if line.startswith(prefix)
+        )
+    )
+
+
 def build_edge_style_glb(tmp_path: Path) -> Path:
     output = tmp_path / "edge-style.glb"
     script = tmp_path / "build_edge_style.py"
@@ -1984,6 +2053,17 @@ def test_unit_scale_scales_imported_camera_clip_distances(tmp_path: Path) -> Non
     )
     assert corrected.imported_camera.projection.far_clip_mm == pytest.approx(
         unscaled.imported_camera.projection.far_clip_mm * 0.001, rel=1e-3
+    )
+
+
+def test_unit_scale_bakes_into_shape_key_coordinates(tmp_path: Path) -> None:
+    source = build_shape_key_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source, unit_scale=0.001)
+
+    assert manifest.normalized_geometry is not None
+    assert shape_key_span(Path(manifest.normalized_geometry.path), tmp_path) == pytest.approx(
+        0.004, rel=1e-3
     )
 
 

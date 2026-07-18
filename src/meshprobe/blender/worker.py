@@ -3255,7 +3255,7 @@ def apply_unit_scale(scale: float) -> None:
     for obj in bpy.context.scene.objects:
         data = obj.data
         if isinstance(data, bpy.types.Mesh) and data.name not in scaled_meshes:
-            data.transform(scale_matrix)
+            data.transform(scale_matrix, shape_keys=True)
             scaled_meshes.add(data.name)
     ordered = sorted(bpy.context.scene.objects, key=_parent_depth)
     targets = {obj: obj.matrix_world.copy() for obj in ordered}
