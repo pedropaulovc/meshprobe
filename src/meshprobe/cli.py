@@ -1370,9 +1370,9 @@ def render_image(
                 "Rendering policy: screen_edges is the fast default for inspection; "
                 "use shaded_edges for slower Freestyle final confirmation, especially "
                 "to separate same-color adjacent parts, or shaded for no edge overlay. "
-                "Freestyle is single-threaded and CPU-bound; its cost scales with visible "
-                "components, not resolution. Narrow the visible set or edge types to "
-                "reduce that cost."
+                "The visible components count drives Freestyle cost, not resolution. "
+                "Freestyle is single-threaded and CPU-bound; narrow the visible set or "
+                "edge types to reduce that cost."
             ),
         ),
     ] = RenderStyle.SCREEN_EDGES,
