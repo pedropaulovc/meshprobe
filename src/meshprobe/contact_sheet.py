@@ -14,6 +14,7 @@ def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
 
 
+_DEFAULT_PANEL_HEIGHT_PX = 1200  # RenderContactSheetCommand.panel_height's default
 _MAX_CAPTION_LINES = 4
 _MAX_LEGEND_LINES = 2
 # Bound on caption + legend lines together, so a panel that maxes out BOTH bands
@@ -24,6 +25,22 @@ _MAX_LEGEND_LINES = 2
 # occluder-removal caption in full); only the legend gives up room when the
 # caption is already at its cap.
 _MAX_BAND_LINES = 5
+
+
+def _caption_line_caps(panel_height: int) -> tuple[int, int, int]:
+    """Scale the caption/legend/band line caps for a panel taller than the
+    default the ~4K sheet-height budget above was calibrated for. A caller who
+    explicitly opts into a larger panel_height (e.g. custom_3x3 with
+    --panel-height 4096) has already opted into a bigger sheet, so holding
+    them to the same fixed line budget as the 1200px default would silently
+    drop occluder names or custom caption text the enlarged panel has room to
+    show. Panels at or below the default keep today's exact caps."""
+    scale = max(1.0, panel_height / _DEFAULT_PANEL_HEIGHT_PX)
+    return (
+        round(_MAX_CAPTION_LINES * scale),
+        round(_MAX_LEGEND_LINES * scale),
+        round(_MAX_BAND_LINES * scale),
+    )
 
 
 def _cap_lines(lines: tuple[str, ...], limit: int) -> tuple[str, ...]:
@@ -77,6 +94,7 @@ def compose_contact_sheet(
     measuring_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     line_box = measuring_draw.textbbox((0, 0), "Ag", font=font)
     line_height = int(line_box[3] - line_box[1] + 3)
+    max_caption_lines, max_legend_lines, max_band_lines = _caption_line_caps(panel_height)
     panel_lines: list[tuple[str, ...]] = []
     panel_caption_line_counts: list[int] = []
     for panel_index, (_path, caption, callouts) in enumerate(panels):
@@ -88,12 +106,12 @@ def compose_contact_sheet(
         # truncated by an unrelated long callout legend; only each band's own
         # pathological growth (a very long display name, a very long legend) gets
         # truncated.
-        capped_caption_lines = _cap_lines(caption_lines, _MAX_CAPTION_LINES)
+        capped_caption_lines = _cap_lines(caption_lines, max_caption_lines)
         lines = list(capped_caption_lines)
         if callouts:
             legend = " | ".join(f"{callout.number} {callout.label}" for callout in callouts)
             legend_lines = _wrap_text(measuring_draw, legend, font, panel_width - 12)
-            legend_limit = min(_MAX_LEGEND_LINES, _MAX_BAND_LINES - len(capped_caption_lines))
+            legend_limit = min(max_legend_lines, max_band_lines - len(capped_caption_lines))
             lines.extend(_cap_lines(legend_lines, legend_limit))
         panel_caption_line_counts.append(len(capped_caption_lines))
         panel_lines.append(tuple(lines))

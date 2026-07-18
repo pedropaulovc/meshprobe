@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from meshprobe.contact_sheet import compose_contact_sheet
+from meshprobe.contact_sheet import _caption_line_caps, compose_contact_sheet
 from meshprobe.models import ContactSheetCallout
 from meshprobe.protocol import RenderContactSheetCommand
 
@@ -197,6 +197,25 @@ def test_compose_contact_sheet_bounds_every_row_worst_case_at_default_panel_size
     compose_contact_sheet(tuple(panels), output, default_panel, default_panel)
 
     assert Image.open(output).height <= 4_096
+
+
+def test_caption_line_caps_scale_for_larger_than_default_panels() -> None:
+    # A caller who explicitly requests panels taller than the 1200px default (e.g.
+    # custom_3x3 with --panel-height 4096) has already opted into a bigger sheet;
+    # holding them to the same fixed 4-line caption cap would silently drop
+    # occluder names / custom caption text the larger panel has room to show.
+    default_panel_height = RenderContactSheetCommand.model_fields["panel_height"].default
+    default_caps = _caption_line_caps(default_panel_height)
+
+    # 4096 is panel_height's protocol maximum (Field(..., le=4_096)).
+    scaled_caps = _caption_line_caps(4096)
+
+    assert all(scaled > default for scaled, default in zip(scaled_caps, default_caps, strict=True))
+
+
+def test_caption_line_caps_keeps_the_default_caps_at_or_below_the_default_panel_height() -> None:
+    default_panel_height = RenderContactSheetCommand.model_fields["panel_height"].default
+    assert _caption_line_caps(default_panel_height) == _caption_line_caps(1)
 
 
 def test_compose_contact_sheet_bounds_font_for_tall_narrow_panels(tmp_path: Path) -> None:
