@@ -778,7 +778,7 @@ class ShadedEdgesStyle(ContractModel):
 
 
 class RenderStyleState(ContractModel):
-    style: RenderStyle = RenderStyle.SHADED
+    style: RenderStyle = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
 
 
@@ -892,7 +892,7 @@ class RenderManifest(ContractModel):
     height: Annotated[int, Field(ge=64, le=16_384)]
     samples: Annotated[int, Field(ge=1, le=4_096)]
     engine: RenderEngine
-    style: RenderStyle = RenderStyle.SHADED
+    style: RenderStyle = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     device: Literal["graphics_hardware", "graphics_software", "cuda"]
     graphics_policy: GraphicsPolicy

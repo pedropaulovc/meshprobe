@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
+from meshprobe.models import RenderStyle
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
@@ -545,6 +546,17 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert isinstance(render_command, RenderImageCommand)
     assert open_command.source_path == str(source.resolve())
     assert render_command.output_path == str((tmp_path / "relative/render.png").resolve())
+    assert render_command.style is RenderStyle.SCREEN_EDGES
+
+
+def test_render_help_explains_style_policy() -> None:
+    result = runner.invoke(app, ["render-image", "--help"])
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.output).split())
+    assert "default `screen_edges` style is the fast inspection pass" in help_text
+    assert "geometry-aware Freestyle lines when making a final confirmation" in help_text
+    assert "[default: screen_edges]" in help_text
 
 
 def test_render_cli_builds_resolved_shaded_edges_style(

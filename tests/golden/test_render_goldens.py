@@ -196,6 +196,7 @@ def test_render_matches_perceptual_edge_and_exact_mask_goldens(tmp_path: Path) -
                 height=192,
                 samples=1,
                 engine=RenderEngine.EEVEE,
+                style=RenderStyle.SHADED,
             ),
             evaluator_output_dir=evaluator_root,
         )
@@ -268,6 +269,7 @@ def test_display_referred_background_renders_exact_srgb(tmp_path: Path) -> None:
                     height=96,
                     samples=1,
                     engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SHADED,
                 )
             )
             with Image.open(output) as image:

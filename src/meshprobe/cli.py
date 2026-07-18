@@ -1367,13 +1367,15 @@ def render_image(
         typer.Option(
             "--style",
             help=(
-                "shaded is fast; shaded_edges adds Freestyle outlines that separate "
-                "same-color adjacent parts but renders markedly slower (single-threaded, "
-                "CPU-bound; cost scales with the number of visible components, not "
-                "resolution). Narrow the visible set or drop --edge-types to speed it up."
+                "Rendering policy: screen_edges is the fast default for inspection; "
+                "use shaded_edges for slower Freestyle final confirmation, especially "
+                "to separate same-color adjacent parts, or shaded for no edge overlay. "
+                "Freestyle is single-threaded and CPU-bound; its cost scales with visible "
+                "components, not resolution. Narrow the visible set or edge types to "
+                "reduce that cost."
             ),
         ),
-    ] = RenderStyle.SHADED,
+    ] = RenderStyle.SCREEN_EDGES,
     edge_color: Annotated[str, typer.Option("--edge-color")] = "#202020",
     edge_width: Annotated[float, typer.Option("--edge-width", min=0.01, max=10)] = 1.5,
     crease_angle: Annotated[
@@ -1397,6 +1399,10 @@ def render_image(
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
 ) -> None:
     """Render the selected session to an image artifact.
+
+    The default `screen_edges` style is the fast inspection pass. Use `--style shaded_edges`
+    for slower, geometry-aware Freestyle lines when making a final confirmation. Use
+    `--style shaded` when the unmodified shaded image is the evidence you need.
 
     The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
     a too-dark or blown-out frame can be detected without inspecting pixels. See

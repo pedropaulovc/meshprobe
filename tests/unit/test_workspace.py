@@ -160,7 +160,7 @@ def test_session_manager_writes_compact_queryable_state(
     assert restored.camera_orbit_angles.azimuth_degrees == pytest.approx(expected_azimuth)
     assert restored.camera_orbit_angles.elevation_degrees == pytest.approx(expected_elevation)
     assert state["render_style"] == {
-        "style": "shaded",
+        "style": "screen_edges",
         "shaded_edges": {
             "line_color": "#202020",
             "line_width": 1.5,

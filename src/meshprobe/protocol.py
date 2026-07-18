@@ -158,7 +158,13 @@ class RenderImageCommand(CommandModel):
     height: Annotated[int, Field(ge=64, le=16_384)] = 1024
     samples: Annotated[int, Field(ge=1, le=4_096)] = 64
     engine: RenderEngine = RenderEngine.EEVEE
-    style: RenderStyle = RenderStyle.SHADED
+    style: Annotated[
+        RenderStyle,
+        Field(
+            description="Rendering policy: screen_edges is the fast default for inspection; "
+            "use shaded_edges for slower Freestyle final confirmation, or shaded for no overlay."
+        ),
+    ] = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
 

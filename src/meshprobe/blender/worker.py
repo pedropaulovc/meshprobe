@@ -1702,7 +1702,7 @@ def temporary_render_style() -> Iterator[None]:
 
 def configure_render_style(command: dict[str, Any]) -> None:
     scene = bpy.context.scene
-    style = command.get("style", "shaded")
+    style = command.get("style", "screen_edges")
     scene.render.use_freestyle = style == "shaded_edges"
     if style in {"shaded", "screen_edges"}:
         return
@@ -1981,6 +1981,7 @@ def render_screen_edges(
             composited.save_render(str(path), scene=bpy.context.scene)
         finally:
             bpy.data.images.remove(composited)
+
 
 def luminance_summary(path: Path) -> dict[str, float]:
     image = bpy.data.images.load(str(path), check_existing=False)
@@ -2356,7 +2357,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "height": command["height"],
         "samples": command["samples"],
         "engine": command["engine"],
-        "style": command.get("style", "shaded"),
+        "style": command.get("style", "screen_edges"),
         "shaded_edges": command.get(
             "shaded_edges",
             {

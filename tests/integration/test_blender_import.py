@@ -968,6 +968,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
                 width=256,
                 height=256,
                 samples=1,
+                style=RenderStyle.SHADED,
             )
         )
         disabled_camera = enabled_camera.model_copy(
@@ -992,6 +993,7 @@ def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> N
                 width=256,
                 height=256,
                 samples=1,
+                style=RenderStyle.SHADED,
             )
         )
 
@@ -1581,6 +1583,7 @@ def test_positive_source_y_visual_rotation_matches_rotated_model(
                     width=256,
                     height=256,
                     samples=1,
+                    style=RenderStyle.SHADED,
                 ),
                 evaluator_output_dir=evaluator,
             )
@@ -1689,6 +1692,7 @@ def test_controller_recovers_from_real_blender_crash_during_render(tmp_path: Pat
                 width=128,
                 height=128,
                 samples=1,
+                style=RenderStyle.SHADED,
             )
         )
         second_pid = controller.ready_event["pid"] if controller.ready_event is not None else None
@@ -2445,6 +2449,7 @@ def test_worker_rejects_invalid_mark_without_mutation_and_still_renders(
                 width=64,
                 height=64,
                 samples=1,
+                style=RenderStyle.SHADED,
             )
         )
 
@@ -2490,6 +2495,7 @@ def test_worker_renders_color_and_private_evaluator_passes(tmp_path: Path) -> No
             height=192,
             samples=1,
             engine=RenderEngine.EEVEE,
+            style=RenderStyle.SHADED,
         )
         first = controller.render_image(command, evaluator_output_dir=evaluator_dir)
         controller.execute(
@@ -2555,6 +2561,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
                 width=320,
                 height=240,
                 samples=1,
+                style=RenderStyle.SHADED,
             ),
             evaluator_output_dir=evaluator_dir,
         )
@@ -2620,7 +2627,6 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
                 width=320,
                 height=240,
                 samples=1,
-                style=RenderStyle.SCREEN_EDGES,
             )
         )
         screen_edge_runtime = controller.request("session.runtime")
@@ -2644,6 +2650,7 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
                 width=320,
                 height=240,
                 samples=1,
+                style=RenderStyle.SHADED,
             )
         )
         recovered_runtime = controller.request("session.runtime")
@@ -2747,6 +2754,7 @@ def test_cycles_render_uses_cuda_device(tmp_path: Path) -> None:
                 height=64,
                 samples=1,
                 engine=RenderEngine.CYCLES,
+                style=RenderStyle.SHADED,
             )
         )
 
@@ -2782,6 +2790,7 @@ def test_eevee_render_uses_wsl2_d3d12_hardware(tmp_path: Path) -> None:
                 height=64,
                 samples=1,
                 engine=RenderEngine.EEVEE,
+                style=RenderStyle.SHADED,
                 graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
             )
         )
@@ -2816,6 +2825,7 @@ def test_eevee_hardware_policy_rejects_software_renderer(
                     height=64,
                     samples=1,
                     engine=RenderEngine.EEVEE,
+                    style=RenderStyle.SHADED,
                     graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
                 )
             )
