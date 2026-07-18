@@ -2592,6 +2592,17 @@ def composite_over_background(path: Path, background_srgb: tuple[float, float, f
 def render_image(command: dict[str, Any]) -> dict[str, Any]:
     manifest = require_session()
     style = command.setdefault("style", "screen_edges")
+    compatibility_warnings: list[str] = []
+    if style == "screen_edges" and uses_software_compatibility_mode(bpy.app.version):
+        # The public protocol's default is screen_edges. Blender 4.2 lacks its
+        # GPU compositor, so honor the usable default-render path with the
+        # closest portable style and make the downgrade visible in the result.
+        style = "shaded"
+        command["style"] = style
+        compatibility_warnings.append(
+            "Blender 4.2 software compatibility mode rendered shaded instead of "
+            "screen_edges; screen_edges requires Blender 5.2 or newer."
+        )
     shaded_edges = command.setdefault(
         "shaded_edges",
         {
@@ -2651,7 +2662,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "evaluator": evaluator,
         "luminance": luminance,
         "foreground": foreground,
-        "warnings": empty_frame_warnings(foreground),
+        "warnings": [*compatibility_warnings, *empty_frame_warnings(foreground)],
         "resolved_depth_of_field": resolved_depth_of_field(),
     }
 

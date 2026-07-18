@@ -3217,19 +3217,22 @@ def test_blender_4_2_software_compatibility_renders_supported_styles(tmp_path: P
                     graphics_policy=GraphicsPolicy.HARDWARE_REQUIRED,
                 )
             )
-        with pytest.raises(BlenderWorkerError, match=r"screen_edges requires Blender 5.2"):
-            controller.execute(
-                RenderImageCommand(
-                    request_id="blender-4.2-screen-edges",
-                    op="render.image",
-                    output_path=str(tmp_path / "blender-4.2-screen-edges.png"),
-                    width=64,
-                    height=64,
-                    samples=1,
-                    engine=RenderEngine.EEVEE,
-                    style=RenderStyle.SCREEN_EDGES,
-                )
+        fallback = controller.execute(
+            RenderImageCommand(
+                request_id="blender-4.2-default-style",
+                op="render.image",
+                output_path=str(tmp_path / "blender-4.2-default-style.png"),
+                width=64,
+                height=64,
+                samples=1,
+                engine=RenderEngine.EEVEE,
             )
+        )
+        assert isinstance(fallback, RenderManifest)
+        assert fallback.style is RenderStyle.SHADED
+        assert any(
+            "rendered shaded instead of screen_edges" in warning for warning in fallback.warnings
+        )
         evaluator_dir = tmp_path / "blender-4.2-evaluator"
         with pytest.raises(BlenderWorkerError, match=r"evaluator passes require Blender 5.2"):
             controller.render_image(
