@@ -1821,11 +1821,12 @@ def reset_session(command: dict[str, Any]) -> dict[str, Any]:
     if IMPORTED_CAMERA is None or IMPORTED_ILLUMINATION is None:
         raise ValueError("session state is not initialized")
     global CURRENT_CAMERA_OPERATION, DEFAULT_ASPECT_RATIO
-    CURRENT_CAMERA_OPERATION = None
     aspect_ratio = command.get("aspect_ratio")
     if aspect_ratio is None:
         aspect_ratio = DEFAULT_ASPECT_RATIO
-    else:
+    validate_camera_diagnostics_inputs((), aspect_ratio)
+    CURRENT_CAMERA_OPERATION = None
+    if command.get("aspect_ratio") is not None:
         DEFAULT_ASPECT_RATIO = aspect_ratio
     for component_id, obj in COMPONENT_OBJECTS.items():
         restore_mesh(component_id)
@@ -3865,13 +3866,15 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
     unit_scale = float(command.get("unit_scale", 1.0))
     if not math.isfinite(unit_scale) or unit_scale <= 0:
         raise ValueError("unit_scale must be a positive finite number")
+    aspect_ratio = command.get("aspect_ratio", 1.0)
+    validate_camera_diagnostics_inputs((), aspect_ratio)
     clear_session_state()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import_warnings = import_source(source_path)
     if unit_scale != 1.0:
         apply_unit_scale(unit_scale)
     manifest = build_manifest(source_path, source_sha256, import_warnings)
-    initialize_session(manifest, source_path, command.get("aspect_ratio", 1.0))
+    initialize_session(manifest, source_path, aspect_ratio)
     return manifest
 
 

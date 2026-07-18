@@ -1449,6 +1449,30 @@ def test_rejected_bare_orbit_preserves_live_camera_state(tmp_path: Path) -> None
     assert after == before
 
 
+def test_invalid_open_aspect_preserves_the_existing_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="aspect_ratio"):
+            controller.open_scene(source, aspect_ratio=0.005)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
+
+
+def test_invalid_reset_aspect_preserves_the_existing_session(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        before = controller.request("session.snapshot")["session"]
+        with pytest.raises(BlenderWorkerError, match="aspect_ratio"):
+            controller.request("session.reset", aspect_ratio=0.005)
+        after = controller.request("session.snapshot")["session"]
+
+    assert after == before
+
+
 def test_accepted_bare_orbit_clears_the_previous_motion_receipt(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
