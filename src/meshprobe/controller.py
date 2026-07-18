@@ -8,6 +8,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -119,8 +120,15 @@ class BlenderController:
         timeout_seconds: float = DEFAULT_WORKER_TIMEOUT_SECONDS,
         artifact_cache_root: str | Path | None = None,
     ) -> None:
-        configured = str(executable or os.environ.get("MESHPROBE_BLENDER", "blender"))
+        env_blender = os.environ.get("MESHPROBE_BLENDER")
+        configured = str(executable or env_blender or "blender")
         self.executable = Path(configured)
+        # True only when neither --blender nor MESHPROBE_BLENDER named an
+        # executable, i.e. we are relying on the bare "blender" PATH lookup --
+        # the case Windows auto-discovery (start()) should kick in for. An
+        # explicit override that fails to resolve should surface as-is rather
+        # than being silently replaced by a different discovered install.
+        self._auto_discovery_eligible = executable is None and env_blender is None
         self.timeout_seconds = timeout_seconds
         configured_cache = artifact_cache_root or os.environ.get("MESHPROBE_CACHE")
         self._artifact_cache = ArtifactCache(
@@ -147,8 +155,18 @@ class BlenderController:
         if self._process is not None:
             raise BlenderWorkerError("Blender worker is already started")
         resolved = shutil.which(str(self.executable))
+        if resolved is None and self._auto_discovery_eligible and sys.platform == "win32":
+            from meshprobe.blender_discovery import discover_windows_blender
+
+            discovered = discover_windows_blender()
+            if discovered is not None:
+                resolved = str(discovered)
         if resolved is None:
-            raise BlenderWorkerError(f"Blender executable not found: {self.executable}")
+            raise BlenderWorkerError(
+                f"Blender executable not found: {self.executable} "
+                "(pass --blender /path/to/blender, or set MESHPROBE_BLENDER=/path/to/blender, "
+                "to override)"
+            )
         self.executable = Path(resolved)
         output_queue: queue.Queue[str | None] = queue.Queue()
         self._lines = output_queue
