@@ -92,5 +92,5 @@ def test_discover_windows_blender_non_windows_platform_returns_none(
 ) -> None:
     import meshprobe.blender_discovery as module
 
-    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr("meshprobe.blender_discovery.sys.platform", "linux")
     assert module.discover_windows_blender() is None

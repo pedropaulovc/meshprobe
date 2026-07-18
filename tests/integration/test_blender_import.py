@@ -2908,8 +2908,8 @@ def test_shaded_edges_draws_boundaries_and_creases_not_triangulation(
         if max(
             abs(left - right)
             for left, right in zip(
-                plain_image.getpixel((x, y)),
-                screen_edge_image.getpixel((x, y)),
+                rgb_pixel(plain_image, (x, y)),
+                rgb_pixel(screen_edge_image, (x, y)),
                 strict=True,
             )
         )

@@ -42,7 +42,9 @@ def run_comparison(tmp_path: Path, screen_color: str) -> dict[str, object]:
     )
     assert (output / "side-by-side-crop.png").is_file()
     assert (output / "edge-difference-crop.png").is_file()
-    return json.loads((output / "metrics.json").read_text(encoding="utf-8"))
+    metrics = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
+    assert isinstance(metrics, dict)
+    return metrics
 
 
 def test_comparison_handles_no_changed_pixels(tmp_path: Path) -> None:
