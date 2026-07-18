@@ -5,11 +5,11 @@
   "corpus_manifest_sha256": "b43fdce2fde5e8781f0e5c81a910d843f44ad084ca5c31c7f836d6e26198bbe0",
   "generator_sha256": "aec013a4ffc11a6f01865fbcf388d15b6868f6dac9c853f6047ba98a53920e2f",
   "runtime": {
-    "meshprobe_version": "0.3.0",
-    "meshprobe_sha256": "60ab164034fb9e8a286168fb8bafa441e0e41a70c627acaff4b4f64a5bfbf662",
+    "meshprobe_version": "0.4.0",
+    "meshprobe_sha256": "63a147047a2ae595be7ff096a6309026b94bc2f909b2717ca23052dff6ab7cb2",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
-    "importer_sha256": "d7bc0f11ca5696e3b13dfb31abc1e63f6dcfc8aeb3ca734042d86f233ba42773",
+    "importer_sha256": "e5c4563e4c4e2d70dba8891cfd9a1fd176064fa6ef2f75327c91e2526d973b1b",
     "render_engines": [
       "eevee",
       "cycles"

@@ -22,22 +22,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemon upgrades.
 - `view.frame` and `view-frame` for fitting an absolute perspective or orthographic view to
   selected components.
+- `view-rotate --frame camera` for rotations relative to the active camera basis.
 - Fast `screen_edges` inspection rendering, now the default style, plus `shaded_edges` for
   configurable CAD-style edges.
 - `--background-srgb` for exact display-referred backgrounds; component name and derived orbit
-  angle fields in durable session state; glob selectors for focus and occlusion operations.
+  angle fields in durable session state; glob selectors for `display`, `mark`, `render-sheet`,
+  `focus`, and `occlusion`.
 - `meshprobe --version`, `python -m meshprobe`, per-command schema lookup, and Windows Blender
   auto-discovery.
+- Result-envelope schemas in `meshprobe schema` and CLI help, so automation can validate command
+  responses without inferring their wrapper shape.
 - Warnings for effectively empty render frames and for a render resolution whose aspect ratio
   differs from the camera framing.
 
 ### Changed
 
 - Default render resolution is now 2576 × 2576 for inspection output.
-- `view-orbit --projection-json` is optional; a bare orbit inherits the active projection.
+- `view-orbit --projection-json` is optional; a bare orbit inherits the active projection, while
+  `--focal-length` and `--ortho-scale` provide concise projection overrides.
 - `view-rotate` defaults to the source frame, and the default highlight color is deep pink.
 - Root-level CLI options can appear after a subcommand.
 - `neutral_studio` is brighter for scenes without source lighting.
+- A `find` command that matches nothing reports an explicit zero match count in its default
+  receipt rather than looking like an unavailable result.
 
 ### Fixed
 
@@ -50,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Render-style fallbacks and durable checkpoints retain the worker-resolved style and legacy
   source-camera baseline across recovery.
 - GPU probing fails clearly on unsupported Blender versions instead of calling unavailable APIs.
+- The GPU-adapter compatibility warning is emitted once per worker, rather than once for every
+  command in an affected session.
+- Public and private qualification manifests are repinned to the 0.4.0 runtime.
 
 ## [0.3.0] - 2026-07-17
 
