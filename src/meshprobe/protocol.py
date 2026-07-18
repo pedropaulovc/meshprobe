@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -228,12 +228,40 @@ type Command = Annotated[
 COMMAND_ADAPTER: TypeAdapter[Command] = TypeAdapter(Command)
 
 
+def _command_model_registry() -> dict[str, type[CommandModel]]:
+    """Map each command's ``op`` discriminator value to its model class.
+
+    Derived from the ``Command`` discriminated union itself (via the same
+    ``op: Literal[...]`` field the union discriminates on), so the registry
+    can never drift out of sync with the actual set of commands.
+    """
+    union = get_args(Command.__value__)[0]
+    registry: dict[str, type[CommandModel]] = {}
+    for member in get_args(union):
+        (op_value,) = get_args(member.model_fields["op"].annotation)
+        registry[op_value] = member
+    return registry
+
+
+COMMAND_MODELS: dict[str, type[CommandModel]] = _command_model_registry()
+
+
 def parse_command_json(payload: str) -> Command:
     return COMMAND_ADAPTER.validate_json(payload)
 
 
 def command_json_schema() -> dict[str, object]:
     return COMMAND_ADAPTER.json_schema()
+
+
+def command_json_schema_for(op: str) -> dict[str, object]:
+    """Describe a single command's input schema, keyed by its ``op`` value.
+
+    Raises ``KeyError`` (with the unknown ``op``) if ``op`` is not a known
+    command; callers typically want :data:`COMMAND_MODELS` for the full set
+    of valid values first.
+    """
+    return TypeAdapter(COMMAND_MODELS[op]).json_schema()
 
 
 _RESULT_MODELS: dict[str, object] = {
@@ -256,6 +284,26 @@ _RESULT_MODELS: dict[str, object] = {
 }
 
 
+def _result_envelope_schema(op: str, model: object) -> dict[str, object]:
+    result_schema = TypeAdapter(model).json_schema()
+    # Hoist the result's shared definitions to the envelope root so its
+    # "#/$defs/..." references resolve against the standalone per-op schema.
+    definitions = result_schema.pop("$defs", None)
+    envelope: dict[str, object] = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["request_id", "op", "result"],
+        "properties": {
+            "request_id": {"type": "string"},
+            "op": {"const": op},
+            "result": result_schema,
+        },
+    }
+    if definitions:
+        envelope["$defs"] = definitions
+    return envelope
+
+
 def command_result_json_schema() -> dict[str, object]:
     """Describe the full result envelope each command op returns, keyed by op.
 
@@ -263,23 +311,13 @@ def command_result_json_schema() -> dict[str, object]:
     ``results/*.json`` file or an adapter response): ``request_id``, ``op`` pinned to the
     command, and ``result`` expanded to that op's concrete result schema.
     """
-    schemas: dict[str, object] = {}
-    for op, model in _RESULT_MODELS.items():
-        result_schema = TypeAdapter(model).json_schema()
-        # Hoist the result's shared definitions to the envelope root so its
-        # "#/$defs/..." references resolve against the standalone per-op schema.
-        definitions = result_schema.pop("$defs", None)
-        envelope: dict[str, object] = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["request_id", "op", "result"],
-            "properties": {
-                "request_id": {"type": "string"},
-                "op": {"const": op},
-                "result": result_schema,
-            },
-        }
-        if definitions:
-            envelope["$defs"] = definitions
-        schemas[op] = envelope
-    return schemas
+    return {op: _result_envelope_schema(op, model) for op, model in _RESULT_MODELS.items()}
+
+
+def command_result_json_schema_for(op: str) -> dict[str, object]:
+    """Describe a single command's result envelope, keyed by its ``op`` value.
+
+    Raises ``KeyError`` (with the unknown ``op``) if ``op`` is not a known
+    command.
+    """
+    return _result_envelope_schema(op, _RESULT_MODELS[op])

@@ -56,6 +56,7 @@ from meshprobe.models import (
     ShadedEdgesStyle,
 )
 from meshprobe.protocol import (
+    COMMAND_MODELS,
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
@@ -73,7 +74,9 @@ from meshprobe.protocol import (
     ViewRotateCommand,
     ViewSetCommand,
     command_json_schema,
+    command_json_schema_for,
     command_result_json_schema,
+    command_result_json_schema_for,
 )
 from meshprobe.selectors import (
     ComponentSelector,
@@ -290,9 +293,61 @@ def _emit_yaml(value: object) -> None:
     typer.echo(yaml.safe_dump(payload, sort_keys=False).rstrip())
 
 
+# CLI subcommand names (as registered via `@app.command(...)`) that don't reduce to
+# their protocol `op` value by a plain dash-for-dot swap, e.g. "view-orbit" already
+# matches "view.orbit" without an alias, but "occlusion" needs one to reach
+# "component.occlusion". Kept minimal — every other command name is resolved by
+# `_resolve_command_op` swapping "-" for "." against `COMMAND_MODELS`.
+_CLI_COMMAND_OP_ALIASES: dict[str, str] = {
+    "open": "scene.open",
+    "snapshot": "session.snapshot",
+    "find": "component.find",
+    "inspect": "component.inspect",
+    "occlusion": "component.occlusion",
+    "display": "component.display",
+    "mark": "component.mark",
+    "render-sheet": "render.contact_sheet",
+    "reset": "session.reset",
+}
+
+
+def _resolve_command_op(name: str) -> str | None:
+    """Resolve a user-supplied command name to its protocol ``op`` value.
+
+    Accepts the protocol ``op`` string itself (``view.orbit``), the CLI
+    subcommand name shown in ``--help`` (``view-orbit``), or one of the
+    small set of CLI names that don't reduce to ``op`` by a dash-for-dot
+    swap (``occlusion`` -> ``component.occlusion``). Returns ``None`` if
+    ``name`` doesn't match any known command.
+    """
+    if name in COMMAND_MODELS:
+        return name
+    alias = _CLI_COMMAND_OP_ALIASES.get(name)
+    if alias is not None:
+        return alias
+    dotted = name.replace("-", ".")
+    if dotted in COMMAND_MODELS:
+        return dotted
+    return None
+
+
+def _cli_command_names() -> list[str]:
+    """All command names accepted by the per-command schema lookup, CLI-style."""
+    reverse_aliases = {op: cli_name for cli_name, op in _CLI_COMMAND_OP_ALIASES.items()}
+    return sorted(reverse_aliases.get(op, op.replace(".", "-")) for op in COMMAND_MODELS)
+
+
 @app.command("schema")
 def schema(
     ctx: typer.Context,
+    command_name: Annotated[
+        str | None,
+        typer.Argument(
+            help="Look up a single command's schema by name (e.g. view-orbit), instead of "
+            "dumping the whole --kind commands/results schema.",
+            metavar="[COMMAND]",
+        ),
+    ] = None,
     kind: Annotated[
         SchemaKind,
         typer.Option(
@@ -310,7 +365,43 @@ def schema(
     The ``results`` kind documents the full JSON shape each command returns — including
     otherwise-undocumented fields such as render luminance, projected component bounds,
     occlusion traces, and contact-sheet panel captions and callouts.
+
+    Pass a command name (its CLI name, e.g. ``view-orbit``, or its protocol op, e.g.
+    ``view.orbit``) to print just that command's schema fragment instead of the whole
+    dump — e.g. ``meshprobe schema view-orbit`` instead of grepping
+    ``meshprobe schema --kind commands`` for ``PerspectiveProjection``. Combine with
+    ``--kind results`` to see that command's result envelope instead of its input shape.
     """
+
+    if command_name is not None:
+        op = _resolve_command_op(command_name)
+        if op is None:
+            valid = ", ".join(_cli_command_names())
+            raise typer.BadParameter(
+                f"Unknown command {command_name!r}. Valid commands: {valid}. "
+                "See `meshprobe schema --kind commands` for the full schema dump.",
+                param_hint="COMMAND",
+            )
+        kind_source = ctx.get_parameter_source("kind")
+        effective_kind = kind
+        if kind_source is None or kind_source.name == "DEFAULT":
+            effective_kind = SchemaKind.COMMANDS
+        if effective_kind not in (SchemaKind.COMMANDS, SchemaKind.RESULTS):
+            raise typer.BadParameter(
+                f"--kind {effective_kind.value} has no single-command schema; "
+                "use --kind commands (default) or --kind results with a command name.",
+                param_hint="--kind",
+            )
+        single_payload: object = (
+            command_result_json_schema_for(op)
+            if effective_kind is SchemaKind.RESULTS
+            else command_json_schema_for(op)
+        )
+        if _options(ctx).output == "yaml":
+            _emit_yaml(single_payload)
+            return
+        _emit(single_payload)
+        return
 
     payload: object = command_json_schema()
     if kind is SchemaKind.RESULTS:
