@@ -39,7 +39,9 @@ def build_curated_variants(
         return validate_curated_build(destination, catalog_hash, builder_hash)
     resolved_blender = shutil.which(blender)
     if resolved_blender is None:
-        raise RuntimeError(f"Blender executable not found: {blender}")
+        raise RuntimeError(
+            f"Blender executable not found: {blender} (pass --blender /path/to/blender to override)"
+        )
     snapshots = {source_id: snapshot_source(path) for source_id, path in sources.items()}
     staging = output_root.expanduser().resolve() / f".{version}.building"
     build_id = _build_id(version, catalog_hash, builder_hash, sources)
