@@ -162,18 +162,15 @@ Blender version, importer, and render engine. The curated catalog pins the sourc
 download hash, topology hash, license, and attribution for 20 CC0 assets; the build
 creates eight controlled variants of each three-source inspection assembly.
 
-The manifests currently committed under `evals/manifests/public/` still pin
-`qualification-v7` (built under the pre-2576²/1200² render-resolution defaults). The
-commands below run that unchanged, already-published `qualification-v7` tier as-is;
-building a fresh `qualification-v8` corpus with the commands above does not update
-those pins — repin `evals/manifests/public/` against a regenerated v8 corpus before
-relying on it for evidence sized against the new defaults.
+The manifests committed under `evals/manifests/public/` pin `qualification-v8`, built
+under the current 2576²/1200² render-resolution defaults; running the commands above
+reproduces it exactly.
 
 Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v7 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v8 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -192,7 +189,7 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v7 evals/manifests/public/smoke.json \
+  .corpora/qualification-v8 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
