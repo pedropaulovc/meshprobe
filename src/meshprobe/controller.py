@@ -111,7 +111,25 @@ class BlenderWorkerTimeout(BlenderWorkerError):
 
 
 class BlenderController:
-    """Own one factory-clean Blender worker and its line-oriented protocol."""
+    """Open a 3D model in a Blender worker, drive it, and render images.
+
+    This is the Python-API entry point for in-process scripting (no daemon):
+    it owns one factory-clean Blender worker process, speaks its
+    line-oriented protocol, and exposes :meth:`open_scene`,
+    :meth:`execute` (camera/display/mark commands), :meth:`render_image`,
+    and :meth:`render_contact_sheet`. Typical usage::
+
+        from meshprobe import BlenderController
+
+        with BlenderController() as controller:
+            manifest = controller.open_scene("model.glb")
+            ...
+
+    For CLI-style session persistence across separate process invocations
+    (what the ``meshprobe`` command line tool uses), see
+    ``meshprobe.client.MeshProbeClient``, which talks to a project-local
+    daemon that owns a ``BlenderController`` on your behalf.
+    """
 
     def __init__(
         self,
