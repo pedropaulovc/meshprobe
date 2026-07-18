@@ -1015,7 +1015,7 @@ def test_render_warnings_extracts_image_and_sheet_warnings() -> None:
 def test_render_receipt_surfaces_worker_warnings(
     tmp_path: Path,
     scene_manifest: SceneManifest,
-    render_warnings: list[str],
+    render_warnings: list[JsonValue],
     expected: tuple[str, ...],
 ) -> None:
     class WarningService(FakeSessionService):

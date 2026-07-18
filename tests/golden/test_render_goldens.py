@@ -409,9 +409,11 @@ def test_render_flags_effectively_empty_frame_when_nothing_is_shown(tmp_path: Pa
             )
         )
 
+    assert framed.foreground is not None
     assert framed.foreground.visible_fraction > 0.01
     assert framed.warnings == ()
 
+    assert blank.foreground is not None
     assert blank.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in blank.warnings)
 
