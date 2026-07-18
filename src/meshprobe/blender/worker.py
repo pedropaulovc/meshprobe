@@ -2055,12 +2055,106 @@ def luminance_summary(path: Path) -> dict[str, float]:
         bpy.data.images.remove(image)
 
 
-def emission_material(name: str, color: tuple[float, float, float, float]) -> bpy.types.Material:
+# A rendered frame whose visible foreground covers less than this fraction of the
+# pixels is treated as effectively empty and earns a warning, regardless of the cause
+# (camera framing that misses the model, a leftover isolate/hidden display override,
+# an empty shown set, ...). Measured post-render, so it catches every cause uniformly.
+EMPTY_FRAME_COVERAGE_THRESHOLD = 0.001
+FOREGROUND_MASK_MAX_DIMENSION = 256
+# 8-bit channel value above which a foreground-mask pixel counts as covered; ignores the
+# pure-black background plus anti-aliasing/dither fringe.
+FOREGROUND_PIXEL_CUTOFF = 8
+
+
+def count_foreground_pixels(path: Path) -> int:
+    image = bpy.data.images.load(str(path), check_existing=False)
+    try:
+        pixels = image.pixels[:]
+        count = 0
+        for offset in range(0, len(pixels), 4):
+            if any(
+                round(pixels[offset + channel] * 255) >= FOREGROUND_PIXEL_CUTOFF
+                for channel in range(3)
+            ):
+                count += 1
+        return count
+    finally:
+        bpy.data.images.remove(image)
+
+
+def foreground_coverage() -> dict[str, Any]:
+    """Measure how much of the current frame any shown component actually covers.
+
+    Renders the visible components as a flat white mask on black at a reduced
+    resolution (coverage is resolution-independent) so an agent reading receipts can
+    tell "nothing is here" from a real shot — which ``luminance`` cannot, since a
+    blank frame reads as normal uniform background exposure.
+    """
+
+    scene = bpy.context.scene
+    original_resolution = (
+        scene.render.resolution_x,
+        scene.render.resolution_y,
+        scene.render.resolution_percentage,
+    )
+    original_engine = scene.render.engine
+    width = scene.render.resolution_x
+    height = scene.render.resolution_y
+    scale = min(1.0, FOREGROUND_MASK_MAX_DIMENSION / max(width, height))
+    # A single scale factor keeps the mask's aspect ratio matched to the requested render (the
+    # camera frame depends on it): independently flooring one axis to a minimum, as a per-axis
+    # max(4, ...) would, can distort extreme aspect ratios (e.g. 64x16384 -> 4x256 is 1:64, not
+    # 1:256) and sample a different view than the color render.
+    scale = max(scale, 4 / min(width, height))
+    sample_width = round(width * scale)
+    sample_height = round(height * scale)
+    colors = {component_id: (255, 255, 255) for component_id in COMPONENT_OBJECTS}
+    with tempfile.TemporaryDirectory(prefix="meshprobe-foreground-") as directory:
+        mask_path = Path(directory) / "foreground.png"
+        try:
+            scene.render.resolution_x = sample_width
+            scene.render.resolution_y = sample_height
+            scene.render.resolution_percentage = 100
+            render_mask(mask_path, colors, respect_material_visibility=True)
+            visible_pixels = count_foreground_pixels(mask_path)
+        finally:
+            (
+                scene.render.resolution_x,
+                scene.render.resolution_y,
+                scene.render.resolution_percentage,
+            ) = original_resolution
+            scene.render.engine = original_engine
+    sampled_pixels = sample_width * sample_height
+    return {
+        "visible_fraction": visible_pixels / sampled_pixels if sampled_pixels else 0.0,
+        "visible_pixels": visible_pixels,
+        "sampled_pixels": sampled_pixels,
+        "sample_width": sample_width,
+        "sample_height": sample_height,
+    }
+
+
+def empty_frame_warnings(coverage: dict[str, Any]) -> list[str]:
+    if coverage["visible_fraction"] >= EMPTY_FRAME_COVERAGE_THRESHOLD:
+        return []
+    threshold_percent = EMPTY_FRAME_COVERAGE_THRESHOLD * 100
+    return [
+        "Rendered frame is effectively empty: visible foreground covers less than "
+        f"{threshold_percent:g}% of the frame. No shown component occupies the view — "
+        "check the camera framing and the component display/isolation state."
+    ]
+
+
+def emission_material(
+    name: str,
+    color: tuple[float, float, float, float],
+) -> bpy.types.Material:
     material = EMISSION_MATERIALS.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
         EMISSION_MATERIALS[name] = material
     material.use_nodes = True
+    material.use_backface_culling = False
     nodes = material.node_tree.nodes
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
@@ -2069,6 +2163,60 @@ def emission_material(name: str, color: tuple[float, float, float, float]) -> bp
     emission.inputs["Strength"].default_value = 1.0
     material.node_tree.links.new(emission.outputs["Emission"], output.inputs["Surface"])
     return material
+
+
+def mask_alpha_variant_material(
+    source: bpy.types.Material,
+    color: tuple[float, float, float, float],
+) -> bpy.types.Material:
+    """A mask material that emits ``color`` where ``source`` is opaque and turns
+    transparent where ``source`` is — mixing an Emission with a Transparent BSDF by the
+    source's own Alpha. The source's whole node tree is duplicated (``source.copy()``),
+    so the Alpha driver carries over verbatim whether it is a constant, a glTF MASK
+    cutoff Blender baked to 0/1, or a per-pixel LINKED alpha texture; backface culling is
+    preserved too. This keeps the foreground mask agreeing with the real color render:
+    a fragment the color pass discards for transparency reads invisible here instead of
+    being painted flat opaque and suppressing the empty-frame warning.
+
+    Where the source is fully transparent (Alpha 0) the mix is pure Transparent BSDF, so
+    it alpha-blends through to whatever is behind it — the world background, or another
+    component's mask color — rather than erasing it. A Holdout shader was tried for that
+    role first but always reveals the world background regardless of what else is behind
+    the polygon, incorrectly erasing an opaque component's mask color when a transparent
+    face sits in front of it on screen.
+    """
+    variant = source.copy()
+    variant.name = f"MeshProbeMaskVariant-{source.name}"
+    variant.use_nodes = True
+    variant.use_backface_culling = source.use_backface_culling
+    variant.blend_method = "BLEND"
+    if hasattr(variant, "surface_render_method"):
+        variant.surface_render_method = "BLENDED"
+    tree = variant.node_tree
+    nodes = tree.nodes
+    output = next(
+        (node for node in nodes if node.type == "OUTPUT_MATERIAL" and node.is_active_output),
+        None,
+    ) or nodes.get("Material Output")
+    if output is None:
+        output = nodes.new("ShaderNodeOutputMaterial")
+    principled = nodes.get("Principled BSDF")
+    emission = nodes.new("ShaderNodeEmission")
+    emission.inputs["Color"].default_value = color
+    emission.inputs["Strength"].default_value = 1.0
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    mix = nodes.new("ShaderNodeMixShader")
+    tree.links.new(transparent.outputs["BSDF"], mix.inputs[1])
+    tree.links.new(emission.outputs["Emission"], mix.inputs[2])
+    alpha = principled.inputs.get("Alpha") if principled is not None else None
+    if alpha is not None and alpha.is_linked:
+        tree.links.new(alpha.links[0].from_socket, mix.inputs["Fac"])
+    elif alpha is not None:
+        mix.inputs["Fac"].default_value = float(alpha.default_value)
+    else:
+        mix.inputs["Fac"].default_value = float(source.diffuse_color[3])
+    tree.links.new(mix.outputs["Shader"], output.inputs["Surface"])
+    return variant
 
 
 def srgb_channel_to_linear(channel: int) -> float:
@@ -2094,7 +2242,12 @@ def component_pass_colors() -> dict[str, tuple[int, int, int]]:
     return colors
 
 
-def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
+def render_mask(
+    path: Path,
+    colors: dict[str, tuple[int, int, int]],
+    *,
+    respect_material_visibility: bool = False,
+) -> None:
     scene = bpy.context.scene
     original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
     other_visibility = {
@@ -2122,26 +2275,60 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
     scene.view_settings.gamma = 1.0
     scene.render.dither_intensity = 0.0
     scene.render.engine = eevee_engine()
+    original_samples = eevee_render_samples()
+    # A binary coverage mask needs no anti-aliasing; inheriting the color render's
+    # (possibly thousands of) samples would render the mask that many times over
+    # just to answer a yes/no coverage question.
+    configure_eevee_samples(1)
+    mask_variants: list[bpy.types.Material] = []
     try:
         for obj in other_visibility:
             obj.hide_render = True
         for component_id, obj in COMPONENT_OBJECTS.items():
+            source_materials = list(obj.data.materials)
             mesh = obj.data.copy()
             mesh.materials.clear()
             red, green, blue = colors[component_id]
-            mesh.materials.append(
-                emission_material(
-                    f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}",
-                    (
-                        srgb_channel_to_linear(red),
-                        srgb_channel_to_linear(green),
-                        srgb_channel_to_linear(blue),
-                        1.0,
-                    ),
-                )
+            color = (
+                srgb_channel_to_linear(red),
+                srgb_channel_to_linear(green),
+                srgb_channel_to_linear(blue),
+                1.0,
             )
-            for polygon in mesh.polygons:
-                polygon.material_index = 0
+            base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
+            if not respect_material_visibility:
+                mesh.materials.append(emission_material(base_name, color))
+                for polygon in mesh.polygons:
+                    polygon.material_index = 0
+            else:
+                # Preserve each source material's transparency/culling instead of forcing
+                # every polygon opaque and front-and-back visible: a component that is
+                # invisible in the real color render (transparent material — constant,
+                # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
+                # must read the same way in this mask, or the foreground check can't tell
+                # "geometry exists" from "geometry is actually visible". Each source
+                # material gets one alpha-preserving emissive variant; polygons with no
+                # material fall back to a flat opaque mask.
+                flat_index = -1
+                variant_index: dict[str, int] = {}
+                for polygon in mesh.polygons:
+                    original = (
+                        source_materials[polygon.material_index]
+                        if polygon.material_index < len(source_materials)
+                        else None
+                    )
+                    if original is None:
+                        if flat_index < 0:
+                            flat_index = len(mesh.materials)
+                            mesh.materials.append(emission_material(f"{base_name}-flat", color))
+                        polygon.material_index = flat_index
+                        continue
+                    if original.name not in variant_index:
+                        variant = mask_alpha_variant_material(original, color)
+                        mask_variants.append(variant)
+                        variant_index[original.name] = len(mesh.materials)
+                        mesh.materials.append(variant)
+                    polygon.material_index = variant_index[original.name]
             obj.data = mesh
         render_still(path)
     finally:
@@ -2150,6 +2337,9 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
             obj.data = original_meshes[component_id]
             if replacement.users == 0:
                 bpy.data.meshes.remove(replacement)
+        for variant in mask_variants:
+            if variant.users == 0:
+                bpy.data.materials.remove(variant)
         for obj, hide_render in other_visibility.items():
             obj.hide_render = hide_render
         scene.world = original_world
@@ -2159,6 +2349,7 @@ def render_mask(path: Path, colors: dict[str, tuple[int, int, int]]) -> None:
         scene.view_settings.exposure = original_exposure
         scene.view_settings.gamma = original_gamma
         scene.render.dither_intensity = original_dither
+        configure_eevee_samples(original_samples)
 
 
 def count_mask_pixels(path: Path, selected_colors: set[tuple[int, int, int]]) -> int:
@@ -2398,6 +2589,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
         luminance = luminance_summary(output)
+        foreground = foreground_coverage()
         evaluator = None
         if command.get("evaluator_output_dir") is not None:
             evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
@@ -2422,6 +2614,8 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "color": artifact(output, "image/png"),
         "evaluator": evaluator,
         "luminance": luminance,
+        "foreground": foreground,
+        "warnings": empty_frame_warnings(foreground),
         "resolved_depth_of_field": resolved_depth_of_field(),
     }
 
@@ -2461,6 +2655,16 @@ def export_normalized(command: dict[str, Any]) -> dict[str, Any]:
     if "FINISHED" not in result:
         raise RuntimeError(f"Blender exporter did not finish: {sorted(result)}")
     return artifact(output, "model/gltf-binary")
+
+
+def material_is_fully_transparent(material: Any) -> bool:
+    if not material.use_nodes or material.node_tree is None:
+        return bool(float(material.diffuse_color[3]) <= 1e-6)
+    principled = material.node_tree.nodes.get("Principled BSDF")
+    if principled is None:
+        return False
+    alpha = principled.inputs.get("Alpha")
+    return bool(alpha is not None and not alpha.is_linked and alpha.default_value <= 1e-6)
 
 
 def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
@@ -2532,15 +2736,6 @@ def rank_occluders(command: dict[str, Any]) -> dict[str, Any]:
         if not 0 <= polygon.material_index < len(material_slots):
             return None
         return material_slots[polygon.material_index].material
-
-    def material_is_fully_transparent(material: Any) -> bool:
-        if not material.use_nodes or material.node_tree is None:
-            return bool(float(material.diffuse_color[3]) <= 1e-6)
-        principled = material.node_tree.nodes.get("Principled BSDF")
-        if principled is None:
-            return False
-        alpha = principled.inputs.get("Alpha")
-        return bool(alpha is not None and not alpha.is_linked and alpha.default_value <= 1e-6)
 
     def polygon_renders_from_camera(obj: Any, polygon_index: int, point: Vector) -> bool:
         material = source_material(obj, polygon_index)

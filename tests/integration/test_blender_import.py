@@ -488,6 +488,7 @@ def build_occluded_glb(
     blocker_alpha: float = 1.0,
     mixed_blocker_materials: bool = False,
     linked_blocker_alpha: bool = False,
+    linked_blocker_alpha_value: float = 1.0,
     blocker_alpha_mode: str = "BLEND",
     blocker_alpha_cutoff: float | None = None,
 ) -> Path:
@@ -510,7 +511,7 @@ if {blocker_alpha!r} < 1 or {linked_blocker_alpha!r}:
     principled.inputs['Base Color'].default_value = (0.2, 0.5, 0.8, 1.0)
     if {linked_blocker_alpha!r}:
         image = bpy.data.images.new('opaque-alpha', width=1, height=1, alpha=True)
-        image.pixels = [1.0, 1.0, 1.0, 1.0]
+        image.pixels = [1.0, 1.0, 1.0, {linked_blocker_alpha_value!r}]
         image.pack()
         texture = transparent.node_tree.nodes.new('ShaderNodeTexImage')
         texture.image = image
@@ -3773,6 +3774,320 @@ def test_worker_excludes_fully_transparent_focus_until_marked(tmp_path: Path) ->
     assert marked["visible_rays"] > 0
 
 
+def test_empty_frame_warning_ignores_fully_transparent_geometry(tmp_path: Path) -> None:
+    # A shown-but-fully-transparent component is blank in the real color render; the
+    # foreground mask must agree, not paint it opaque and suppress the warning.
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-transparent-only",
+                op="render.image",
+                output_path=str(tmp_path / "transparent-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_catches_alpha_masked_cutout_below_threshold(tmp_path: Path) -> None:
+    # A shown component whose material is alphaMode=MASK with a constant alpha
+    # BELOW alphaCutoff is discarded entirely by the color render (issue #64
+    # re-review); the foreground mask must agree, not paint it opaque and
+    # suppress the empty-frame warning.
+    source = build_occluded_glb(
+        tmp_path,
+        blocker_alpha=0.2,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-alpha-masked-only",
+                op="render.image",
+                output_path=str(tmp_path / "alpha-masked-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_catches_fully_transparent_linked_alpha_texture(
+    tmp_path: Path,
+) -> None:
+    # A shown component whose alpha comes from a TEXTURE (linked Alpha input) that is
+    # fully transparent renders blank in the real color pass, exactly like a constant
+    # transparent alpha (issue #64 re-review). The foreground mask must sample the same
+    # alpha instead of painting the component flat opaque and suppressing the warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.0,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-linked-alpha-only",
+                op="render.image",
+                output_path=str(tmp_path / "linked-alpha-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_catches_textured_alpha_mask_cutout(tmp_path: Path) -> None:
+    # A shown component with a TEXTURED alpha whose texels fall below a glTF
+    # alphaMode=MASK cutoff is clipped away entirely by the color render (issue #64
+    # re-review): the importer keeps the raw texel alpha linked and clips via the
+    # material's alpha threshold/render method, so the foreground mask must preserve
+    # that clip rather than alpha-blend the raw sub-cutoff alpha into visible pixels
+    # and suppress the empty-frame warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.2,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-textured-mask-only",
+                op="render.image",
+                output_path=str(tmp_path / "textured-mask-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_keeps_textured_alpha_mask_above_cutoff(tmp_path: Path) -> None:
+    # Positive control for the sub-cutoff case above: the SAME textured alphaMode=MASK
+    # material with texel alpha ABOVE the cutoff passes the color render, so the mask
+    # must keep counting it visible — proving the sub-cutoff blank result is a real clip,
+    # not the blocker simply missing the frame.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=0.8,
+        blocker_alpha_mode="MASK",
+        blocker_alpha_cutoff=0.5,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-textured-mask-visible",
+                op="render.image",
+                output_path=str(tmp_path / "textured-mask-visible.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_keeps_opaque_linked_alpha_texture(tmp_path: Path) -> None:
+    # The mirror of the fully-transparent linked-alpha case: a component whose linked
+    # alpha texture is fully OPAQUE renders normally, so the foreground mask must keep
+    # counting it as visible instead of over-suppressing it into a spurious warning.
+    source = build_occluded_glb(
+        tmp_path,
+        linked_blocker_alpha=True,
+        linked_blocker_alpha_value=1.0,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-opaque-linked-alpha-only",
+                op="render.image",
+                output_path=str(tmp_path / "opaque-linked-alpha-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_empty_frame_warning_does_not_erase_opaque_geometry_behind_transparency(
+    tmp_path: Path,
+) -> None:
+    # A fully transparent "blocker" fully covers the smaller, farther "target" from
+    # this camera, so the color render shows the opaque target through it. The mask
+    # must show it too — a Holdout material for the transparent front face was tried
+    # first, but it always reveals the world background regardless of what else is
+    # behind it on screen, incorrectly erasing the visible opaque target's mask color.
+    source = build_occluded_glb(tmp_path, blocker_alpha=0.0)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-transparent-in-front",
+                op="render.image",
+                output_path=str(tmp_path / "transparent-in-front.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction > 0.0
+    assert not any("effectively empty" in warning for warning in rendered.warnings)
+
+
+def test_render_mask_renders_at_one_sample_and_restores_the_color_render_setting(
+    tmp_path: Path,
+) -> None:
+    """The foreground mask is a binary coverage check, not an anti-aliased shot, so
+    it must not inherit the color render's (possibly thousands of) Eevee samples —
+    that would render the mask that many times over just to answer a yes/no
+    question. ``render_mask`` is exercised directly (loaded by file path, bypassing
+    the package's pydantic-dependent ``__init__.py``, which is not importable
+    inside Blender's bundled Python) with ``render_still`` stubbed out to capture
+    the live sample count instead of actually rendering."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "probe_mask_samples.py"
+    script.write_text(
+        f"""
+import sys
+import importlib.util
+import json
+
+sys.path.insert(0, {json.dumps(str(repo_root / "src"))})
+
+spec = importlib.util.spec_from_file_location(
+    "worker", {json.dumps(str(repo_root / "src" / "meshprobe" / "blender" / "worker.py"))}
+)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
+cube = bpy.context.object
+cube.name = "cube"
+
+worker.COMPONENT_OBJECTS = {{"cube": cube}}
+
+scene = bpy.context.scene
+scene.render.engine = worker.eevee_engine()
+worker.configure_eevee_samples(256)
+
+captured = []
+
+def fake_render_still(path):
+    captured.append(worker.eevee_render_samples())
+
+worker.render_still = fake_render_still
+
+worker.render_mask({json.dumps(str(tmp_path / "probe_mask.png"))}, {{"cube": (255, 0, 0)}})
+
+print(json.dumps({{
+    "samples_during_mask_render": captured[0],
+    "samples_after_call": worker.eevee_render_samples(),
+}}))
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    result_line = next(line for line in completed.stdout.splitlines() if line.startswith("{"))
+    result = json.loads(result_line)
+
+    assert result["samples_during_mask_render"] == 1
+    assert result["samples_after_call"] == 256
+
+
 def test_worker_checks_alpha_blending_on_the_hit_face(tmp_path: Path) -> None:
     source = build_occluded_glb(
         tmp_path,
@@ -3920,6 +4235,37 @@ def test_worker_excludes_backface_culled_focus_samples(tmp_path: Path) -> None:
     assert mixed["sample_count"] == rendered_only["sample_count"]
     assert mixed["visible_rays"] == rendered_only["visible_rays"]
     assert mixed["unresolved_rays"] == 0
+
+
+def test_empty_frame_warning_ignores_culled_backfaces(tmp_path: Path) -> None:
+    # A shown-but-culled-away single-sided component is blank in the real color render (the
+    # camera only sees its back); the foreground mask must agree, not paint it opaque and
+    # suppress the warning.
+    source = build_backface_culling_glb(tmp_path, back_facing=True)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        controller.execute(
+            ComponentDisplayCommand(
+                request_id="hide-target",
+                op="component.display",
+                component_ids=(by_name["target"],),
+                mode=DisplayMode.HIDDEN,
+            )
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="render-culled-only",
+                op="render.image",
+                output_path=str(tmp_path / "culled-only.png"),
+                width=64,
+                height=64,
+                samples=1,
+            )
+        )
+
+    assert rendered.foreground.visible_fraction == 0.0
+    assert any("effectively empty" in warning for warning in rendered.warnings)
 
 
 def test_worker_budgets_only_rendered_focus_candidates(tmp_path: Path) -> None:

@@ -46,6 +46,7 @@ from meshprobe.models import (
     Pose,
     PresetIllumination,
     RenderEngine,
+    RenderForeground,
     RenderManifest,
     SessionSnapshot,
 )
@@ -1111,6 +1112,13 @@ def evidence_render(
             maximum=0.8,
             crushed_fraction=0,
             clipped_fraction=0,
+        ),
+        foreground=RenderForeground(
+            visible_fraction=0.5,
+            visible_pixels=2048,
+            sampled_pixels=4096,
+            sample_width=64,
+            sample_height=64,
         ),
     )
 

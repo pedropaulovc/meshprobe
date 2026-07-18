@@ -884,6 +884,23 @@ class ResolvedDepthOfField(ContractModel):
     focus_distance_mm: PositiveFiniteFloat
 
 
+class RenderForeground(ContractModel):
+    visible_fraction: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+    visible_pixels: Annotated[int, Field(ge=0)]
+    sampled_pixels: Annotated[int, Field(ge=1)]
+    sample_width: Annotated[int, Field(ge=4, le=1_024)]
+    sample_height: Annotated[int, Field(ge=4, le=1_024)]
+
+    @model_validator(mode="after")
+    def validate_fraction(self) -> Self:
+        if self.visible_pixels > self.sampled_pixels:
+            raise ValueError("visible pixels cannot exceed sampled pixels")
+        expected = self.visible_pixels / self.sampled_pixels
+        if not math.isclose(self.visible_fraction, expected, abs_tol=1e-12):
+            raise ValueError("foreground visible fraction must match pixel counts")
+        return self
+
+
 class RenderManifest(ContractModel):
     schema_version: Literal[2] = 2
     source_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -905,6 +922,10 @@ class RenderManifest(ContractModel):
         description="Exposure summary of the rendered frame; use it to detect an under- or "
         "over-exposed render programmatically."
     )
+    # Optional, not a new-in-v2 requirement: a manifest persisted before this field existed
+    # still declares schema_version 2 and lacks the key entirely, so it must stay readable.
+    foreground: RenderForeground | None = None
+    warnings: tuple[Annotated[str, StringConstraints(min_length=1, max_length=1_024)], ...] = ()
     resolved_depth_of_field: ResolvedDepthOfField | None = None
 
     @model_validator(mode="after")

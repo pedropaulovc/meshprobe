@@ -1075,6 +1075,13 @@ def render_manifest_for(
                 "crushed_fraction": 0,
                 "clipped_fraction": 0,
             },
+            "foreground": {
+                "visible_fraction": 0.25,
+                "visible_pixels": 4096,
+                "sampled_pixels": 16384,
+                "sample_width": 128,
+                "sample_height": 128,
+            },
         }
     )
 
