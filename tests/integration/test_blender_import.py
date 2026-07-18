@@ -3800,6 +3800,7 @@ def test_empty_frame_warning_ignores_fully_transparent_geometry(tmp_path: Path) 
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -3837,6 +3838,7 @@ def test_empty_frame_warning_catches_alpha_masked_cutout_below_threshold(tmp_pat
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -3875,6 +3877,7 @@ def test_empty_frame_warning_catches_fully_transparent_linked_alpha_texture(
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -3915,6 +3918,7 @@ def test_empty_frame_warning_catches_textured_alpha_mask_cutout(tmp_path: Path) 
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -3953,6 +3957,7 @@ def test_empty_frame_warning_keeps_textured_alpha_mask_above_cutoff(tmp_path: Pa
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction > 0.0
     assert not any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -3988,6 +3993,7 @@ def test_empty_frame_warning_keeps_opaque_linked_alpha_texture(tmp_path: Path) -
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction > 0.0
     assert not any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -4014,6 +4020,7 @@ def test_empty_frame_warning_does_not_erase_opaque_geometry_behind_transparency(
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction > 0.0
     assert not any("effectively empty" in warning for warning in rendered.warnings)
 
@@ -4264,6 +4271,7 @@ def test_empty_frame_warning_ignores_culled_backfaces(tmp_path: Path) -> None:
             )
         )
 
+    assert rendered.foreground is not None
     assert rendered.foreground.visible_fraction == 0.0
     assert any("effectively empty" in warning for warning in rendered.warnings)
 
