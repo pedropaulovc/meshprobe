@@ -144,15 +144,15 @@ Build the released 512-model procedural corpus and the 160-model curated track, 
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v6
+uv run meshprobe eval generate .corpora --version procedural-v7
 uv run meshprobe eval curated-generate \
   evals/curated/catalog.json .cache/meshprobe-curated .corpora \
-  --build-version curated-v2 --corpus-version curated-tasks-v6
+  --build-version curated-v2 --corpus-version curated-tasks-v7
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v6 .corpora/curated-tasks-v6 \
-  --version qualification-v7
+  .corpora/procedural-v7 .corpora/curated-tasks-v7 \
+  --version qualification-v8
 uv run meshprobe eval pin \
-  .corpora/qualification-v7 .corpora/manifests-v7
+  .corpora/qualification-v8 .corpora/manifests-v8
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -162,11 +162,15 @@ Blender version, importer, and render engine. The curated catalog pins the sourc
 download hash, topology hash, license, and attribution for 20 CC0 assets; the build
 creates eight controlled variants of each three-source inspection assembly.
 
+The manifests committed under `evals/manifests/public/` pin `qualification-v8`, built
+under the current 2576²/1200² render-resolution defaults; running the commands above
+reproduces it exactly.
+
 Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v7 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v8 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -185,7 +189,7 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v7 evals/manifests/public/smoke.json \
+  .corpora/qualification-v8 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
@@ -203,6 +207,13 @@ uv run meshprobe eval migrate .corpora/qualification-v6 .corpora \
 uv run meshprobe eval migrate .corpora/private-v7 .corpora \
   --version private-v8 --opaque-family opaque_family_v8
 ```
+
+`eval migrate` only accepts a schema-1 or schema-2 source (it upgrades the manifest
+shape itself); `qualification-v7` and its inputs are already schema-3, so migrating
+past them into the new `-v7`/`-v8` names above is not this command's job. To land on
+`procedural-v7`, `curated-tasks-v7`, or `qualification-v8` instead, regenerate a fresh
+corpus with `eval generate`/`eval curated-generate`/`eval merge`/`eval pin` (the
+release-corpus commands earlier in this section) rather than `eval migrate`.
 
 `eval audit-migration` verifies that model hashes, episode IDs, evaluator truth, and the
 full-investigation operation contract survived the migration. Schema-v1 corpora are rejected

@@ -48,7 +48,7 @@ class IsolationLimits:
     wall_seconds: float = 600
     cpu_seconds: int = 600
     memory_bytes: int = 8 * 1024**3
-    output_bytes: int = 1 * 1024**3
+    output_bytes: int = 3 * 1024**3
     processes: int = 128
 
     def __post_init__(self) -> None:

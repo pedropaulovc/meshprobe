@@ -552,7 +552,7 @@ def _episode(
             tool_calls=40 if index == 0 else 120,
             renders=0 if index == 0 else 24,
             total_pixels=0 if index == 0 else 120_000_000,
-            output_bytes=10_000_000 if index == 0 else 1_500_000_000,
+            output_bytes=10_000_000 if index == 0 else 3_000_000_000,
             wall_seconds=180 if index == 0 else 900,
         ),
     )
