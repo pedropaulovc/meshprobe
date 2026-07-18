@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clipping. The session retains its chosen framing aspect ratio through movement, recovery, and
   daemon upgrades.
 - `view.frame` and `view-frame` for fitting an absolute perspective or orthographic view to
-  selected components.
+  selected components; `--focus` on other view commands remains a diagnostic and does not move
+  the camera.
 - `view-rotate --frame camera` for rotations relative to the active camera basis.
 - Fast `screen_edges` inspection rendering, now the default style, plus `shaded_edges` for
   configurable CAD-style edges.
