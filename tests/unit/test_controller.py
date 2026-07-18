@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 from PIL import Image
 
-from meshprobe.camera import orbit_camera
+from meshprobe.camera import camera_diagnostics, orbit_camera
 from meshprobe.controller import (
     BlenderController,
     BlenderWorkerCrashed,
@@ -616,14 +616,7 @@ def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypat
     arguments = captured["arguments"]
     assert arguments["target_mm"] == [0.0, 0.0, 0.0]
     assert arguments["focus_component_ids"] == [target.id]
-    span = math.sqrt(3 * 20.0**2)
-    projection = PerspectiveProjection()
-    framing_fov = min(
-        projection.horizontal_fov_degrees(1.0),
-        projection.vertical_fov_degrees(1.0),
-    )
-    expected_distance = (span / 2) / math.sin(math.radians(framing_fov / 2)) * 1.25
-    assert cast(float, arguments["distance_mm"]) == pytest.approx(expected_distance)
+    assert cast(float, arguments["distance_mm"]) > 0.0
     assert result == {
         "camera": snapshot.camera.model_dump(mode="json"),
         "camera_diagnostics": snapshot.camera_diagnostics.model_dump(mode="json"),
@@ -650,32 +643,60 @@ def test_frame_view_requires_open_scene() -> None:
 
 
 def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
-    span = 40.0
+    bounds = Bounds(minimum_mm=(-20.0, -20.0, -20.0), maximum_mm=(20.0, 20.0, 20.0))
+    target = (0.0, 0.0, 0.0)
     perspective, distance = BlenderController._frame_camera(
-        PerspectiveProjection(), span, aspect_ratio=1.0, margin=1.25
+        PerspectiveProjection(),
+        bounds,
+        target,
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.25,
     )
     assert isinstance(perspective, PerspectiveProjection)
-    framing_fov = min(
-        perspective.horizontal_fov_degrees(1.0),
-        perspective.vertical_fov_degrees(1.0),
-    )
-    assert distance == pytest.approx((span / 2) / math.sin(math.radians(framing_fov / 2)) * 1.25)
+    assert distance > perspective.near_clip_mm
 
     orthographic, ortho_distance = BlenderController._frame_camera(
-        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=1.0, margin=1.5
+        OrthographicProjection(scale_mm=1.0),
+        bounds,
+        target,
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.5,
     )
     assert isinstance(orthographic, OrthographicProjection)
+    span = math.sqrt(3 * 40.0**2)
     assert orthographic.scale_mm == pytest.approx(span * 1.5)
     assert ortho_distance == pytest.approx(span)
 
 
 def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> None:
-    span = 40.0
+    bounds = Bounds(minimum_mm=(-20.0, -20.0, -20.0), maximum_mm=(20.0, 20.0, 20.0))
+    target = (0.0, 0.0, 0.0)
+    span = math.sqrt(3 * 40.0**2)
     landscape, _ = BlenderController._frame_camera(
-        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=1.6, margin=1.2
+        OrthographicProjection(scale_mm=1.0),
+        bounds,
+        target,
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.6,
+        margin=1.2,
     )
     portrait, _ = BlenderController._frame_camera(
-        OrthographicProjection(scale_mm=1.0), span, aspect_ratio=0.5, margin=1.2
+        OrthographicProjection(scale_mm=1.0),
+        bounds,
+        target,
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=0.5,
+        margin=1.2,
     )
     assert isinstance(landscape, OrthographicProjection)
     assert isinstance(portrait, OrthographicProjection)
@@ -687,36 +708,92 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
 
 
 def test_frame_camera_keeps_wide_fov_camera_outside_bounds() -> None:
-    span = 400.0
+    bounds = Bounds(minimum_mm=(-200.0, -200.0, -200.0), maximum_mm=(200.0, 200.0, 200.0))
     projection, distance = BlenderController._frame_camera(
-        PerspectiveProjection(focal_length_mm=1.0), span, aspect_ratio=1.0, margin=1.25
+        PerspectiveProjection(focal_length_mm=1.0),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.25,
     )
     assert isinstance(projection, PerspectiveProjection)
-    framing_fov = min(
-        projection.horizontal_fov_degrees(1.0),
-        projection.vertical_fov_degrees(1.0),
-    )
-    fov_distance = (span / 2) / math.tan(math.radians(framing_fov / 2)) * 1.25
     # A ~1mm focal length yields an extreme FOV whose framing distance collapses well inside
-    # the bounds radius; the camera must still sit a full span outside the target.
-    assert fov_distance < span / 2
-    assert distance >= span
-    assert projection.far_clip_mm > distance + span / 2
+    # the bounds. The camera must nevertheless stay beyond its closest face and preserve clips.
+    assert distance >= 200.0 + projection.near_clip_mm
+    assert projection.far_clip_mm > distance + 200.0
 
 
 def test_frame_camera_pushes_past_a_large_near_clip() -> None:
-    span = 20.0
+    bounds = Bounds(minimum_mm=(-10.0, -10.0, -10.0), maximum_mm=(10.0, 10.0, 10.0))
     near_clip = 1_000.0
     projection, distance = BlenderController._frame_camera(
         PerspectiveProjection(near_clip_mm=near_clip, far_clip_mm=200_000.0),
-        span,
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
         aspect_ratio=1.0,
         margin=1.25,
     )
     # The whole bounds must stay behind the caller's near plane and before the far plane.
-    assert distance >= near_clip + span / 2
-    assert distance - span / 2 >= projection.near_clip_mm
-    assert projection.far_clip_mm >= distance + span / 2
+    assert distance >= near_clip + 10.0
+    assert distance - 10.0 >= projection.near_clip_mm
+    assert projection.far_clip_mm >= distance + 10.0
+
+
+def test_frame_camera_corner_projection_tightly_fits_depth_elongated_bounds() -> None:
+    # Looking along the long X axis, only the 212 mm Y and 628 mm Z silhouette should
+    # determine the fit. The old bounding-sphere calculation also charged the full 628 mm
+    # depth, leaving roughly a fifth of the limiting axis unused.
+    bounds = Bounds(
+        minimum_mm=(-314.0, -106.0, -314.0),
+        maximum_mm=(314.0, 106.0, 314.0),
+    )
+    margin = 1.25
+    projection, distance = BlenderController._frame_camera(
+        PerspectiveProjection(focal_length_mm=50.0),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=margin,
+    )
+    assert isinstance(projection, PerspectiveProjection)
+    camera = orbit_camera(
+        target_mm=(0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        distance_mm=distance,
+        projection=projection,
+    )
+    diagnostics = camera_diagnostics(camera, target_mm=(0.0, 0.0, 0.0), aspect_ratio=1.0)
+    horizontal_tan = math.tan(math.radians(cast(float, diagnostics.horizontal_fov_degrees) / 2))
+    vertical_tan = math.tan(math.radians(cast(float, diagnostics.vertical_fov_degrees) / 2))
+    normalized_extents = []
+    for corner in BlenderController._bounds_corners(bounds):
+        relative = tuple(corner[axis] - camera.pose.position_mm[axis] for axis in range(3))
+        depth = BlenderController._dot(relative, diagnostics.forward)
+        horizontal = abs(BlenderController._dot(relative, diagnostics.right)) / (
+            depth * horizontal_tan
+        )
+        vertical = abs(BlenderController._dot(relative, diagnostics.up)) / (depth * vertical_tan)
+        normalized_extents.extend((horizontal, vertical))
+        assert depth >= projection.near_clip_mm
+    assert max(normalized_extents) == pytest.approx(1 / margin)
+
+    legacy_span = math.sqrt(628.0**2 + 212.0**2 + 628.0**2)
+    legacy_distance = (
+        legacy_span / 2 / math.sin(math.radians(projection.vertical_fov_degrees(1.0) / 2)) * margin
+    )
+    legacy_fill = 314.0 / ((legacy_distance - 314.0) * vertical_tan)
+    assert legacy_fill < 0.7
 
 
 def test_occlusion_query_reports_current_camera_samples_and_named_blockers(
