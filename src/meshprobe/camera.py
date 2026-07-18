@@ -121,11 +121,15 @@ def camera_diagnostics(
     projection = camera.projection
     near = projection.near_clip_mm
     far = projection.far_clip_mm
+    orthographic_half_extents = (
+        _orthographic_half_extents(projection.scale_mm, aspect_ratio)
+        if isinstance(projection, OrthographicProjection)
+        else None
+    )
     frustum: list[Vec3] = []
     for depth in (near, far):
-        if isinstance(projection, OrthographicProjection):
-            half_height = projection.scale_mm / 2
-            half_width = half_height * aspect_ratio
+        if orthographic_half_extents is not None:
+            half_width, half_height = orthographic_half_extents
         else:
             half_width = depth * math.tan(
                 math.radians(projection.horizontal_fov_degrees(aspect_ratio)) / 2
@@ -184,6 +188,15 @@ def camera_diagnostics(
         ),
         projected_bounds={},
     )
+
+
+def _orthographic_half_extents(scale_mm: float, aspect_ratio: float) -> tuple[float, float]:
+    """Return Blender AUTO sensor-fit orthographic half extents (width, height)."""
+
+    half_scale = scale_mm / 2
+    if aspect_ratio >= 1:
+        return half_scale, half_scale / aspect_ratio
+    return half_scale * aspect_ratio, half_scale
 
 
 def _look_orientation(forward: Vec3) -> Quaternion:
