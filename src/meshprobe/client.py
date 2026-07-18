@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command
+from meshprobe.protocol import Command, SceneOpenCommand
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -54,13 +54,36 @@ class MeshProbeClient:
         # (the same in-place-upgrade compatibility the resolve-ids fallback provides).
         if wire.get("unit_scale") == 1.0:
             del wire["unit_scale"]
-        payload = self.request(
-            "execute",
-            session=session,
-            command=wire,
-            blender=self.blender,
-        )
+        try:
+            payload = self.request(
+                "execute",
+                session=session,
+                command=wire,
+                blender=self.blender,
+            )
+        except ValueError as error:
+            if not self._old_daemon_rejected_unit_scale(command, error):
+                raise
+            # `close_all` is part of the original daemon protocol and checkpoints sessions before
+            # stopping it. Restart through that known action, then retry against the new daemon so
+            # an explicit --unit-scale works across an in-place client upgrade.
+            self.close_all()
+            payload = self.request(
+                "execute",
+                session=session,
+                command=wire,
+                blender=self.blender,
+            )
         return OperationReceipt.model_validate(payload)
+
+    @staticmethod
+    def _old_daemon_rejected_unit_scale(command: Command, error: ValueError) -> bool:
+        if not isinstance(command, SceneOpenCommand) or command.unit_scale == 1.0:
+            return False
+        message = str(error).lower()
+        return "unit_scale" in message and (
+            "extra" in message or "unknown" in message or "forbid" in message
+        )
 
     def resolve_component(self, session: str, value: str) -> str:
         payload = self.request("resolve", session=session, value=value)

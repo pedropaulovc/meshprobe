@@ -10,7 +10,7 @@ import pytest
 
 from meshprobe.client import MeshProbeClient
 from meshprobe.protocol import SceneOpenCommand
-from meshprobe.workspace import SessionMetadata, atomic_json, utc_now
+from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
 
 
 def _daemon_metadata(pid: int) -> dict[str, Any]:
@@ -230,6 +230,53 @@ def test_execute_sends_overridden_unit_scale(
     client.execute("review", command)
 
     assert captured[0]["unit_scale"] == 0.001
+
+
+def test_execute_restarts_old_daemon_for_overridden_unit_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append({"action": action, **arguments})
+        if (
+            action == "execute"
+            and len([call for call in captured if call["action"] == "execute"]) == 1
+        ):
+            raise ValueError("unit_scale: Extra inputs are not permitted")
+        return {"session": "review", "op": "scene.open"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    command = SceneOpenCommand(
+        request_id="open", op="scene.open", source_path="/tmp/model.glb", unit_scale=0.001
+    )
+    client.execute("review", command)
+
+    assert close_all_calls == 1
+    execute_commands = [call["command"] for call in captured if call["action"] == "execute"]
+    assert execute_commands == [
+        {
+            "request_id": "open",
+            "op": "scene.open",
+            "source_path": "/tmp/model.glb",
+            "unit_scale": 0.001,
+        },
+        {
+            "request_id": "open",
+            "op": "scene.open",
+            "source_path": "/tmp/model.glb",
+            "unit_scale": 0.001,
+        },
+    ]
 
 
 def test_close_all_waits_for_graceful_shutdown(
