@@ -6,10 +6,10 @@
   "generator_sha256": "96a5723bbaa7d98f64a1ec2d72a7d679a58cc898a9d70246c402c42dab7db99d",
   "runtime": {
     "meshprobe_version": "1.1.0",
-    "meshprobe_sha256": "9ad492cf1c581dbef8b7fd9c179473d4e438c45148b32c470cd3991544edb6e1",
+    "meshprobe_sha256": "a02b52f3f343e729b8ce6e6505055dc17a614a4d8d182c2f1fffb3563ef98c22",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
-    "importer_sha256": "2e76af9c73bde2a8e8df17971f9ebfc508f4c56b5949ab76a33c84dc692cea26",
+    "importer_sha256": "ad37cb1a701b962d5ef1481db86b6f43a469346d96a84b9fd5d468c48f28265e",
     "render_engines": [
       "eevee",
       "cycles"
