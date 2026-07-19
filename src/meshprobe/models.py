@@ -1320,6 +1320,17 @@ class SessionResetResult(ContractModel):
     state_sha256: StateHash
 
 
+class SessionUndoResult(ContractModel):
+    """Result of session.undo."""
+
+    undone: int = Field(ge=1, description="Number of state-changing commands undone.")
+    remaining: int = Field(
+        ge=0,
+        description="State-changing commands still available to undo since the last reset.",
+    )
+    state_sha256: StateHash
+
+
 class SessionSnapshotResult(ContractModel):
     """Result of session.snapshot."""
 

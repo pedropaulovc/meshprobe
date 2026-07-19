@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self, get_args
+from enum import StrEnum
+from typing import Annotated, Any, ClassVar, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -32,6 +33,7 @@ from meshprobe.models import (
     SceneManifest,
     SessionResetResult,
     SessionSnapshotResult,
+    SessionUndoResult,
     ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
@@ -39,13 +41,27 @@ from meshprobe.models import (
 from meshprobe.selectors import ComponentSelector
 
 
+class CommandEffect(StrEnum):
+    """How a command participates in durable session history."""
+
+    UNDECLARED = "undeclared"
+    OPEN = "open"
+    READ_ONLY = "read_only"
+    STATE_MUTATION = "state_mutation"
+    RESET = "reset"
+    HISTORY = "history"
+
+
 class CommandModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    effect: ClassVar[CommandEffect] = CommandEffect.UNDECLARED
 
     request_id: str
 
 
 class SceneOpenCommand(CommandModel):
+    effect = CommandEffect.OPEN
     op: Literal["scene.open"]
     source_path: str
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
@@ -58,26 +74,31 @@ class SceneOpenCommand(CommandModel):
 
 
 class SessionSnapshotCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["session.snapshot"]
 
 
 class ComponentFindCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["component.find"]
     selector: ComponentSelector
 
 
 class ComponentInspectCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["component.inspect"]
     component_id: str
 
 
 class ComponentOcclusionCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["component.occlusion"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     max_samples_per_component: Annotated[int, Field(ge=1, le=4_096)] = 128
 
 
 class ViewSetCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["view.set"]
     camera: Camera
     focus_component_ids: tuple[str, ...] = ()
@@ -85,6 +106,7 @@ class ViewSetCommand(CommandModel):
 
 
 class ViewOrbitCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["view.orbit"]
     target_mm: Vec3
     azimuth_degrees: FiniteFloat
@@ -97,6 +119,7 @@ class ViewOrbitCommand(CommandModel):
 
 
 class ViewFrameCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["view.frame"]
     focus_component_ids: tuple[str, ...] = Field(min_length=1)
     azimuth_degrees: FiniteFloat = 45.0
@@ -108,6 +131,7 @@ class ViewFrameCommand(CommandModel):
 
 
 class ViewMoveCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["view.move"]
     world_delta_mm: Vec3 = (0.0, 0.0, 0.0)
     camera_delta_mm: Vec3 = (0.0, 0.0, 0.0)
@@ -122,6 +146,7 @@ class ViewMoveCommand(CommandModel):
 
 
 class ViewRotateCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["view.rotate"]
     target_mm: Vec3
     axis: Literal["x", "y", "z"]
@@ -136,17 +161,20 @@ class ViewRotateCommand(CommandModel):
 
 
 class IlluminationSetCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["illumination.set"]
     illumination: Illumination
 
 
 class ComponentDisplayCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["component.display"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     mode: DisplayMode
 
 
 class ComponentMarkCommand(CommandModel):
+    effect = CommandEffect.STATE_MUTATION
     op: Literal["component.mark"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     mode: MarkMode
@@ -160,6 +188,7 @@ class ComponentMarkCommand(CommandModel):
 
 
 class RenderImageCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["render.image"]
     output_path: str
     width: Annotated[int, Field(ge=64, le=16_384)] = 2576
@@ -178,6 +207,7 @@ class RenderImageCommand(CommandModel):
 
 
 class RenderContactSheetCommand(CommandModel):
+    effect = CommandEffect.READ_ONLY
     op: Literal["render.contact_sheet"]
     output_path: str
     recipe: Literal["focused_3x3", "custom_3x3"] = "focused_3x3"
@@ -210,8 +240,16 @@ class RenderContactSheetCommand(CommandModel):
 
 
 class SessionResetCommand(CommandModel):
+    effect = CommandEffect.RESET
     op: Literal["session.reset"]
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+
+
+class SessionUndoCommand(CommandModel):
+    effect = CommandEffect.HISTORY
+
+    op: Literal["session.undo"]
+    count: Annotated[int, Field(ge=1)] = 1
 
 
 type Command = Annotated[
@@ -230,7 +268,8 @@ type Command = Annotated[
     | ComponentMarkCommand
     | RenderImageCommand
     | RenderContactSheetCommand
-    | SessionResetCommand,
+    | SessionResetCommand
+    | SessionUndoCommand,
     Field(discriminator="op"),
 ]
 
@@ -301,6 +340,7 @@ _RESULT_MODELS: dict[str, object] = {
     "render.image": RenderManifest,
     "render.contact_sheet": ContactSheetManifest,
     "session.reset": SessionResetResult,
+    "session.undo": SessionUndoResult,
 }
 
 

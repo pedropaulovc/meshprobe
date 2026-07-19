@@ -68,6 +68,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    SessionUndoCommand,
     ViewFrameCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
@@ -308,6 +309,7 @@ _CLI_COMMAND_OP_ALIASES: dict[str, str] = {
     "mark": "component.mark",
     "render-sheet": "render.contact_sheet",
     "reset": "session.reset",
+    "undo": "session.undo",
 }
 
 
@@ -786,6 +788,16 @@ def _emit_receipt(
         if isinstance(result, list):
             match_count = len(result)
     fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
+    if receipt.op == "session.undo" and receipt.result_path:
+        envelope = client.read_result(receipt)
+        result = envelope.get("result") if isinstance(envelope, dict) else None
+        if isinstance(result, dict):
+            fields.extend(
+                (
+                    f"undone={result.get('undone')}",
+                    f"remaining={result.get('remaining')}",
+                )
+            )
     if match_count is not None:
         fields.append(f"matches={match_count}")
     if receipt.result_path:
@@ -1845,6 +1857,23 @@ def reset(
         ctx,
         SessionResetCommand(request_id=_request_id("reset"), op="session.reset", **overrides),
         render=render,
+    )
+
+
+@app.command("undo")
+def undo(
+    ctx: typer.Context,
+    count: Annotated[int, typer.Argument(min=1)] = 1,
+) -> None:
+    """Undo COUNT state-changing commands (default: 1).
+
+    History survives process restarts. Rendering and other read-only commands do not count.
+    Reset starts a new history boundary, so undo never crosses it.
+    """
+
+    _execute(
+        ctx,
+        SessionUndoCommand(request_id=_request_id("undo"), op="session.undo", count=count),
     )
 
 

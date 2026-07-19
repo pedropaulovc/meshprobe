@@ -50,6 +50,7 @@ from meshprobe.models import (
 )
 from meshprobe.protocol import (
     Command,
+    CommandEffect,
     ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentInspectCommand,
@@ -80,17 +81,6 @@ __all__ = [
 ]
 
 DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
-
-STATE_OPERATIONS = {
-    "view.set",
-    "view.orbit",
-    "view.move",
-    "view.rotate",
-    "illumination.set",
-    "component.display",
-    "component.mark",
-}
-
 
 def _default_cache_root() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
@@ -382,6 +372,10 @@ class BlenderController:
         return f"blender-{blender_version}+meshprobe-normalizer-v1-{sha256_file(worker_path)[:16]}"
 
     def execute(self, command: Command) -> object:
+        if command.effect is CommandEffect.UNDECLARED:
+            raise BlenderWorkerError(f"command has no declared history effect: {command.op}")
+        if command.effect is CommandEffect.HISTORY:
+            raise BlenderWorkerError(f"{command.op} requires a durable session manager")
         if isinstance(command, SceneOpenCommand):
             return self.open_scene(
                 command.source_path,
@@ -426,7 +420,7 @@ class BlenderController:
             self._accepted_commands.clear()
             snapshot = SessionSnapshot.model_validate(result)
             return {"reset": True, "state_sha256": snapshot.state_sha256}
-        if operation in STATE_OPERATIONS:
+        if command.effect is CommandEffect.STATE_MUTATION:
             self._accepted_commands.append((operation, arguments))
             snapshot = SessionSnapshot.model_validate(result)
             return self._state_operation_result(command, snapshot)
@@ -659,7 +653,7 @@ class BlenderController:
                 for component_id in component_ids
             }
             return result
-        raise BlenderWorkerError(f"no compact result contract for state operation: {command.op}")
+        return result
 
     @property
     def worker_pid(self) -> int | None:

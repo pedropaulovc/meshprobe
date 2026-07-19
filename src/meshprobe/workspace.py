@@ -31,35 +31,25 @@ from meshprobe.models import (
     RenderStyle,
     RenderStyleState,
     SceneManifest,
+    SessionUndoResult,
     SessionSnapshot,
     SrgbHexColor,
 )
 from meshprobe.protocol import (
     Command,
+    CommandEffect,
     ComponentFindCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    SessionUndoCommand,
     ViewSetCommand,
     command_payload,
 )
 from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
-
-STATE_OPERATIONS = frozenset(
-    {
-        "view.set",
-        "view.orbit",
-        "view.frame",
-        "view.move",
-        "view.rotate",
-        "illumination.set",
-        "component.display",
-        "component.mark",
-    }
-)
 
 # The ops that always refit the camera to an aspect ratio, so their aspect_ratio is
 # the intended framing. view.move/view.rotate reuse the current projection without
@@ -498,6 +488,8 @@ class SessionManager:
         *,
         blender: str | None = None,
     ) -> OperationReceipt:
+        if command.effect is CommandEffect.UNDECLARED:
+            raise ValueError(f"command has no declared history effect: {command.op}")
         if isinstance(command, SceneOpenCommand):
             return self.open(
                 name,
@@ -509,6 +501,10 @@ class SessionManager:
             )
         with self._lock:
             files = self._require_files(name)
+            if isinstance(command, SessionUndoCommand):
+                return self._undo(name, files, command)
+            if command.effect is CommandEffect.HISTORY:
+                raise ValueError(f"unsupported history command: {command.op}")
             previous_service = self._services.get(name)
             previous_worker_pid = (
                 previous_service.worker_pid if previous_service is not None else None
@@ -561,6 +557,66 @@ class SessionManager:
                 components=self._component_references(files, command),
                 match_count=match_count,
             )
+
+    def _undo(
+        self,
+        name: str,
+        files: SessionFiles,
+        command: SessionUndoCommand,
+    ) -> OperationReceipt:
+        """Atomically replace the live renderer with a replay of truncated history."""
+
+        try:
+            current = self._service(name, files)
+            checkpoint, _ = _upgrade_checkpoint(
+                SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+            )
+            undoable_indexes = [
+                index
+                for index, raw in enumerate(checkpoint.accepted_commands)
+                if raw.get("request_id") != "recover-v1-source-camera"
+            ]
+            available = len(undoable_indexes)
+            if command.count > available:
+                raise ValueError(
+                    f"cannot undo {command.count} state-changing command(s); "
+                    f"only {available} available since the last reset"
+                )
+            cutoff = undoable_indexes[-command.count]
+            updated = checkpoint.model_copy(
+                deep=True,
+                update={"accepted_commands": checkpoint.accepted_commands[:cutoff]},
+            )
+            replacement = self._restore_service(updated)
+            snapshot = self._snapshot(replacement)
+        except Exception as error:
+            self._event(files, command, "rejected", error=str(error))
+            raise
+
+        updated.state_sha256 = snapshot.state_sha256
+        result = SessionUndoResult(
+            undone=command.count,
+            remaining=available - command.count,
+            state_sha256=snapshot.state_sha256,
+        )
+        response = CommandResponse(
+            request_id=command.request_id,
+            op=command.op,
+            result=result.model_dump(mode="json"),
+        )
+        try:
+            result_path = self._write_result(files, command.request_id, response)
+            self._write_state(files, snapshot)
+            atomic_json(files.checkpoint, updated.model_dump(mode="json"))
+            self._update_metadata(files, status="active", worker_pid=replacement.worker_pid)
+            self._event(files, command, "accepted", result_path=result_path)
+        except Exception:
+            replacement.kill()
+            raise
+
+        self._services[name] = replacement
+        current.close()
+        return self._receipt(files, command.op, snapshot, result_path)
 
     def close(self, name: str) -> OperationReceipt:
         with self._lock:
@@ -778,6 +834,32 @@ class SessionManager:
         self._services[name] = service
         return service
 
+    def _restore_service(self, checkpoint: SessionCheckpoint) -> SessionService:
+        """Build a renderer from a checkpoint without changing live or durable state."""
+
+        service = self._new_service(checkpoint.blender)
+        try:
+            opened = service.execute(
+                SceneOpenCommand(
+                    request_id="recover-open",
+                    op="scene.open",
+                    source_path=checkpoint.source_path,
+                    aspect_ratio=checkpoint.aspect_ratio,
+                    unit_scale=checkpoint.unit_scale,
+                )
+            )
+            manifest = SceneManifest.model_validate(opened.result)
+            if manifest.source_sha256 != checkpoint.source_sha256:
+                raise ValueError("source asset bundle changed since the session checkpoint")
+            from meshprobe.protocol import COMMAND_ADAPTER
+
+            for raw in checkpoint.accepted_commands:
+                service.execute(COMMAND_ADAPTER.validate_python(raw))
+        except Exception:
+            service.kill()
+            raise
+        return service
+
     def _new_service(self, blender: str | None) -> SessionService:
         if self._service_factory is not None:
             return self._service_factory()
@@ -980,7 +1062,7 @@ class SessionManager:
             checkpoint.accepted_commands.clear()
             if "aspect_ratio" in command.model_fields_set:
                 checkpoint.aspect_ratio = command.aspect_ratio
-        elif command.op in STATE_OPERATIONS:
+        elif command.effect is CommandEffect.STATE_MUTATION:
             accepted = command
             if isinstance(command, IlluminationSetCommand):
                 accepted = command.model_copy(update={"illumination": snapshot.illumination})
