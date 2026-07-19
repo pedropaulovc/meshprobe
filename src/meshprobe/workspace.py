@@ -593,10 +593,12 @@ class SessionManager:
 
         replacement: SessionService | None = None
         try:
-            current = self._service(name, files)
-            checkpoint, _ = _upgrade_checkpoint(
-                SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+            current = self._services.get(name)
+            persisted_checkpoint = SessionCheckpoint.model_validate_json(
+                files.checkpoint.read_text(encoding="utf-8")
             )
+            restore_source_camera = "aspect_ratio" not in persisted_checkpoint.model_fields_set
+            checkpoint, _ = _upgrade_checkpoint(persisted_checkpoint)
             available = len(checkpoint.accepted_commands)
             if command.count > available:
                 raise ValueError(
@@ -607,7 +609,10 @@ class SessionManager:
                 deep=True,
                 update={"accepted_commands": checkpoint.accepted_commands[: -command.count]},
             )
-            replacement = self._restore_service(updated)
+            replacement = self._restore_service(
+                updated,
+                restore_source_camera=restore_source_camera,
+            )
             snapshot = self._snapshot(replacement)
         except Exception as error:
             if replacement is not None:
@@ -630,7 +635,7 @@ class SessionManager:
         result_path: Path | None = None
         try:
             result_path = self._write_result(files, command.request_id, response)
-            self._write_state(files, snapshot)
+            self._write_state(files, snapshot, render_style=RenderStyleState())
             # checkpoint.json is the commit point. A synchronous failure before its atomic
             # replacement rolls the derived state/result files back below; after replacement,
             # restart recovery replays this authoritative history.
@@ -646,7 +651,8 @@ class SessionManager:
             raise
 
         self._services[name] = replacement
-        current.close()
+        if current is not None:
+            current.close()
         self._update_metadata(files, status="active", worker_pid=replacement.worker_pid)
         self._event(files, command, "accepted", result_path=result_path)
         return self._receipt(files, command.op, snapshot, result_path)
@@ -830,35 +836,13 @@ class SessionManager:
         # the source camera, regardless of its numeric schema version.
         pre_auto_frame_checkpoint = "aspect_ratio" not in persisted_checkpoint.model_fields_set
         checkpoint, upgraded = _upgrade_checkpoint(persisted_checkpoint)
-        service = self._new_service(checkpoint.blender)
+        service = self._restore_service(
+            checkpoint,
+            restore_source_camera=pre_auto_frame_checkpoint,
+        )
+        if pre_auto_frame_checkpoint:
+            upgraded = True
         try:
-            opened = service.execute(
-                SceneOpenCommand(
-                    request_id="recover-open",
-                    op="scene.open",
-                    source_path=checkpoint.source_path,
-                    aspect_ratio=checkpoint.aspect_ratio,
-                    unit_scale=checkpoint.unit_scale,
-                )
-            )
-            manifest = SceneManifest.model_validate(opened.result)
-            if manifest.source_sha256 != checkpoint.source_sha256:
-                raise ValueError("source asset bundle changed since the session checkpoint")
-            from meshprobe.protocol import COMMAND_ADAPTER
-
-            if pre_auto_frame_checkpoint:
-                # A v1 checkpoint predates default auto-framing. Its recorded relative
-                # camera commands therefore start from the source camera, not the new
-                # framed default. Restore that exact baseline before replaying them.
-                baseline = ViewSetCommand(
-                    request_id="recover-v1-source-camera",
-                    op="view.set",
-                    camera=manifest.imported_camera,
-                )
-                checkpoint.replay_prefix.append(command_payload(baseline))
-                upgraded = True
-            for raw in (*checkpoint.replay_prefix, *checkpoint.accepted_commands):
-                service.execute(COMMAND_ADAPTER.validate_python(raw))
             if upgraded:
                 atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
         except Exception:
@@ -867,7 +851,12 @@ class SessionManager:
         self._services[name] = service
         return service
 
-    def _restore_service(self, checkpoint: SessionCheckpoint) -> SessionService:
+    def _restore_service(
+        self,
+        checkpoint: SessionCheckpoint,
+        *,
+        restore_source_camera: bool = False,
+    ) -> SessionService:
         """Build a renderer from a checkpoint without changing live or durable state."""
 
         service = self._new_service(checkpoint.blender)
@@ -886,6 +875,15 @@ class SessionManager:
                 raise ValueError("source asset bundle changed since the session checkpoint")
             from meshprobe.protocol import COMMAND_ADAPTER
 
+            if restore_source_camera and not checkpoint.replay_prefix:
+                # Checkpoints predating default auto-framing replay relative camera commands
+                # from the source camera. Keep that compatibility baseline outside undo history.
+                baseline = ViewSetCommand(
+                    request_id="recover-v1-source-camera",
+                    op="view.set",
+                    camera=manifest.imported_camera,
+                )
+                checkpoint.replay_prefix.append(command_payload(baseline))
             for raw in (*checkpoint.replay_prefix, *checkpoint.accepted_commands):
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
         except Exception:

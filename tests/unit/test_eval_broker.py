@@ -23,6 +23,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    SessionUndoCommand,
     ViewFrameCommand,
     ViewRotateCommand,
 )
@@ -239,6 +240,18 @@ def test_broker_records_view_frame_as_a_normal_trace_event(tmp_path: Path) -> No
     assert framed.ok
     assert active.events[-1].operation is Operation.VIEW_FRAME
     assert active.events[-1].status is TraceStatus.ACCEPTED
+
+
+def test_broker_rejects_but_traces_durable_undo(tmp_path: Path) -> None:
+    active = broker(tmp_path)
+
+    undone = active.execute(SessionUndoCommand(request_id="undo", op="session.undo"))
+
+    assert not undone.ok
+    assert undone.error is not None
+    assert undone.error.code == "broker.unsupported_operation"
+    assert active.events[-1].operation is Operation.SESSION_UNDO
+    assert active.events[-1].status is TraceStatus.REJECTED
 
 
 def test_broker_mediates_custom_environment_map_paths(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    SessionUndoCommand,
     ViewOrbitCommand,
 )
 from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
@@ -320,6 +321,38 @@ def test_execute_restarts_old_daemon_for_explicit_aspect_ratio(
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
     ]
+
+
+def test_execute_restarts_old_daemon_that_does_not_recognize_session_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    attempts = 0
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        nonlocal attempts
+        if action == "execute":
+            attempts += 1
+            if attempts == 1:
+                raise ValueError(
+                    "Input tag 'session.undo' does not match any expected discriminator tags"
+                )
+        return {"session": "review", "op": "session.undo"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    receipt = client.execute("review", SessionUndoCommand(request_id="undo", op="session.undo"))
+
+    assert receipt.op == "session.undo"
+    assert attempts == 2
+    assert close_all_calls == 1
 
 
 def test_close_all_waits_for_graceful_shutdown(

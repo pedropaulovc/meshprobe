@@ -352,6 +352,88 @@ def test_undo_survives_manager_restart_and_reset_is_a_hard_boundary(
         recovered.execute("review", SessionUndoCommand(request_id="past-reset", op="session.undo"))
 
 
+def test_undo_after_restart_does_not_replay_the_discarded_command(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+    reject_discarded_replay = False
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        if reject_discarded_replay:
+            service.fail_on_request_id = "discarded-mutation"
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("review", source)
+    component_id = scene_manifest.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="discarded-mutation",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.close("review")
+    reject_discarded_replay = True
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute("review", SessionUndoCommand(request_id="undo-discarded", op="session.undo"))
+
+    assert len(services) == 2
+    assert services[-1].session is not None
+    assert services[-1].session.snapshot().components[component_id].display is DisplayMode.SHOWN
+    assert all(
+        command.request_id != "discarded-mutation" for command in services[-1].received_commands
+    )
+
+
+def test_undo_rebuild_resets_render_style_to_worker_default(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="shaded-edges",
+            op="render.image",
+            output_path=str(tmp_path / "render.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+    component_id = scene_manifest.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+
+    manager.execute("review", SessionUndoCommand(request_id="undo", op="session.undo"))
+
+    state = yaml.safe_load(SessionFiles(manager.root, "review").state.read_text())
+    assert state["render_style"] == RenderStyleState().model_dump(mode="json")
+
+
 def test_undo_replay_failure_keeps_original_service_and_durable_state(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:
