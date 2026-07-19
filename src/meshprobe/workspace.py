@@ -302,7 +302,8 @@ def durable_state_schema_summary() -> dict[str, object]:
                 "components.{default,overrides} results artifacts",
             },
             "checkpoint.json": {
-                "purpose": "last acknowledged replay state and undo history",
+                "purpose": "authoritative commit record for replay state and undo history; "
+                "its state_sha256 detects an interrupted derived state.yml write",
                 "fields": "schema_version source_path source_sha256 blender state_sha256 "
                 "replay_prefix[] accepted_commands[]",
             },
@@ -625,12 +626,23 @@ class SessionManager:
             op=command.op,
             result=result.model_dump(mode="json"),
         )
+        previous_state = files.state.read_text(encoding="utf-8")
+        result_path: Path | None = None
         try:
             result_path = self._write_result(files, command.request_id, response)
             self._write_state(files, snapshot)
+            # checkpoint.json is the commit point. A synchronous failure before its atomic
+            # replacement rolls the derived state/result files back below; after replacement,
+            # restart recovery replays this authoritative history.
             atomic_json(files.checkpoint, updated.model_dump(mode="json"))
-        except Exception:
+        except Exception as error:
             replacement.kill()
+            if result_path is not None:
+                with suppress(OSError):
+                    result_path.unlink()
+            with suppress(OSError):
+                atomic_text(files.state, previous_state)
+            self._event(files, command, "rejected", error=str(error))
             raise
 
         self._services[name] = replacement

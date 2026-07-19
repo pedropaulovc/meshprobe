@@ -60,6 +60,7 @@ class FakeSessionService:
         self.killed = False
         self.graphics = graphics
         self.received_commands: list[Command] = []
+        self.fail_on_request_id: str | None = None
 
     @property
     def worker_pid(self) -> int | None:
@@ -67,6 +68,8 @@ class FakeSessionService:
 
     def execute(self, command: Command) -> CommandResponse:
         self.received_commands.append(command)
+        if command.request_id == self.fail_on_request_id:
+            raise RuntimeError(f"forced replay failure: {command.request_id}")
         if isinstance(command, SceneOpenCommand):
             self.session = InspectionSession(self.manifest, aspect_ratio=command.aspect_ratio)
             result: JsonValue = self.manifest.model_dump(mode="json")
@@ -355,6 +358,120 @@ def test_undo_survives_manager_restart_and_reset_is_a_hard_boundary(
         recovered.execute(
             "review", SessionUndoCommand(request_id="past-reset", op="session.undo")
         )
+
+
+def test_undo_replay_failure_keeps_original_service_and_durable_state(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        if services:
+            service.fail_on_request_id = "hide"
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+    component_id = scene_manifest.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.execute(
+        "review",
+        ComponentMarkCommand(
+            request_id="mark",
+            op="component.mark",
+            component_ids=(component_id,),
+            mode=MarkMode.HIGHLIGHTED,
+        ),
+    )
+    files = SessionFiles(manager.root, "review")
+    checkpoint_before = files.checkpoint.read_bytes()
+    state_before = files.state.read_bytes()
+
+    with pytest.raises(RuntimeError, match="forced replay failure: hide"):
+        manager.execute(
+            "review", SessionUndoCommand(request_id="undo-fails", op="session.undo")
+        )
+
+    assert len(services) == 2
+    assert services[1].killed
+    assert not services[0].closed
+    assert not services[0].killed
+    assert files.checkpoint.read_bytes() == checkpoint_before
+    assert files.state.read_bytes() == state_before
+    events = [json.loads(line) for line in files.events.read_text().splitlines()]
+    assert events[-1]["request_id"] == "undo-fails"
+    assert events[-1]["status"] == "rejected"
+    assert not (files.results / "undo-fails.json").exists()
+
+    manager.execute(
+        "review", SessionSnapshotCommand(request_id="original-still-live", op="session.snapshot")
+    )
+    assert len(services) == 2
+    assert services[0].session is not None
+    original = services[0].session.snapshot().components[component_id]
+    assert original.display is DisplayMode.HIDDEN
+    assert original.mark is MarkMode.HIGHLIGHTED
+
+
+def test_undo_checkpoint_write_failure_rolls_back_derived_files(
+    tmp_path: Path, scene_manifest: SceneManifest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+    component_id = scene_manifest.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    files = SessionFiles(manager.root, "review")
+    checkpoint_before = files.checkpoint.read_bytes()
+    state_before = files.state.read_bytes()
+
+    def fail_checkpoint(path: Path, value: object, *, mode: int | None = None) -> None:
+        if path == files.checkpoint:
+            raise OSError("forced checkpoint write failure")
+        atomic_json(path, value, mode=mode)
+
+    monkeypatch.setattr("meshprobe.workspace.atomic_json", fail_checkpoint)
+    with pytest.raises(OSError, match="forced checkpoint write failure"):
+        manager.execute(
+            "review", SessionUndoCommand(request_id="undo-write", op="session.undo")
+        )
+
+    assert services[-1].killed
+    assert not services[0].closed
+    assert files.checkpoint.read_bytes() == checkpoint_before
+    assert files.state.read_bytes() == state_before
+    assert not (files.results / "undo-write.json").exists()
+    events = [json.loads(line) for line in files.events.read_text().splitlines()]
+    assert events[-1]["request_id"] == "undo-write"
+    assert events[-1]["status"] == "rejected"
 
 
 def test_session_manager_execute_propagates_open_aspect_ratio_to_the_worker(
