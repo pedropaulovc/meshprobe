@@ -21,6 +21,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from enum import StrEnum
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -53,6 +54,15 @@ PLAUSIBLE_MAX_SPAN_METERS = 50.0
 # under anything meaningful to inspect standalone here, and far more likely a units (or a
 # wrong --unit-scale) mistake than a real part.
 PLAUSIBLE_MIN_SPAN_METERS = 0.001
+
+
+class MaskMaterialMode(StrEnum):
+    FLAT_BY_COMPONENT = "flat_by_component"
+    MATERIAL_EXACT = "material_exact"
+    UNIFORM_BACKFACE_CULLED = "uniform_backface_culled"
+    UNIFORM_DOUBLE_SIDED = "uniform_double_sided"
+
+
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -1707,20 +1717,76 @@ def create_component_label(component_id: str, color: tuple[float, float, float, 
         (minimum[1] + maximum[1]) / 2 / MILLIMETERS_PER_METER,
         (maximum[2] + scene_span * 0.02) / MILLIMETERS_PER_METER,
     )
+    # Keep the semantic world-space anchor separately: the rendered text is projected onto a
+    # camera-facing overlay plane below so dense surrounding geometry cannot hide it. Camera
+    # moves recompute that projection from this stable anchor rather than compounding transforms.
+    label["meshprobe_anchor_m"] = list(label.location)
     label.rotation_mode = "QUATERNION"
-    label.rotation_quaternion = camera_object().matrix_world.to_quaternion()
     color_suffix = COMPONENT_STATES[component_id]["mark_color"]
     material_name = "MeshProbeMark-labeled"
     if color_suffix is not None:
         material_name = f"{material_name}-{color_suffix[1:]}"
-    data.materials.append(replacement_material(material_name, color))
+    label_material = emission_material(f"{material_name}-overlay", color)
+    if hasattr(label_material, "surface_render_method"):
+        # Labels render only in a transparent annotation pass. Blended surfaces preserve their
+        # anti-aliased edge alpha when that pass is composited over the physical scene render.
+        label_material.surface_render_method = "BLENDED"
+    data.materials.append(label_material)
     MARK_OBJECTS[component_id] = label
+    orient_component_labels()
+
+
+def component_label_overlay_transform(
+    camera: bpy.types.Object,
+    anchor: Vector,
+    basis: tuple[Vector, Vector, Vector, Vector],
+) -> tuple[Vector, float] | None:
+    position, right, up, forward = basis
+    near = camera.data.clip_start
+    far = camera.data.clip_end
+    offset = anchor - position
+    depth = offset @ forward
+    if not near < depth < far:
+        return None
+    # Prefer a small gap behind the near plane, but never consume more than one percent of
+    # the clip interval or half the distance to the anchor. The overlay therefore stays
+    # strictly inside the clip range and strictly in front of every valid semantic anchor.
+    preferred_clearance = max(near * 0.1, 0.0001)
+    overlay_depth = near + min(
+        preferred_clearance,
+        (far - near) * 0.01,
+        (depth - near) * 0.5,
+    )
+    horizontal = offset @ right
+    vertical = offset @ up
+    scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
+    location = (
+        position + forward * overlay_depth + right * horizontal * scale + up * vertical * scale
+    )
+    return location, scale
 
 
 def orient_component_labels() -> None:
-    orientation = camera_object().matrix_world.to_quaternion()
+    camera = camera_object()
+    orientation = camera.matrix_world.to_quaternion()
+    position = camera.matrix_world.translation
+    right = orientation @ Vector((1.0, 0.0, 0.0))
+    up = orientation @ Vector((0.0, 1.0, 0.0))
+    forward = orientation @ Vector((0.0, 0.0, -1.0))
+    basis = (position, right, up, forward)
     for label in MARK_OBJECTS.values():
         label.rotation_quaternion = orientation
+        anchor = Vector(label["meshprobe_anchor_m"])
+        transform = component_label_overlay_transform(camera, anchor, basis)
+        label.hide_render = transform is None
+        if transform is None:
+            # A clipped semantic anchor has no meaningful annotation in this frame. Keep its
+            # world transform deterministic so a later camera move can project it again.
+            label.location = anchor
+            label.scale = (1.0, 1.0, 1.0)
+            continue
+        label.location, scale = transform
+        label.scale = (scale, scale, scale)
 
 
 def refresh_component_appearance(component_id: str) -> None:
@@ -1886,6 +1952,14 @@ def runtime_diagnostics() -> dict[str, Any]:
                     list(MARK_OBJECTS[component_id].rotation_quaternion)
                     if component_id in MARK_OBJECTS
                     else None
+                ),
+                "label_location_m": (
+                    list(MARK_OBJECTS[component_id].location)
+                    if component_id in MARK_OBJECTS
+                    else None
+                ),
+                "label_hide_render": (
+                    MARK_OBJECTS[component_id].hide_render if component_id in MARK_OBJECTS else None
                 ),
             }
             for component_id, obj in COMPONENT_OBJECTS.items()
@@ -2191,6 +2265,85 @@ def render_still(path: Path) -> None:
 
 
 @contextmanager
+def hidden_component_labels() -> Iterator[None]:
+    original_visibility = {label: label.hide_render for label in MARK_OBJECTS.values()}
+    try:
+        for label in original_visibility:
+            label.hide_render = True
+        yield
+    finally:
+        for label, hide_render in original_visibility.items():
+            label.hide_render = hide_render
+
+
+def composite_label_overlay(path: Path, overlay_path: Path) -> None:
+    try:
+        import OpenImageIO as oiio  # type: ignore[import-not-found]
+    except ImportError as error:  # pragma: no cover - OpenImageIO ships with Blender
+        raise RuntimeError(
+            "Label annotation compositing needs OpenImageIO, which is bundled with Blender but "
+            "was not importable in this build"
+        ) from error
+
+    base = oiio.ImageBuf(str(path))
+    overlay = oiio.ImageBuf(str(overlay_path))
+    base_spec = base.spec()
+    overlay_spec = overlay.spec()
+    base_size = (base_spec.width, base_spec.height)
+    overlay_size = (overlay_spec.width, overlay_spec.height)
+    if base_size != overlay_size:
+        raise RuntimeError(f"label overlay size {overlay_size} does not match render {base_size}")
+    composited = oiio.ImageBufAlgo.over(overlay, base)
+    if composited.has_error:
+        raise RuntimeError(f"failed to composite label overlay: {composited.geterror()}")
+    if not composited.write(str(path)):
+        raise RuntimeError(f"failed to publish label overlay: {composited.geterror()}")
+
+
+def render_label_overlay(path: Path) -> None:
+    """Composite camera-facing labels separately from physical scene geometry.
+
+    Rendering annotations alone through one-sample Eevee with DOF disabled keeps them sharp and
+    unobstructed without letting text affect scene lighting, samples, or geometry evidence. The
+    requested engine remains responsible for the physical scene render.
+    """
+
+    if not MARK_OBJECTS:
+        return
+    scene = bpy.context.scene
+    camera = camera_object()
+    labels = tuple(label for label in MARK_OBJECTS.values() if not label.hide_render)
+    if not labels:
+        return
+    original_visibility = {obj: obj.hide_render for obj in scene.objects if obj.type != "CAMERA"}
+    original_engine = scene.render.engine
+    original_film_transparent = scene.render.film_transparent
+    original_freestyle = scene.render.use_freestyle
+    original_dof = camera.data.dof.use_dof
+    original_samples = eevee_render_samples()
+    with tempfile.TemporaryDirectory(prefix="meshprobe-label-overlay-") as directory:
+        overlay_path = Path(directory) / "labels.png"
+        try:
+            for obj in original_visibility:
+                obj.hide_render = obj not in labels
+            scene.render.engine = eevee_engine()
+            configure_eevee_samples(1)
+            scene.render.film_transparent = True
+            scene.render.use_freestyle = False
+            camera.data.dof.use_dof = False
+            render_still(overlay_path)
+            composite_label_overlay(path, overlay_path)
+        finally:
+            for obj, hide_render in original_visibility.items():
+                obj.hide_render = hide_render
+            scene.render.engine = original_engine
+            scene.render.film_transparent = original_film_transparent
+            scene.render.use_freestyle = original_freestyle
+            camera.data.dof.use_dof = original_dof
+            configure_eevee_samples(original_samples)
+
+
+@contextmanager
 def temporary_screen_edge_compositor(
     path: Path,
     settings: dict[str, Any],
@@ -2383,6 +2536,39 @@ def count_foreground_pixels(path: Path) -> int:
         bpy.data.images.remove(image)
 
 
+def foreground_mask_material_mode() -> MaskMaterialMode:
+    """Choose the cheapest mask material path that preserves visible coverage."""
+
+    culling_modes: set[bool] = set()
+    for obj in COMPONENT_OBJECTS.values():
+        if obj.hide_render:
+            continue
+        if not obj.data.materials:
+            culling_modes.add(False)
+        for material in obj.data.materials:
+            if material is None:
+                culling_modes.add(False)
+                continue
+            culling_modes.add(bool(material.use_backface_culling))
+            if material.diffuse_color[3] < 1.0:
+                return MaskMaterialMode.MATERIAL_EXACT
+            if not material.use_nodes:
+                continue
+            principled = material.node_tree.nodes.get("Principled BSDF")
+            if principled is None:
+                # Unknown node graphs may contain Transparent/Holdout shaders. Preserve them
+                # instead of guessing that an arbitrary graph is opaque.
+                return MaskMaterialMode.MATERIAL_EXACT
+            alpha = principled.inputs.get("Alpha")
+            if alpha is None or alpha.is_linked or float(alpha.default_value) < 1.0:
+                return MaskMaterialMode.MATERIAL_EXACT
+    if len(culling_modes) > 1:
+        return MaskMaterialMode.MATERIAL_EXACT
+    if culling_modes == {True}:
+        return MaskMaterialMode.UNIFORM_BACKFACE_CULLED
+    return MaskMaterialMode.UNIFORM_DOUBLE_SIDED
+
+
 def foreground_coverage() -> dict[str, Any]:
     """Measure how much of the current frame any shown component actually covers.
 
@@ -2416,7 +2602,11 @@ def foreground_coverage() -> dict[str, Any]:
             scene.render.resolution_x = sample_width
             scene.render.resolution_y = sample_height
             scene.render.resolution_percentage = 100
-            render_mask(mask_path, colors, respect_material_visibility=True)
+            render_mask(
+                mask_path,
+                colors,
+                material_mode=foreground_mask_material_mode(),
+            )
             visible_pixels = count_foreground_pixels(mask_path)
         finally:
             (
@@ -2547,9 +2737,10 @@ def render_mask(
     path: Path,
     colors: dict[str, tuple[int, int, int]],
     *,
-    respect_material_visibility: bool = False,
+    material_mode: MaskMaterialMode = MaskMaterialMode.FLAT_BY_COMPONENT,
 ) -> None:
     scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
     original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
     other_visibility = {
         obj: obj.hide_render for obj in scene.objects if obj.type not in {"MESH", "CAMERA"}
@@ -2570,6 +2761,7 @@ def render_mask(
     original_exposure = scene.view_settings.exposure
     original_gamma = scene.view_settings.gamma
     original_dither = scene.render.dither_intensity
+    original_material_override = view_layer.material_override
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     scene.view_settings.exposure = 0.0
@@ -2582,57 +2774,82 @@ def render_mask(
     # just to answer a yes/no coverage question.
     configure_eevee_samples(1)
     mask_variants: list[bpy.types.Material] = []
+    uniform_color = next(iter(set(colors.values()))) if len(set(colors.values())) == 1 else None
     try:
         for obj in other_visibility:
             obj.hide_render = True
-        for component_id, obj in COMPONENT_OBJECTS.items():
-            source_materials = list(obj.data.materials)
-            mesh = obj.data.copy()
-            mesh.materials.clear()
-            red, green, blue = colors[component_id]
-            color = (
-                srgb_channel_to_linear(red),
-                srgb_channel_to_linear(green),
-                srgb_channel_to_linear(blue),
-                1.0,
+        if uniform_color is not None and material_mode in {
+            MaskMaterialMode.UNIFORM_BACKFACE_CULLED,
+            MaskMaterialMode.UNIFORM_DOUBLE_SIDED,
+        }:
+            red, green, blue = uniform_color
+            override = emission_material(
+                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}-{material_mode.value}",
+                (
+                    srgb_channel_to_linear(red),
+                    srgb_channel_to_linear(green),
+                    srgb_channel_to_linear(blue),
+                    1.0,
+                ),
             )
-            base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
-            if not respect_material_visibility:
-                mesh.materials.append(emission_material(base_name, color))
-                for polygon in mesh.polygons:
-                    polygon.material_index = 0
-            else:
-                # Preserve each source material's transparency/culling instead of forcing
-                # every polygon opaque and front-and-back visible: a component that is
-                # invisible in the real color render (transparent material — constant,
-                # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
-                # must read the same way in this mask, or the foreground check can't tell
-                # "geometry exists" from "geometry is actually visible". Each source
-                # material gets one alpha-preserving emissive variant; polygons with no
-                # material fall back to a flat opaque mask.
-                flat_index = -1
-                variant_index: dict[str, int] = {}
-                for polygon in mesh.polygons:
-                    original = (
-                        source_materials[polygon.material_index]
-                        if polygon.material_index < len(source_materials)
-                        else None
+            override.use_backface_culling = (
+                material_mode is MaskMaterialMode.UNIFORM_BACKFACE_CULLED
+            )
+            view_layer.material_override = override
+        else:
+            for component_id, obj in COMPONENT_OBJECTS.items():
+                source_materials = list(obj.data.materials)
+                mesh = obj.data.copy()
+                mesh.materials.clear()
+                red, green, blue = colors[component_id]
+                color = (
+                    srgb_channel_to_linear(red),
+                    srgb_channel_to_linear(green),
+                    srgb_channel_to_linear(blue),
+                    1.0,
+                )
+                base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
+                if material_mode is MaskMaterialMode.FLAT_BY_COMPONENT:
+                    mesh.materials.append(emission_material(base_name, color))
+                    for polygon in mesh.polygons:
+                        polygon.material_index = 0
+                elif material_mode is MaskMaterialMode.MATERIAL_EXACT:
+                    # Preserve each source material's transparency/culling instead of forcing
+                    # every polygon opaque and front-and-back visible: a component that is
+                    # invisible in the real color render (transparent material — constant,
+                    # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
+                    # must read the same way in this mask, or the foreground check can't tell
+                    # "geometry exists" from "geometry is actually visible". Each source
+                    # material gets one alpha-preserving emissive variant; polygons with no
+                    # material fall back to a flat opaque mask.
+                    flat_index = -1
+                    variant_index: dict[str, int] = {}
+                    for polygon in mesh.polygons:
+                        original = (
+                            source_materials[polygon.material_index]
+                            if polygon.material_index < len(source_materials)
+                            else None
+                        )
+                        if original is None:
+                            if flat_index < 0:
+                                flat_index = len(mesh.materials)
+                                mesh.materials.append(emission_material(f"{base_name}-flat", color))
+                            polygon.material_index = flat_index
+                            continue
+                        if original.name not in variant_index:
+                            variant = mask_alpha_variant_material(original, color)
+                            mask_variants.append(variant)
+                            variant_index[original.name] = len(mesh.materials)
+                            mesh.materials.append(variant)
+                        polygon.material_index = variant_index[original.name]
+                else:
+                    raise ValueError(
+                        f"mask material mode requires one uniform color: {material_mode.value}"
                     )
-                    if original is None:
-                        if flat_index < 0:
-                            flat_index = len(mesh.materials)
-                            mesh.materials.append(emission_material(f"{base_name}-flat", color))
-                        polygon.material_index = flat_index
-                        continue
-                    if original.name not in variant_index:
-                        variant = mask_alpha_variant_material(original, color)
-                        mask_variants.append(variant)
-                        variant_index[original.name] = len(mesh.materials)
-                        mesh.materials.append(variant)
-                    polygon.material_index = variant_index[original.name]
-            obj.data = mesh
+                obj.data = mesh
         render_still(path)
     finally:
+        view_layer.material_override = original_material_override
         for component_id, obj in COMPONENT_OBJECTS.items():
             replacement = obj.data
             obj.data = original_meshes[component_id]
@@ -2900,20 +3117,29 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         backdrop = display_referred_background()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
-        if style == "screen_edges":
-            render_screen_edges(output, shaded_edges)
-        else:
+
+        def render_color() -> None:
+            if style == "screen_edges":
+                render_screen_edges(output, shaded_edges)
+                return
             render_still(output)
+
+        # Labels are annotations, never physical scene geometry. Keep them out of every
+        # requested engine's lighting/sample pass and composite them uniformly afterward.
+        with hidden_component_labels():
+            render_color()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
+        render_label_overlay(output)
         luminance = luminance_summary(output)
         foreground = foreground_coverage()
         evaluator = None
         if command.get("evaluator_output_dir") is not None:
             evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
             evaluator_dir.mkdir(parents=True, exist_ok=True)
-            evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+            with hidden_component_labels():
+                evaluator = render_evaluator_passes(evaluator_dir, output.stem)
         session = session_snapshot()
     return {
         "schema_version": 2,
