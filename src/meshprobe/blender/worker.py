@@ -2233,6 +2233,122 @@ def render_still(path: Path) -> None:
 
 
 @contextmanager
+def hidden_component_labels() -> Iterator[None]:
+    original_visibility = {label: label.hide_render for label in MARK_OBJECTS.values()}
+    try:
+        for label in original_visibility:
+            label.hide_render = True
+        yield
+    finally:
+        for label, hide_render in original_visibility.items():
+            label.hide_render = hide_render
+
+
+def composite_label_overlay(path: Path, overlay_path: Path) -> None:
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+    except ImportError as error:  # pragma: no cover - numpy ships with Blender
+        raise RuntimeError(
+            "Cycles label compositing needs numpy, which is bundled with Blender but was not "
+            "importable in this build"
+        ) from error
+
+    base = bpy.data.images.load(str(path), check_existing=False)
+    overlay = bpy.data.images.load(str(overlay_path), check_existing=False)
+    try:
+        if tuple(base.size) != tuple(overlay.size):
+            raise RuntimeError(
+                f"label overlay size {tuple(overlay.size)} does not match render {tuple(base.size)}"
+            )
+        base.colorspace_settings.name = "Non-Color"
+        overlay.colorspace_settings.name = "Non-Color"
+        pixel_count = base.size[0] * base.size[1]
+        base_buffer = np.empty(pixel_count * 4, dtype=np.float32)
+        base.pixels.foreach_get(base_buffer)
+        base_pixels = base_buffer.reshape(-1, 4)
+        # Keep only the base render in one full-size numpy buffer. Blender already stores both
+        # decoded images internally, so another full RGBA overlay buffer would add about 4 GiB
+        # at the public 16k limit. Chunking the sparse annotation layer bounds that extra memory.
+        chunk_pixels = 1_048_576
+        for start in range(0, pixel_count, chunk_pixels):
+            end = min(start + chunk_pixels, pixel_count)
+            overlay_chunk = np.asarray(
+                overlay.pixels[start * 4 : end * 4],
+                dtype=np.float32,
+            ).reshape(-1, 4)
+            overlay_alpha = overlay_chunk[:, 3]
+            inverse_alpha = np.empty_like(overlay_alpha)
+            np.subtract(1.0, overlay_alpha, out=inverse_alpha)
+            base_chunk = base_pixels[start:end]
+            for channel in range(3):
+                base_channel = base_chunk[:, channel]
+                base_channel *= inverse_alpha
+                overlay_channel = overlay_chunk[:, channel]
+                overlay_channel *= overlay_alpha
+                base_channel += overlay_channel
+        base_pixels[:, 3] = 1.0
+        np.clip(base_pixels, 0.0, 1.0, out=base_pixels)
+        base.pixels.foreach_set(base_buffer)
+        base.file_format = "PNG"
+        base.filepath_raw = str(path)
+        base.save()
+    finally:
+        bpy.data.images.remove(overlay)
+        bpy.data.images.remove(base)
+
+
+def render_cycles_label_overlay(path: Path) -> None:
+    """Composite camera-facing labels separately from Cycles scene geometry.
+
+    Cycles applies physical depth of field to geometry on the near-camera overlay plane.
+    Rendering the annotations alone through Eevee with DOF disabled preserves their semantic
+    screen projection, keeps them unobstructed, and avoids changing the requested scene engine.
+    """
+
+    if not MARK_OBJECTS:
+        return
+    scene = bpy.context.scene
+    camera = camera_object()
+    labels = tuple(MARK_OBJECTS.values())
+    original_visibility = {obj: obj.hide_render for obj in scene.objects if obj.type != "CAMERA"}
+    original_engine = scene.render.engine
+    original_film_transparent = scene.render.film_transparent
+    original_freestyle = scene.render.use_freestyle
+    original_dof = camera.data.dof.use_dof
+    original_samples = eevee_render_samples()
+    with tempfile.TemporaryDirectory(prefix="meshprobe-label-overlay-") as directory:
+        overlay_path = Path(directory) / "labels.png"
+        try:
+            for obj in original_visibility:
+                obj.hide_render = obj not in labels
+            scene.render.engine = eevee_engine()
+            configure_eevee_samples(1)
+            scene.render.film_transparent = True
+            scene.render.use_freestyle = False
+            camera.data.dof.use_dof = False
+            render_still(overlay_path)
+            composite_label_overlay(path, overlay_path)
+        finally:
+            for obj, hide_render in original_visibility.items():
+                obj.hide_render = hide_render
+            scene.render.engine = original_engine
+            scene.render.film_transparent = original_film_transparent
+            scene.render.use_freestyle = original_freestyle
+            camera.data.dof.use_dof = original_dof
+            configure_eevee_samples(original_samples)
+
+
+def cycles_label_overlay_required(command: dict[str, Any]) -> bool:
+    camera = camera_object()
+    return (
+        command["engine"] == "cycles"
+        and bool(MARK_OBJECTS)
+        and camera.data.type == "PERSP"
+        and camera.data.dof.use_dof
+    )
+
+
+@contextmanager
 def temporary_screen_edge_compositor(
     path: Path,
     settings: dict[str, Any],
@@ -2922,7 +3038,7 @@ def display_referred_background() -> tuple[float, float, float] | None:
 
 def composite_over_background(path: Path, background_srgb: tuple[float, float, float]) -> None:
     try:
-        import numpy as np  # type: ignore[import-not-found]
+        import numpy as np
     except ImportError as error:  # pragma: no cover - numpy ships with Blender
         raise RuntimeError(
             "--background-srgb compositing needs numpy, which is bundled with Blender but "
@@ -3006,13 +3122,24 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         backdrop = display_referred_background()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = True
-        if style == "screen_edges":
-            render_screen_edges(output, shaded_edges)
-        else:
+
+        def render_color() -> None:
+            if style == "screen_edges":
+                render_screen_edges(output, shaded_edges)
+                return
             render_still(output)
+
+        composite_cycles_labels = cycles_label_overlay_required(command)
+        if composite_cycles_labels:
+            with hidden_component_labels():
+                render_color()
+        else:
+            render_color()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
+        if composite_cycles_labels:
+            render_cycles_label_overlay(output)
         luminance = luminance_summary(output)
         foreground = foreground_coverage()
         evaluator = None

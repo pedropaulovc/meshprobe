@@ -5607,21 +5607,36 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "depth_of_field",
+    ("render_engine", "depth_of_field"),
     [
-        pytest.param(DepthOfField(), id="dof-disabled"),
+        pytest.param(RenderEngine.EEVEE, DepthOfField(), id="eevee-dof-disabled"),
         pytest.param(
+            RenderEngine.EEVEE,
             DepthOfField(
                 mode=DepthOfFieldMode.ENABLED,
                 aperture_fstop=1.4,
                 focus_distance_mm=6_000,
             ),
-            id="dof-enabled",
+            id="eevee-dof-enabled",
+        ),
+        pytest.param(
+            RenderEngine.CYCLES,
+            DepthOfField(
+                mode=DepthOfFieldMode.ENABLED,
+                aperture_fstop=1.4,
+                focus_distance_mm=6_000,
+            ),
+            marks=pytest.mark.skipif(
+                shutil.which("nvidia-smi") is None,
+                reason="this host has no CUDA device",
+            ),
+            id="cycles-dof-enabled",
         ),
     ],
 )
 def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
     tmp_path: Path,
+    render_engine: RenderEngine,
     depth_of_field: DepthOfField,
 ) -> None:
     source = build_hidden_label_glb(tmp_path)
@@ -5663,6 +5678,7 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
                 width=256,
                 height=256,
                 samples=1,
+                engine=render_engine,
                 style=RenderStyle.SHADED,
             )
         )
@@ -5672,7 +5688,7 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
             mode="labeled",
             color="#ff00ff",
         )
-        controller.render_image(
+        rendered = controller.render_image(
             RenderImageCommand(
                 request_id="visible-label",
                 op="render.image",
@@ -5680,9 +5696,12 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
                 width=256,
                 height=256,
                 samples=1,
+                engine=render_engine,
                 style=RenderStyle.SHADED,
             )
         )
+
+    assert rendered.engine is render_engine
 
     def magenta_pixels(path: Path) -> int:
         image = Image.open(path).convert("RGB")
@@ -5694,7 +5713,7 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
     # The wall completely hides the highlighted target (the positive control), while the
     # identically colored screen-space label remains visible in the second render.
     assert magenta_pixels(highlighted_path) == 0
-    assert magenta_pixels(labeled_path) > 10
+    assert magenta_pixels(labeled_path) > 100
 
 
 def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:
