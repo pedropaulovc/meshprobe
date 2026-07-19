@@ -8,7 +8,7 @@ import re
 import shutil
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.models import (
-    UNIT_SUSPICION_WARNING_CODES,
     Camera,
     CameraOrbitAngles,
     DisplayMode,
@@ -497,12 +496,9 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             graphics = getattr(service, "graphics", None)
             graphics_warnings = graphics.warnings if graphics is not None else ()
-            unit_warnings = tuple(
-                warning.message
-                for warning in manifest.warnings
-                if warning.code in UNIT_SUSPICION_WARNING_CODES
-            )
-            warnings = unit_warnings + graphics_warnings
+            warnings = tuple(
+                f"{warning.code}: {warning.message}" for warning in manifest.warnings
+            ) + graphics_warnings
             self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 
@@ -571,6 +567,12 @@ class SessionManager:
                 if isinstance(command, ComponentFindCommand) and isinstance(response.result, list)
                 else None
             )
+            components = self._component_references(files, command)
+            if isinstance(command, ComponentFindCommand) and isinstance(response.result, list):
+                components = self._component_references_for_ids(
+                    files,
+                    [item["id"] for item in response.result if isinstance(item, dict)],
+                )
             warnings = (*warnings, *self._render_warnings(command.op, response.result))
             return self._receipt(
                 files,
@@ -579,7 +581,7 @@ class SessionManager:
                 result_path,
                 artifacts,
                 warnings=warnings,
-                components=self._component_references(files, command),
+                components=components,
                 match_count=match_count,
             )
 
@@ -801,6 +803,12 @@ class SessionManager:
         visit(command.model_dump(mode="json"))
         if not component_ids:
             return ()
+        return SessionManager._component_references_for_ids(files, component_ids)
+
+    @staticmethod
+    def _component_references_for_ids(
+        files: SessionFiles, component_ids: Iterable[str]
+    ) -> tuple[ResolvedComponentReference, ...]:
         payload = yaml.safe_load(files.components.read_text(encoding="utf-8"))
         by_id = {component["id"]: component for component in payload["components"]}
         return tuple(
