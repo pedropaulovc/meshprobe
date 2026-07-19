@@ -1371,7 +1371,15 @@ def view_rotate(
 @app.command("illumination-set")
 def illumination_set(
     ctx: typer.Context,
-    preset: Annotated[str, typer.Argument(help="A named preset, or 'custom'.")],
+    preset: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Preset: neutral_studio, high_key, raking_left, raking_right, backlit, "
+                "flat_diagnostic, or custom."
+            )
+        ),
+    ],
     illumination_json: Annotated[
         Path | None,
         typer.Option("--illumination-json", exists=True, dir_okay=False, readable=True),
@@ -1510,13 +1518,26 @@ def display_components(
 def mark_components(
     ctx: typer.Context,
     components: Annotated[list[str], typer.Argument()],
-    mode: Annotated[MarkMode, typer.Option("--mode")],
+    mode: Annotated[
+        MarkMode,
+        typer.Option(
+            "--mode",
+            help=(
+                "unmarked restores source materials; selected applies cyan; highlighted "
+                "applies deep pink; labeled applies gold and adds the component name."
+            ),
+        ),
+    ],
     color: Annotated[
         str | None,
         typer.Option("--color", help="sRGB highlight color in #RRGGBB form."),
     ] = None,
 ) -> None:
-    """Mark components using refs, stable IDs, exact names, exact paths, or globs."""
+    """Mark one or more components using refs, IDs, names, paths, or globs.
+
+    `--color` overrides the mode's default color for selected, highlighted, and labeled;
+    labeled still adds a text annotation. Pass `--mode unmarked` to restore source materials.
+    """
 
     try:
         command = ComponentMarkCommand(
@@ -1642,9 +1663,16 @@ def render_sheet(
 ) -> None:
     """Render a focused 3x3 sheet with automatic occlusion analysis.
 
-    Each panel result carries a structured `caption` and numbered `callouts` (with marker
-    positions), and the sheet carries the full occlusion-removal trace. See
-    `meshprobe schema --kind results` for the full contact-sheet result shape.
+    The first row shows the full assembly, the highlighted focus in context, then the same
+    focused view after automatically removing blockers. The other six panels isolate the
+    focus from +X, -X, +Y, -Y, +Z, and -Z. Deep pink marks the focus, not the occluders.
+
+    Multiple component arguments or a glob form one combined focus. For example,
+    `meshprobe render-sheet '**/*bearing*' --output bearings.png` analyzes every matching
+    bearing together. Each panel result carries its full `caption`, numbered `callouts`,
+    camera, and render metadata; the sheet result carries the occlusion-removal trace. Use
+    `meshprobe --raw render-sheet ...` to print that result directly, or
+    `meshprobe schema render-sheet --kind results` for its schema.
     """
 
     options = _options(ctx)
