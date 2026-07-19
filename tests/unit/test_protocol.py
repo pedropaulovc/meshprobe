@@ -6,18 +6,22 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from meshprobe.models import CoordinateFrame
+from meshprobe.models import CoordinateFrame, DisplayMode, IsolationOperation
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     COMMAND_MODELS,
     CommandEffect,
+    ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentOcclusionCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
+    command_payload,
     command_result_json_schema,
     parse_command_json,
 )
@@ -40,6 +44,84 @@ def test_find_command_round_trip() -> None:
 def test_unknown_operation_fails() -> None:
     with pytest.raises(ValidationError):
         parse_command_json('{"request_id":"req-1","op":"geometry.delete"}')
+
+
+def test_display_isolation_operation_requires_isolation_mode() -> None:
+    command = ComponentDisplayCommand(
+        request_id="display",
+        op="component.display",
+        component_ids=("cmp-a",),
+        mode=DisplayMode.ISOLATED,
+        isolation_operation=IsolationOperation.ADD,
+    )
+
+    assert command.isolation_operation is IsolationOperation.ADD
+    with pytest.raises(ValidationError, match="operation requires mode=isolated"):
+        ComponentDisplayCommand(
+            request_id="display",
+            op="component.display",
+            component_ids=("cmp-a",),
+            mode=DisplayMode.SHOWN,
+            isolation_operation=IsolationOperation.ADD,
+        )
+
+
+def test_display_payload_omits_default_isolation_operation() -> None:
+    command = ComponentDisplayCommand(
+        request_id="display",
+        op="component.display",
+        component_ids=("cmp-a",),
+        mode=DisplayMode.ISOLATED,
+    )
+
+    assert "isolation_operation" not in command_payload(command)
+
+
+def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+    )
+
+    assert "comparison" not in command_payload(command)
+    compared = command.model_copy(
+        update={
+            "comparison": RenderComparisonRequest(
+                reference_image_path="historical.png",
+                mode="side_by_side",
+                output_path="comparison.png",
+            )
+        }
+    )
+    assert command_payload(compared)["comparison"] == {
+        "reference_image_path": "historical.png",
+        "mode": "side_by_side",
+        "output_path": "comparison.png",
+    }
+
+
+def test_contact_sheet_payload_omits_absent_orbit_sweep_for_older_daemons() -> None:
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path="evidence.png",
+        focus_component_ids=("cmp-a",),
+    )
+
+    assert "orbit_sweep" not in command_payload(command)
+
+
+def test_payload_preserves_legacy_nested_none_fields() -> None:
+    command = ViewFrameCommand(
+        request_id="frame",
+        op="view.frame",
+        focus_component_ids=("cmp-a",),
+    )
+
+    depth_of_field = command_payload(command)["projection"]["depth_of_field"]
+    assert depth_of_field["focus_distance_mm"] is None
+    assert depth_of_field["focus"] is None
 
 
 def test_schema_contains_all_public_operations() -> None:
@@ -348,6 +430,74 @@ def test_custom_contact_sheet_requires_nine_declared_panels() -> None:
                 "focus_component_ids": ["cmp_target"],
                 "output_path": "sheet.png",
                 "panels": [panel],
+            }
+        )
+
+
+def test_orbit_sweep_accepts_six_panels_and_validates_focus_target() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "sweep",
+            "op": "render.contact_sheet",
+            "recipe": "orbit_sweep",
+            "output_path": "sweep.png",
+            "orbit_sweep": {
+                "azimuth_degrees": [-5, -20, -35],
+                "elevation_degrees": [-10, -25],
+            },
+        }
+    )
+
+    assert isinstance(command, RenderContactSheetCommand)
+    assert command.orbit_sweep is not None
+    combinations = len(command.orbit_sweep.azimuth_degrees) * len(
+        command.orbit_sweep.elevation_degrees
+    )
+    assert combinations == 6
+    with pytest.raises(ValidationError, match="focus-targeted"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "focus-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "orbit_sweep",
+                "output_path": "sweep.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
+                    "target": "focus",
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "empty-roll-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "orbit_sweep",
+                "output_path": "sweep.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
+                    "roll_degrees": [],
+                },
+            }
+        )
+
+
+def test_focused_contact_sheet_rejects_orbit_sweep() -> None:
+    with pytest.raises(ValidationError, match="focused_3x3 does not accept orbit_sweep"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "focused-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "focused_3x3",
+                "focus_component_ids": ["cmp_target"],
+                "output_path": "sheet.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
+                },
             }
         )
 

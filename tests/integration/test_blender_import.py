@@ -3730,6 +3730,176 @@ def test_worker_orbit_without_projection_keeps_session_current_projection(
     assert 0 < continued_camera.projection.near_clip_mm < continued_camera.projection.far_clip_mm
 
 
+def test_worker_reused_auto_perspective_preserves_intrinsics_across_aspect_flip(
+    tmp_path: Path,
+) -> None:
+    """A later AUTO aspect must derive from the original physical sensor pair."""
+
+    source = build_glb(tmp_path)
+    baseline = PerspectiveProjection(
+        sensor_width_mm=36,
+        sensor_height_mm=24,
+        sensor_fit=SensorFit.AUTO,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        controller.execute(
+            ViewOrbitCommand(
+                request_id="establish",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+                projection=baseline,
+            )
+        )
+        landscape = controller.execute(
+            ViewOrbitCommand(
+                request_id="landscape",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=45,
+                elevation_degrees=15,
+                distance_mm=2_000,
+                aspect_ratio=2,
+            )
+        )
+        portrait = controller.execute(
+            ViewOrbitCommand(
+                request_id="portrait",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=90,
+                elevation_degrees=30,
+                distance_mm=2_000,
+                aspect_ratio=0.5,
+            )
+        )
+
+    assert isinstance(landscape, dict)
+    landscape_projection = Camera.model_validate(landscape["camera"]).projection
+    assert isinstance(landscape_projection, PerspectiveProjection)
+    assert landscape_projection.sensor_width_mm == pytest.approx(36)
+    assert landscape_projection.sensor_height_mm == pytest.approx(18)
+
+    assert isinstance(portrait, dict)
+    portrait_projection = Camera.model_validate(portrait["camera"]).projection
+    assert isinstance(portrait_projection, PerspectiveProjection)
+    assert portrait_projection.sensor_width_mm == pytest.approx(12)
+    assert portrait_projection.sensor_height_mm == pytest.approx(24)
+
+
+def test_worker_rejected_view_set_does_not_replace_reused_sensor_intrinsics(
+    tmp_path: Path,
+) -> None:
+    """A rejected view.set must not poison the next bare AUTO-fit orbit."""
+
+    source = build_glb(tmp_path)
+    baseline = PerspectiveProjection(
+        sensor_width_mm=36,
+        sensor_height_mm=24,
+        sensor_fit=SensorFit.AUTO,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        established = controller.execute(
+            ViewOrbitCommand(
+                request_id="establish",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+                projection=baseline,
+            )
+        )
+        assert isinstance(established, dict)
+        rejected_camera = deepcopy(established["camera"])
+        rejected_camera["projection"]["sensor_width_mm"] = 10
+        rejected_camera["projection"]["sensor_height_mm"] = 12
+        rejected_camera["pose"]["frame"] = "invalid"
+        with pytest.raises(BlenderWorkerError, match="camera pose frame must be source or world"):
+            controller.request("view.set", camera=rejected_camera)
+        portrait = controller.execute(
+            ViewOrbitCommand(
+                request_id="portrait",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=90,
+                elevation_degrees=30,
+                distance_mm=2_000,
+                aspect_ratio=0.5,
+            )
+        )
+
+    assert isinstance(portrait, dict)
+    portrait_projection = Camera.model_validate(portrait["camera"]).projection
+    assert isinstance(portrait_projection, PerspectiveProjection)
+    assert portrait_projection.sensor_width_mm == pytest.approx(12)
+    assert portrait_projection.sensor_height_mm == pytest.approx(24)
+
+
+def test_worker_rejected_orbit_does_not_replace_reused_sensor_intrinsics(
+    tmp_path: Path,
+) -> None:
+    """A rejected explicit view.orbit must not poison a later bare AUTO-fit orbit."""
+
+    source = build_glb(tmp_path)
+    baseline = PerspectiveProjection(
+        sensor_width_mm=36,
+        sensor_height_mm=24,
+        sensor_fit=SensorFit.AUTO,
+    )
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        controller.open_scene(source)
+        established = controller.execute(
+            ViewOrbitCommand(
+                request_id="establish",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=0,
+                elevation_degrees=0,
+                distance_mm=2_000,
+                projection=baseline,
+            )
+        )
+        assert isinstance(established, dict)
+        rejected_projection = deepcopy(established["camera"]["projection"])
+        rejected_projection["sensor_width_mm"] = 10
+        rejected_projection["sensor_height_mm"] = 12
+        rejected_projection["depth_of_field"] = {
+            "mode": "enabled",
+            "focus": {"component_id": "missing"},
+        }
+        with pytest.raises(BlenderWorkerError, match="unknown depth-of-field component id"):
+            controller.request(
+                "view.orbit",
+                target_mm=[0, 0, 0],
+                azimuth_degrees=45,
+                elevation_degrees=15,
+                distance_mm=2_000,
+                projection=rejected_projection,
+            )
+        portrait = controller.execute(
+            ViewOrbitCommand(
+                request_id="portrait",
+                op="view.orbit",
+                target_mm=(0, 0, 0),
+                azimuth_degrees=90,
+                elevation_degrees=30,
+                distance_mm=2_000,
+                aspect_ratio=0.5,
+            )
+        )
+
+    assert isinstance(portrait, dict)
+    portrait_projection = Camera.model_validate(portrait["camera"]).projection
+    assert isinstance(portrait_projection, PerspectiveProjection)
+    assert portrait_projection.sensor_width_mm == pytest.approx(12)
+    assert portrait_projection.sensor_height_mm == pytest.approx(24)
+
+
 def test_worker_first_orbit_of_a_session_without_projection_defaults_to_perspective(
     tmp_path: Path,
 ) -> None:

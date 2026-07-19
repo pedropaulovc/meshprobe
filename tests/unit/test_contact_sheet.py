@@ -10,6 +10,7 @@ from meshprobe.contact_sheet import (
     _caption_line_caps,
     _prepare_caption_lines,
     compose_contact_sheet,
+    compose_side_by_side_comparison,
 )
 from meshprobe.models import ContactSheetCallout
 from meshprobe.protocol import RenderContactSheetCommand
@@ -48,6 +49,57 @@ def test_compose_contact_sheet_builds_captioned_grid(tmp_path: Path) -> None:
 def test_compose_contact_sheet_requires_nine_panels(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="exactly nine"):
         compose_contact_sheet((), tmp_path / "sheet.png", 80, 60)
+
+
+def test_compose_contact_sheet_accepts_a_six_panel_orbit_sweep(tmp_path: Path) -> None:
+    panels = []
+    for index in range(6):
+        path = tmp_path / f"sweep-{index}.png"
+        Image.new("RGB", (80, 60), "black").save(path)
+        panels.append((path, f"Sweep {index}", ()))
+
+    output = tmp_path / "sweep.png"
+    compose_contact_sheet(tuple(panels), output, 80, 60)
+
+    assert Image.open(output).size == (240, 216)
+
+
+def test_side_by_side_comparison_preserves_aspect_ratios_and_reference_hash(
+    tmp_path: Path,
+) -> None:
+    render = tmp_path / "render.png"
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (200, 100), "red").save(render)
+    Image.new("RGB", (50, 200), "blue").save(reference)
+
+    artifact, reference_manifest, render_placement, reference_placement = (
+        compose_side_by_side_comparison(render, reference, tmp_path / "comparison.png")
+    )
+
+    assert Image.open(artifact.path).size == (800, 200)
+    assert reference_manifest.dimensions.width == 50
+    assert render_placement.output_dimensions.width == 400
+    assert reference_placement.output_dimensions.width == 50
+    assert reference_placement.padding_left == 175
+    assert reference_placement.padding_right == 175
+
+
+def test_side_by_side_comparison_bounds_opposite_extreme_aspect_ratios(tmp_path: Path) -> None:
+    render = tmp_path / "render.png"
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (64, 16_384), "red").save(render)
+    Image.new("RGB", (16_384, 64), "blue").save(reference)
+
+    artifact, _reference_manifest, render_placement, reference_placement = (
+        compose_side_by_side_comparison(render, reference, tmp_path / "comparison.png")
+    )
+
+    assert Image.open(artifact.path).size == (5_152, 2_576)
+    assert render_placement.output_dimensions.model_dump() == {"width": 10, "height": 2_576}
+    assert render_placement.padding_top == render_placement.padding_bottom == 0
+    assert reference_placement.output_dimensions.model_dump() == {"width": 2_576, "height": 10}
+    assert reference_placement.padding_top == reference_placement.padding_bottom == 1_283
+    assert render_placement.scale == reference_placement.scale == pytest.approx(2576 / 16384)
 
 
 def test_compose_contact_sheet_expands_to_render_every_caption_line(tmp_path: Path) -> None:

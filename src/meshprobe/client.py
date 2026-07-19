@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command, SceneOpenCommand, SessionUndoCommand, command_payload
+from meshprobe.protocol import (
+    Command,
+    ComponentDisplayCommand,
+    RenderContactSheetCommand,
+    RenderImageCommand,
+    SceneOpenCommand,
+    SessionUndoCommand,
+    command_payload,
+)
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -89,6 +97,12 @@ class MeshProbeClient:
             return False
         if "unit_scale" in message and isinstance(command, SceneOpenCommand):
             return command.unit_scale != 1.0
+        if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is not None:
+            return "isolation_operation" in message
+        if isinstance(command, RenderImageCommand) and command.comparison is not None:
+            return "comparison" in message
+        if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is not None:
+            return "orbit_sweep" in message
         return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set
 
     def resolve_component(self, session: str, value: str) -> str:

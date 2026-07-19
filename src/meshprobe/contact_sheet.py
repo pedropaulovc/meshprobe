@@ -2,16 +2,122 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from meshprobe.models import ContactSheetCallout, ImageArtifact
+from meshprobe.models import (
+    ContactSheetCallout,
+    ImageArtifact,
+    ImagePlacement,
+    RasterDimensions,
+    ReferenceImage,
+)
 from meshprobe.sources import sha256_file
+
+_MAX_COMPARISON_CELL_DIMENSION = 2576
 
 
 def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
+
+
+def compose_side_by_side_comparison(
+    render_path: Path,
+    reference_path: Path,
+    output_path: Path,
+) -> tuple[ImageArtifact, ReferenceImage, ImagePlacement, ImagePlacement]:
+    """Compose two complete images in bounded cells without cropping or distortion."""
+
+    reference_sha256 = sha256_file(reference_path)
+    with Image.open(render_path) as render_source, Image.open(reference_path) as reference_source:
+        reference_media_type = Image.MIME.get(
+            reference_source.format or "", "application/octet-stream"
+        )
+        render = render_source.convert("RGB")
+        reference_image = reference_source.convert("RGB")
+        render_dimensions = RasterDimensions(width=render.width, height=render.height)
+        reference_dimensions = RasterDimensions(
+            width=reference_image.width, height=reference_image.height
+        )
+        # Comparison images are independently supplied, unlike two contact-sheet panels
+        # that share one render size. A very tall render alongside a very wide reference
+        # used to expand the wide image to the tall image's height and allocate a canvas
+        # measuring millions of pixels across. Keep the familiar shared-height layout
+        # where it fits, but bound every cell to the normal render long-edge budget.
+        target_height = min(
+            max(render.height, reference_image.height), _MAX_COMPARISON_CELL_DIMENSION
+        )
+
+        def target_width(source: Image.Image) -> int:
+            return max(1, round(source.width * target_height / source.height))
+
+        cell_width = min(
+            max(target_width(render), target_width(reference_image)),
+            _MAX_COMPARISON_CELL_DIMENSION,
+        )
+
+        def resize(source: Image.Image) -> tuple[Image.Image, float]:
+            scale = min(target_height / source.height, cell_width / source.width)
+            width = max(1, round(source.width * scale))
+            height = max(1, round(source.height * scale))
+            return source.resize((width, height), Image.Resampling.LANCZOS), scale
+
+        fitted_render, render_scale = resize(render)
+        fitted_reference, reference_scale = resize(reference_image)
+
+        def placement(
+            source: Image.Image, dimensions: RasterDimensions, scale: float
+        ) -> ImagePlacement:
+            left = (cell_width - source.width) // 2
+            right = cell_width - source.width - left
+            top = (target_height - source.height) // 2
+            bottom = target_height - source.height - top
+            return ImagePlacement(
+                source_dimensions=dimensions,
+                scale=scale,
+                output_dimensions=RasterDimensions(width=source.width, height=source.height),
+                padding_left=left,
+                padding_top=top,
+                padding_right=right,
+                padding_bottom=bottom,
+            )
+
+        render_placement = placement(fitted_render, render_dimensions, render_scale)
+        reference_placement = placement(fitted_reference, reference_dimensions, reference_scale)
+        comparison = Image.new("RGB", (cell_width * 2, target_height), "#17191d")
+        comparison.paste(
+            fitted_render,
+            (render_placement.padding_left, render_placement.padding_top),
+        )
+        comparison.paste(
+            fitted_reference,
+            (
+                cell_width + reference_placement.padding_left,
+                reference_placement.padding_top,
+            ),
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        staging = contact_sheet_staging_path(output_path)
+        comparison.save(staging, format="PNG", optimize=True)
+        staging.replace(output_path)
+
+    if sha256_file(reference_path) != reference_sha256:
+        raise ValueError("reference image changed during comparison composition")
+    artifact = ImageArtifact(
+        path=str(output_path),
+        media_type="image/png",
+        sha256=sha256_file(output_path),
+        bytes=output_path.stat().st_size,
+    )
+    reference_manifest = ReferenceImage(
+        path=str(reference_path),
+        media_type=reference_media_type,
+        sha256=reference_sha256,
+        dimensions=reference_dimensions,
+    )
+    return artifact, reference_manifest, render_placement, reference_placement
 
 
 _DEFAULT_PANEL_HEIGHT_PX = 1200  # RenderContactSheetCommand.panel_height's default
@@ -139,8 +245,12 @@ def compose_contact_sheet(
     panel_width: int,
     panel_height: int,
 ) -> ImageArtifact:
-    if len(panels) != 9:
-        raise ValueError("focused_3x3 requires exactly nine panels")
+    if not 1 <= len(panels) <= 9:
+        raise ValueError(
+            "focused_3x3 requires exactly nine panels; generic sheets require one through nine"
+        )
+    columns = min(3, len(panels))
+    rows = math.ceil(len(panels) / columns)
     minimum_caption_height = max(48, panel_height // 10)
     font_size = max(14, min(minimum_caption_height // 4, panel_width // 12))
     font = ImageFont.load_default(size=font_size)
@@ -172,19 +282,23 @@ def compose_contact_sheet(
     row_caption_heights = tuple(
         max(
             minimum_caption_height,
-            max(len(panel_lines[index]) for index in range(row * 3, row * 3 + 3)) * line_height
+            max(
+                len(panel_lines[index])
+                for index in range(row * columns, min((row + 1) * columns, len(panels)))
+            )
+            * line_height
             + 12,
         )
-        for row in range(3)
+        for row in range(rows)
     )
     sheet = Image.new(
         "RGB",
-        (panel_width * 3, panel_height * 3 + sum(row_caption_heights)),
+        (panel_width * columns, panel_height * rows + sum(row_caption_heights)),
         "#17191d",
     )
     for panel_index, (path, _caption, callouts) in enumerate(panels):
-        column = panel_index % 3
-        row = panel_index // 3
+        column = panel_index % columns
+        row = panel_index // columns
         left = column * panel_width
         top = row * panel_height + sum(row_caption_heights[:row])
         with Image.open(path) as source:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 
 from pydantic import JsonValue
 
@@ -105,19 +106,49 @@ def _semantic_result(operation: Operation, result: JsonValue) -> JsonValue:
     # two as equivalent so legacy no-warning traces still replay clean. A
     # render.image result IS a render manifest; a render.contact_sheet result
     # nests one per panel under `panels[*].render`.
-    _backfill_missing_warnings(normalized)
+    _normalize_optional_render_fields(normalized)
     panels = normalized.get("panels")
     if isinstance(panels, list):
         for panel in panels:
             if isinstance(panel, dict):
                 render = panel.get("render")
                 if isinstance(render, dict):
-                    _backfill_missing_warnings(render)
+                    _normalize_optional_render_fields(render)
     return normalized
 
 
-def _backfill_missing_warnings(manifest: dict[str, JsonValue]) -> None:
+def _normalize_optional_render_fields(manifest: dict[str, JsonValue]) -> None:
     manifest.setdefault("warnings", [])
+    comparison = manifest.get("comparison")
+    if comparison is None:
+        manifest.pop("comparison", None)
+        return
+    if isinstance(comparison, dict):
+        comparison.pop("artifact", None)
+        reference = comparison.get("reference")
+        if isinstance(reference, dict) and _is_generated_artifact_reference(reference.get("path")):
+            reference.pop("path", None)
+            reference.pop("sha256", None)
+
+
+def _is_generated_artifact_reference(path: JsonValue | None) -> bool:
+    if not isinstance(path, str):
+        return False
+    candidates = (PurePosixPath(path), PureWindowsPath(path))
+    public_root = PurePosixPath("/workspace/artifacts")
+    for candidate in candidates:
+        if not candidate.is_absolute():
+            continue
+        if isinstance(candidate, PurePosixPath) and candidate.is_relative_to(public_root):
+            return True
+        # Trace events deliberately retain the renderer's private result. An
+        # artifact reused as a comparison reference therefore has the broker's
+        # host artifact root here, rather than its public /workspace path. The
+        # root changes for a fresh replay, so neither its location nor digest
+        # is semantic evidence.
+        if "artifacts" in candidate.parts:
+            return True
+    return False
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:

@@ -51,6 +51,7 @@ from meshprobe.protocol import (
     ComponentMarkCommand,
     ComponentOcclusionCommand,
     IlluminationSetCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -1210,6 +1211,74 @@ def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:
     command = RenderImageCommand(request_id="render", op="render.image", output_path=str(source))
     with pytest.raises(BlenderWorkerError, match="must not overwrite"):
         controller.render_image(command)
+
+
+@pytest.mark.parametrize("reference_is_staging", (False, True))
+def test_render_comparison_rejects_overlapping_render_reference_and_staging_paths(
+    tmp_path: Path, reference_is_staging: bool
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    comparison_output = tmp_path / "comparison.png"
+    reference = tmp_path / "historical.png"
+    if reference_is_staging:
+        reference = comparison_output.with_name(f".{comparison_output.name}.part")
+    reference.write_bytes(b"reference")
+    output = tmp_path / "render.png"
+    if not reference_is_staging:
+        output = reference
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(output),
+        comparison=RenderComparisonRequest(
+            reference_image_path=str(reference),
+            mode="side_by_side",
+            output_path=str(comparison_output),
+        ),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="paths must differ"):
+        controller.render_image(command)
+
+
+def test_render_comparison_rejects_undecodable_reference_before_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    reference = tmp_path / "not-an-image.png"
+    reference.write_text("not an image", encoding="utf-8")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    requested_operations: list[str] = []
+
+    def request(operation: str, **_arguments: object) -> dict[str, object]:
+        requested_operations.append(operation)
+        return {}
+
+    monkeypatch.setattr(
+        controller,
+        "request",
+        request,
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(tmp_path / "render.png"),
+        comparison=RenderComparisonRequest(
+            reference_image_path=str(reference),
+            mode="side_by_side",
+            output_path=str(tmp_path / "comparison.png"),
+        ),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="reference image is not decodable"):
+        controller.render_image(command)
+
+    assert requested_operations == []
 
 
 def test_render_rejects_evaluator_output_that_overwrites_source_dependency(

@@ -39,12 +39,16 @@ from meshprobe.models import (
     GraphicsPolicy,
     IlluminationPreset,
     ImageArtifact,
+    ImagePlacement,
     LuminanceSummary,
     MarkMode,
     OrthographicProjection,
     PerspectiveProjection,
     Pose,
     PresetIllumination,
+    RasterDimensions,
+    ReferenceImage,
+    RenderComparisonManifest,
     RenderEngine,
     RenderForeground,
     RenderManifest,
@@ -1120,6 +1124,74 @@ def evidence_render(
             sample_width=64,
             sample_height=64,
         ),
+    )
+
+
+def test_comparison_artifacts_are_valid_evidence_and_counted_in_output_bytes(
+    tmp_path: Path,
+) -> None:
+    model = publish_model(build_model(GeneratorFamily.HIDDEN_CLIP, 0), tmp_path / "model")
+    render = evidence_render(
+        tmp_path,
+        name="compared",
+        source_sha256=model.sha256,
+        component_ids=model.component_ids,
+        projection=PerspectiveProjection(focal_length_mm=85),
+        illumination=IlluminationPreset.NEUTRAL_STUDIO,
+        visible_roles={"idler"},
+    )
+    comparison_path = tmp_path / "comparison.png"
+    Image.new("RGB", (64, 64), "white").save(comparison_path)
+    dimensions = RasterDimensions(width=64, height=64)
+    placement = ImagePlacement(
+        source_dimensions=dimensions,
+        scale=1,
+        output_dimensions=dimensions,
+        padding_left=0,
+        padding_top=0,
+        padding_right=0,
+        padding_bottom=0,
+    )
+    compared = render.model_copy(
+        update={
+            "comparison": RenderComparisonManifest(
+                mode="side_by_side",
+                artifact=image_artifact(comparison_path),
+                reference=ReferenceImage(
+                    path=render.color.path,
+                    media_type="image/png",
+                    sha256=render.color.sha256,
+                    dimensions=dimensions,
+                ),
+                render_placement=placement,
+                reference_placement=placement,
+            )
+        }
+    )
+    inputs = discovery_inputs(tmp_path / "episode")
+    submitted_inputs = replace(
+        inputs,
+        submission=inputs.submission.model_copy(
+            update={"evidence_manifest_paths": (str(comparison_path),)}
+        ),
+        artifact_root=tmp_path,
+        renders=(compared,),
+    )
+
+    submitted, sheets, error = oracles._submitted_evidence(submitted_inputs)
+    metrics = oracles._metrics(submitted_inputs)
+
+    assert error is None
+    assert submitted == (compared,)
+    assert sheets == ()
+    assert compared.evaluator is not None
+    assert compared.comparison is not None
+    assert metrics.output_bytes == (
+        compared.color.bytes
+        + compared.evaluator.multilayer.bytes
+        + compared.evaluator.component_ids.bytes
+        + compared.evaluator.highlighted.bytes
+        + compared.comparison.artifact.bytes
     )
 
 

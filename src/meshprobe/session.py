@@ -13,6 +13,7 @@ from meshprobe.models import (
     ComponentVisualState,
     DisplayMode,
     Illumination,
+    IsolationOperation,
     MarkMode,
     SceneManifest,
     SessionSnapshot,
@@ -75,9 +76,23 @@ class InspectionSession:
         self._illumination = illumination
         return self.snapshot()
 
-    def display(self, component_ids: Iterable[str], mode: DisplayMode) -> SessionSnapshot:
-        selected = self._validated_ids(component_ids)
+    def display(
+        self,
+        component_ids: Iterable[str],
+        mode: DisplayMode,
+        operation: IsolationOperation | None = None,
+    ) -> SessionSnapshot:
+        selected = set(self._validated_ids(component_ids))
         if mode is DisplayMode.ISOLATED:
+            current = {
+                component_id
+                for component_id, state in self._components.items()
+                if state.display is DisplayMode.ISOLATED
+            }
+            if operation is IsolationOperation.ADD:
+                selected |= current
+            if operation is IsolationOperation.REMOVE:
+                selected = current - selected
             self._components = {
                 component_id: state.model_copy(
                     update={

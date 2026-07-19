@@ -107,6 +107,11 @@ DEFAULT_ASPECT_RATIO: float = 1.0
 CURRENT_CAMERA: dict[str, Any] | None = None
 CURRENT_CAMERA_DIAGNOSTICS: dict[str, Any] | None = None
 CURRENT_CAMERA_OPERATION: dict[str, Any] | None = None
+# ``view.orbit --aspect-ratio`` derives one sensor dimension for the requested
+# render shape. Keep the physical pair that preceded that derivation separately:
+# the public camera state intentionally records the derived shape, but a later
+# AUTO-fit orbit must not use that derived edge as a new physical intrinsic.
+CURRENT_PERSPECTIVE_SENSOR_INTRINSICS: tuple[float, float] | None = None
 IMPORTED_ILLUMINATION: dict[str, Any] | None = None
 CURRENT_ILLUMINATION: dict[str, Any] | None = None
 MARK_OBJECTS: dict[str, bpy.types.Object] = {}
@@ -658,6 +663,19 @@ def camera_object() -> bpy.types.Object:
     return camera
 
 
+def remember_perspective_sensor_intrinsics(projection: dict[str, Any]) -> None:
+    """Record the physical sensor dimensions before aspect-ratio derivation."""
+    global CURRENT_PERSPECTIVE_SENSOR_INTRINSICS
+    if projection.get("mode") != "perspective":
+        CURRENT_PERSPECTIVE_SENSOR_INTRINSICS = None
+        return
+    projection = normalize_camera_projection(projection)
+    CURRENT_PERSPECTIVE_SENSOR_INTRINSICS = (
+        projection["sensor_width_mm"],
+        projection.get("sensor_height_mm", 24.0),
+    )
+
+
 def apply_camera(
     camera: dict[str, Any],
     focus_component_ids: list[str] | tuple[str, ...] = (),
@@ -796,6 +814,27 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         if requested_projection is not None
         else deepcopy(CURRENT_CAMERA["projection"])
     )
+    if (
+        requested_projection is None
+        and "aspect_ratio" in command
+        and projection["mode"] == "perspective"
+    ):
+        if CURRENT_PERSPECTIVE_SENSOR_INTRINSICS is None:
+            remember_perspective_sensor_intrinsics(projection)
+        assert CURRENT_PERSPECTIVE_SENSOR_INTRINSICS is not None
+        projection["sensor_width_mm"], projection["sensor_height_mm"] = (
+            CURRENT_PERSPECTIVE_SENSOR_INTRINSICS
+        )
+        sensor_fit = projection["sensor_fit"]
+        effective_fit = (
+            sensor_fit
+            if sensor_fit != "auto"
+            else ("horizontal" if aspect_ratio >= 1 else "vertical")
+        )
+        if effective_fit == "horizontal":
+            projection["sensor_height_mm"] = projection["sensor_width_mm"] / aspect_ratio
+        else:
+            projection["sensor_width_mm"] = projection["sensor_height_mm"] * aspect_ratio
     camera = {
         "pose": {
             "position_mm": [value * MILLIMETERS_PER_METER for value in position],
@@ -811,6 +850,12 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         aspect_ratio,
         command["target_mm"],
     )
+    # A supplied projection establishes the physical sensor pair that later bare
+    # AUTO-fit orbits reuse.  Publish it only after ``apply_camera`` accepts the
+    # complete camera request; otherwise a rejected orbit would poison the next
+    # aspect-ratio derivation with intrinsics that never became session state.
+    if requested_projection is not None:
+        remember_perspective_sensor_intrinsics(projection)
     CURRENT_CAMERA_OPERATION = None
     return session_snapshot()
 
@@ -981,6 +1026,8 @@ def rotate_camera(command: dict[str, Any]) -> dict[str, Any]:
         if requested_projection is None
         else normalize_camera_projection(requested_projection)
     )
+    if requested_projection is not None:
+        remember_perspective_sensor_intrinsics(projection)
     camera = {
         "pose": resulting_pose,
         "projection": projection,
@@ -1836,6 +1883,18 @@ def component_display(command: dict[str, Any]) -> dict[str, Any]:
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode: {mode}")
     if mode == "isolated":
+        operation = command.get("isolation_operation") or "replace"
+        if operation not in {"replace", "add", "remove"}:
+            raise ValueError(f"unknown isolation operation: {operation}")
+        current = {
+            component_id
+            for component_id, state in COMPONENT_STATES.items()
+            if state["display"] == "isolated"
+        }
+        if operation == "add":
+            selected |= current
+        if operation == "remove":
+            selected = current - selected
         for component_id in COMPONENT_OBJECTS:
             set_component_visibility(
                 component_id, "isolated" if component_id in selected else "hidden"
@@ -1909,12 +1968,16 @@ def reset_session(command: dict[str, Any]) -> dict[str, Any]:
             "mark": "unmarked",
             "mark_color": None,
         }
+    default_camera = framed_default_camera(
+        IMPORTED_CAMERA,
+        visible_root_bounds(require_session()["root_bounds"]),
+        aspect_ratio=aspect_ratio,
+    )
+    projection = default_camera.get("projection")
+    if isinstance(projection, dict):
+        remember_perspective_sensor_intrinsics(projection)
     apply_camera(
-        framed_default_camera(
-            IMPORTED_CAMERA,
-            visible_root_bounds(require_session()["root_bounds"]),
-            aspect_ratio=aspect_ratio,
-        ),
+        default_camera,
         aspect_ratio=aspect_ratio,
     )
     apply_illumination(deepcopy(IMPORTED_ILLUMINATION))
@@ -3677,6 +3740,7 @@ def initialize_session(
         visible_root_bounds(manifest["root_bounds"]),
         aspect_ratio=aspect_ratio,
     )
+    remember_perspective_sensor_intrinsics(CURRENT_CAMERA["projection"])
     CURRENT_CAMERA_OPERATION = None
     IMPORTED_ILLUMINATION = deepcopy(manifest["imported_illumination"])
     CURRENT_ILLUMINATION = deepcopy(IMPORTED_ILLUMINATION)
@@ -4154,7 +4218,7 @@ def scene_open(command: dict[str, Any]) -> dict[str, Any]:
 def clear_session_state() -> None:
     global MANIFEST, COMPONENT_OBJECTS, ORIGINAL_MESHES, ORIGINAL_VISIBILITY
     global COMPONENT_STATES, IMPORTED_CAMERA, CURRENT_CAMERA, CURRENT_CAMERA_DIAGNOSTICS
-    global CURRENT_CAMERA_OPERATION
+    global CURRENT_CAMERA_OPERATION, CURRENT_PERSPECTIVE_SENSOR_INTRINSICS
     global IMPORTED_ILLUMINATION, CURRENT_ILLUMINATION, MARK_OBJECTS
     MANIFEST = None
     COMPONENT_OBJECTS = {}
@@ -4165,6 +4229,7 @@ def clear_session_state() -> None:
     CURRENT_CAMERA = None
     CURRENT_CAMERA_DIAGNOSTICS = None
     CURRENT_CAMERA_OPERATION = None
+    CURRENT_PERSPECTIVE_SENSOR_INTRINSICS = None
     IMPORTED_ILLUMINATION = None
     CURRENT_ILLUMINATION = None
     MARK_OBJECTS = {}
@@ -4184,6 +4249,10 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
             command.get("focus_component_ids", ()),
             command.get("aspect_ratio", 1.0),
         )
+        # ``apply_camera`` validates the full request before publishing camera state.
+        # Keep the hidden physical sensor pair equally transactional: a rejected
+        # view.set must not affect the next bare AUTO-fit orbit.
+        remember_perspective_sensor_intrinsics(command["camera"]["projection"])
         CURRENT_CAMERA_OPERATION = None
         return session_snapshot()
     if operation == "view.orbit":

@@ -21,8 +21,10 @@ from meshprobe.models import (
     GraphicsPolicy,
     Illumination,
     IlluminationResult,
+    IsolationOperation,
     MarkMode,
     OcclusionQueryResult,
+    OrbitSweep,
     OrthonormalBasis,
     PerspectiveProjection,
     PositiveFiniteFloat,
@@ -171,6 +173,13 @@ class ComponentDisplayCommand(CommandModel):
     op: Literal["component.display"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     mode: DisplayMode
+    isolation_operation: IsolationOperation | None = None
+
+    @model_validator(mode="after")
+    def reject_isolation_operation_without_isolation(self) -> Self:
+        if self.isolation_operation is not None and self.mode is not DisplayMode.ISOLATED:
+            raise ValueError("operation requires mode=isolated")
+        return self
 
 
 class ComponentMarkCommand(CommandModel):
@@ -185,6 +194,15 @@ class ComponentMarkCommand(CommandModel):
         if self.mode is MarkMode.UNMARKED and self.color is not None:
             raise ValueError("color requires a visible mark mode")
         return self
+
+
+class RenderComparisonRequest(BaseModel):
+    """Local reference comparison requested after the ordinary CAD render."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reference_image_path: str
+    mode: Literal["side_by_side"]
+    output_path: str
 
 
 class RenderImageCommand(CommandModel):
@@ -204,15 +222,17 @@ class RenderImageCommand(CommandModel):
     ] = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
+    comparison: RenderComparisonRequest | None = None
 
 
 class RenderContactSheetCommand(CommandModel):
     effect = CommandEffect.READ_ONLY
     op: Literal["render.contact_sheet"]
     output_path: str
-    recipe: Literal["focused_3x3", "custom_3x3"] = "focused_3x3"
-    focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    recipe: Literal["focused_3x3", "custom_3x3", "orbit_sweep"] = "focused_3x3"
+    focus_component_ids: tuple[str, ...] = ()
     panels: tuple[ContactSheetPanelSpec, ...] = Field(default=(), max_length=9)
+    orbit_sweep: OrbitSweep | None = None
     panel_width: Annotated[int, Field(ge=128, le=4_096)] = 1200
     panel_height: Annotated[int, Field(ge=128, le=4_096)] = 1200
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
@@ -224,9 +244,25 @@ class RenderContactSheetCommand(CommandModel):
     @model_validator(mode="after")
     def validate_recipe(self) -> Self:
         if self.recipe == "focused_3x3":
+            if not self.focus_component_ids:
+                raise ValueError("focused_3x3 requires at least one focus component")
             if self.panels:
                 raise ValueError("focused_3x3 does not accept custom panels")
+            if self.orbit_sweep is not None:
+                raise ValueError("focused_3x3 does not accept orbit_sweep")
             return self
+        if self.recipe == "orbit_sweep":
+            if self.panels:
+                raise ValueError("orbit_sweep does not accept custom panels")
+            if self.orbit_sweep is None:
+                raise ValueError("orbit_sweep requires sweep axes")
+            if self.orbit_sweep.target == "focus" and not self.focus_component_ids:
+                raise ValueError("focus-targeted orbit_sweep requires at least one focus component")
+            return self
+        if not self.focus_component_ids:
+            raise ValueError("custom_3x3 requires at least one focus component")
+        if self.orbit_sweep is not None:
+            raise ValueError("custom_3x3 does not accept orbit_sweep")
         if len(self.panels) != 9:
             raise ValueError("custom_3x3 requires exactly nine panels")
         fixed_pose_panels = [
@@ -275,9 +311,15 @@ type Command = Annotated[
 
 
 def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
-    """Serialize a command without turning an omitted framing aspect into an explicit one."""
+    """Serialize commands while preserving omitted optional wire fields."""
     payload = command.model_dump(mode="json", exclude=exclude)
-    if isinstance(command, (SceneOpenCommand, SessionResetCommand)) and (
+    if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is None:
+        payload.pop("isolation_operation")
+    if isinstance(command, RenderImageCommand) and command.comparison is None:
+        payload.pop("comparison")
+    if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is None:
+        payload.pop("orbit_sweep")
+    if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):
         payload.pop("aspect_ratio")

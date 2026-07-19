@@ -8,7 +8,7 @@ import subprocess
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 import yaml
@@ -46,7 +46,9 @@ from meshprobe.models import (
     EdgeType,
     GraphicsPolicy,
     IlluminationPreset,
+    IsolationOperation,
     MarkMode,
+    OrbitSweep,
     OrthographicProjection,
     PerspectiveProjection,
     Projection,
@@ -64,6 +66,7 @@ from meshprobe.protocol import (
     ComponentMarkCommand,
     ComponentOcclusionCommand,
     IlluminationSetCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
     SessionResetCommand,
@@ -1219,7 +1222,7 @@ def view_orbit(
         list[str] | None,
         typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP),
     ] = None,
-    aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    aspect_ratio: Annotated[float | None, typer.Option("--aspect-ratio", min=0.01)] = None,
     render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Set an absolute orbit in right-handed, Z-up MeshProbe world coordinates.
@@ -1239,20 +1242,22 @@ def view_orbit(
     """
 
     projection = _orbit_projection(projection_json, focal_length, ortho_scale)
+    command = ViewOrbitCommand(
+        request_id=_request_id("view-orbit"),
+        op="view.orbit",
+        target_mm=target,
+        azimuth_degrees=azimuth,
+        elevation_degrees=elevation,
+        roll_degrees=roll,
+        distance_mm=distance,
+        projection=projection,
+        focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
+    )
+    if aspect_ratio is not None:
+        command = command.model_copy(update={"aspect_ratio": aspect_ratio})
     _execute_visual(
         ctx,
-        ViewOrbitCommand(
-            request_id=_request_id("view-orbit"),
-            op="view.orbit",
-            target_mm=target,
-            azimuth_degrees=azimuth,
-            elevation_degrees=elevation,
-            roll_degrees=roll,
-            distance_mm=distance,
-            projection=projection,
-            focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
-            aspect_ratio=aspect_ratio,
-        ),
+        command,
         render=render,
     )
 
@@ -1605,6 +1610,7 @@ def display_components(
     ctx: typer.Context,
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[DisplayMode, typer.Option("--mode")],
+    operation: Annotated[IsolationOperation | None, typer.Option("--operation")] = None,
     render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Change visibility using refs, stable IDs, exact names, exact paths, or globs."""
@@ -1616,6 +1622,7 @@ def display_components(
             op="component.display",
             component_ids=_component_ids(ctx, components),
             mode=mode,
+            isolation_operation=operation,
         ),
         render=render,
     )
@@ -1704,6 +1711,15 @@ def render_image(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    reference_image: Annotated[
+        Path | None, typer.Option("--reference-image", exists=True, dir_okay=False)
+    ] = None,
+    comparison: Annotated[
+        str | None, typer.Option("--comparison", help="Comparison mode; currently side-by-side.")
+    ] = None,
+    comparison_output: Annotated[
+        Path | None, typer.Option("--comparison-output", dir_okay=False)
+    ] = None,
 ) -> None:
     """Render the selected session to an image artifact.
 
@@ -1736,6 +1752,22 @@ def render_image(
     except ValueError as error:
         choices = ", ".join(item.value for item in EdgeType)
         raise typer.BadParameter(f"edge types must be selected from: {choices}") from error
+    comparison_fields = (reference_image, comparison, comparison_output)
+    if any(field is not None for field in comparison_fields) and not all(
+        field is not None for field in comparison_fields
+    ):
+        raise typer.BadParameter(
+            "--reference-image, --comparison, and --comparison-output must be supplied together"
+        )
+    if comparison not in {None, "side-by-side"}:
+        raise typer.BadParameter("--comparison must be side-by-side")
+    comparison_request = None
+    if reference_image is not None and comparison_output is not None:
+        comparison_request = RenderComparisonRequest(
+            reference_image_path=str(reference_image.expanduser().resolve()),
+            mode="side_by_side",
+            output_path=str(comparison_output.expanduser().resolve()),
+        )
     _execute(
         ctx,
         RenderImageCommand(
@@ -1754,6 +1786,7 @@ def render_image(
                 edge_types=selected_edge_types,
             ),
             graphics_policy=graphics_policy,
+            comparison=comparison_request,
         ),
     )
 
@@ -1762,11 +1795,11 @@ def render_image(
 def render_sheet(
     ctx: typer.Context,
     focus: Annotated[
-        list[str],
+        list[str] | None,
         typer.Argument(
             help="Component refs, stable IDs, exact names, exact paths, or glob patterns."
         ),
-    ],
+    ] = None,
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
     panel_width: Annotated[int, typer.Option("--panel-width", min=128)] = 1200,
     panel_height: Annotated[int, typer.Option("--panel-height", min=128)] = 1200,
@@ -1775,6 +1808,18 @@ def render_sheet(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    azimuth: Annotated[
+        str | None, typer.Option("--azimuth", help="Comma-separated absolute azimuth degrees.")
+    ] = None,
+    elevation: Annotated[
+        str | None, typer.Option("--elevation", help="Comma-separated absolute elevation degrees.")
+    ] = None,
+    roll: Annotated[
+        str, typer.Option("--roll", help="Comma-separated absolute roll degrees.")
+    ] = "0",
+    target: Annotated[
+        str, typer.Option("--target", help="Sweep target: scene or focus.")
+    ] = "scene",
 ) -> None:
     """Render a focused 3x3 sheet with automatic occlusion analysis.
 
@@ -1798,13 +1843,37 @@ def render_sheet(
         / "artifacts"
         / f"sheet-{uuid.uuid4().hex[:12]}.png"
     )
+    sweep_requested = azimuth is not None or elevation is not None
+    if sweep_requested and (azimuth is None or elevation is None):
+        raise typer.BadParameter("--azimuth and --elevation are both required for an orbit sweep")
+    if target not in {"scene", "focus"}:
+        raise typer.BadParameter("--target must be scene or focus")
+    recipe: Literal["focused_3x3", "custom_3x3", "orbit_sweep"] = (
+        "orbit_sweep" if sweep_requested else "focused_3x3"
+    )
+    sweep: OrbitSweep | None = None
+    if sweep_requested:
+        try:
+            assert azimuth is not None
+            assert elevation is not None
+
+            sweep = OrbitSweep(
+                azimuth_degrees=tuple(float(value.strip()) for value in azimuth.split(",")),
+                elevation_degrees=tuple(float(value.strip()) for value in elevation.split(",")),
+                roll_degrees=tuple(float(value.strip()) for value in roll.split(",")),
+                target=cast(Literal["scene", "focus"], target),
+            )
+        except (ValueError, ValidationError) as error:
+            raise typer.BadParameter(str(error)) from error
     _execute(
         ctx,
         RenderContactSheetCommand(
             request_id=_request_id("render-sheet"),
             op="render.contact_sheet",
             output_path=str(destination.expanduser().resolve()),
-            focus_component_ids=_component_ids(ctx, focus),
+            focus_component_ids=_component_ids(ctx, focus or []),
+            recipe=recipe,
+            orbit_sweep=sweep,
             panel_width=panel_width,
             panel_height=panel_height,
             samples=samples,

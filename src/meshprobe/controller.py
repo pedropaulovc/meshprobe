@@ -17,9 +17,15 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
+from PIL import Image
+
 from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.camera import camera_diagnostics, orbit_camera
-from meshprobe.contact_sheet import compose_contact_sheet, contact_sheet_staging_path
+from meshprobe.contact_sheet import (
+    compose_contact_sheet,
+    compose_side_by_side_comparison,
+    contact_sheet_staging_path,
+)
 from meshprobe.models import (
     Bounds,
     Camera,
@@ -43,6 +49,7 @@ from meshprobe.models import (
     PerspectiveProjection,
     PresetIllumination,
     Projection,
+    RenderComparisonManifest,
     RenderManifest,
     RenderStyle,
     SceneManifest,
@@ -244,12 +251,12 @@ class BlenderController:
             environment.setdefault("MESA_D3D12_DEFAULT_ADAPTER_NAME", "NVIDIA")
         return environment
 
-    def request(self, operation: str, **arguments: object) -> dict[str, Any]:
+    def request(self, action: str, **arguments: object) -> dict[str, Any]:
         process = self._require_process()
         if process.stdin is None:
             raise BlenderWorkerCrashed("Blender worker stdin is unavailable")
         request_id = uuid.uuid4().hex
-        command = {"request_id": request_id, "op": operation, **arguments}
+        command = {"request_id": request_id, "op": action, **arguments}
         try:
             process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
             process.stdin.flush()
@@ -730,11 +737,35 @@ class BlenderController:
         if self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         output = Path(command.output_path).expanduser().resolve()
+        comparison_output: Path | None = None
+        reference_image: Path | None = None
+        if command.comparison is not None:
+            comparison_output = Path(command.comparison.output_path).expanduser().resolve()
+            reference_image = Path(command.comparison.reference_image_path).expanduser().resolve()
+            if comparison_output.suffix.lower() != ".png":
+                raise BlenderWorkerError("comparison output_path must end in .png")
+            if not reference_image.is_file():
+                raise BlenderWorkerError(f"reference image is not a file: {reference_image}")
+            comparison_staging = contact_sheet_staging_path(comparison_output)
+            comparison_paths = (output, reference_image, comparison_output, comparison_staging)
+            if len(set(comparison_paths)) != len(comparison_paths):
+                raise BlenderWorkerError(
+                    "render, reference, comparison output, and comparison staging paths must differ"
+                )
+            try:
+                with Image.open(reference_image) as image:
+                    image.verify()
+            except (OSError, ValueError) as error:
+                raise BlenderWorkerError(
+                    f"reference image is not decodable: {reference_image}"
+                ) from error
         source_paths = {asset.path for asset in self._source_snapshot.assets}
         output_paths = self._render_output_paths(output, evaluator_output_dir)
+        if comparison_output is not None:
+            output_paths.update({comparison_output, contact_sheet_staging_path(comparison_output)})
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("render output must not overwrite a source asset")
-        arguments = command.model_dump(mode="json", exclude={"request_id", "op"})
+        arguments = command.model_dump(mode="json", exclude={"request_id", "op", "comparison"})
         arguments["output_path"] = str(output)
         if evaluator_output_dir is not None:
             arguments["evaluator_output_dir"] = str(
@@ -752,6 +783,32 @@ class BlenderController:
         if manifest.source_sha256 != self._source_sha256:
             raise BlenderWorkerError("render manifest source hash does not match the open scene")
         self._verify_render_artifacts(manifest)
+        if comparison_output is not None and reference_image is not None:
+            try:
+                artifact, reference, render_placement, reference_placement = (
+                    compose_side_by_side_comparison(
+                        Path(manifest.color.path), reference_image, comparison_output
+                    )
+                )
+            except (OSError, ValueError) as error:
+                raise BlenderWorkerError(
+                    f"could not compose reference comparison: {error}"
+                ) from error
+            manifest = manifest.model_copy(
+                update={
+                    "comparison": RenderComparisonManifest(
+                        mode=(
+                            command.comparison.mode
+                            if command.comparison is not None
+                            else "side_by_side"
+                        ),
+                        artifact=artifact,
+                        reference=reference,
+                        render_placement=render_placement,
+                        reference_placement=reference_placement,
+                    )
+                }
+            )
         self.request(
             "render.style",
             style=manifest.style.value,
@@ -797,7 +854,16 @@ class BlenderController:
         if output.suffix.lower() != ".png":
             raise BlenderWorkerError("contact-sheet output_path must end in .png")
         panel_dir = output.parent / f"{output.stem}_panels"
-        panel_paths = tuple(panel_dir / f"panel-{index}.png" for index in range(1, 10))
+        panel_count = 9
+        if command.recipe == "orbit_sweep":
+            if command.orbit_sweep is None:
+                raise BlenderWorkerError("orbit sweep configuration is missing")
+            panel_count = (
+                len(command.orbit_sweep.azimuth_degrees)
+                * len(command.orbit_sweep.elevation_degrees)
+                * len(command.orbit_sweep.roll_degrees)
+            )
+        panel_paths = tuple(panel_dir / f"panel-{index}.png" for index in range(1, panel_count + 1))
         source_paths = {asset.path for asset in self._source_snapshot.assets}
         output_paths = {output, contact_sheet_staging_path(output), *panel_paths}
         evaluator_root = None
@@ -814,6 +880,14 @@ class BlenderController:
             raise BlenderWorkerError("contact-sheet output must not overwrite a source asset")
         if command.recipe == "custom_3x3":
             return self._render_custom_contact_sheet(
+                command,
+                output,
+                panel_paths,
+                evaluator_root,
+                focus_ids,
+            )
+        if command.recipe == "orbit_sweep":
+            return self._render_orbit_sweep(
                 command,
                 output,
                 panel_paths,
@@ -959,6 +1033,85 @@ class BlenderController:
             focus_component_ids=focus_ids,
             removed_occluder_ids=removed_occluders,
             occlusion=occlusion,
+            sheet=sheet,
+            panels=tuple(panels),
+        )
+
+    def _render_orbit_sweep(
+        self,
+        command: RenderContactSheetCommand,
+        output: Path,
+        panel_paths: tuple[Path, ...],
+        evaluator_root: Path | None,
+        focus_ids: tuple[str, ...],
+    ) -> ContactSheetManifest:
+        if self._manifest is None or self._source_snapshot is None or command.orbit_sweep is None:
+            raise BlenderWorkerError("cannot render orbit sweep before a scene is open")
+        sweep = command.orbit_sweep
+        bounds = self._manifest.root_bounds
+        if sweep.target == "focus":
+            bounds = self._focus_bounds(focus_ids)
+        target, span = self._bounds_center_span(bounds)
+        aspect_ratio = command.panel_width / command.panel_height
+        accepted_commands = list(self._accepted_commands)
+        panels: list[ContactSheetPanel] = []
+        try:
+            for index, (azimuth, elevation, roll) in enumerate(
+                (
+                    (azimuth, elevation, roll)
+                    for azimuth in sweep.azimuth_degrees
+                    for elevation in sweep.elevation_degrees
+                    for roll in sweep.roll_degrees
+                ),
+                start=1,
+            ):
+                self._set_orbit(
+                    target,
+                    span,
+                    azimuth,
+                    elevation,
+                    sweep.projection,
+                    aspect_ratio,
+                    focus_ids,
+                    roll_degrees=roll,
+                )
+                projection = sweep.projection
+                projection_label = (
+                    f"perspective {projection.focal_length_mm:g}mm"
+                    if isinstance(projection, PerspectiveProjection)
+                    else f"orthographic {projection.scale_mm:g}mm"
+                )
+                panels.append(
+                    self._render_contact_panel(
+                        command,
+                        panel_paths[index - 1],
+                        index,
+                        (
+                            f"azimuth {azimuth:g}°, elevation {elevation:g}°, roll {roll:g}° "
+                            f"[{projection_label}]"
+                        ),
+                        evaluator_root,
+                    )
+                )
+        finally:
+            self.request("session.reset")
+            for operation, arguments in accepted_commands:
+                self.request(operation, **arguments)
+        after = snapshot_source(self._source_snapshot.assets[0].path)
+        if after != self._source_snapshot:
+            raise BlenderWorkerError("source asset bundle changed during orbit sweep render")
+        composed_panels = tuple(
+            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+        )
+        sheet = compose_contact_sheet(
+            composed_panels,
+            output,
+            command.panel_width,
+            command.panel_height,
+        )
+        return ContactSheetManifest(
+            recipe="orbit_sweep",
+            focus_component_ids=focus_ids,
             sheet=sheet,
             panels=tuple(panels),
         )
@@ -1406,6 +1559,7 @@ class BlenderController:
         aspect_ratio: float,
         focus_component_ids: tuple[str, ...] = (),
         minimum_distance_mm: float = 100.0,
+        roll_degrees: float = 0.0,
     ) -> None:
         distance = max(span * 2, minimum_distance_mm)
         if isinstance(projection, PerspectiveProjection):
@@ -1427,7 +1581,7 @@ class BlenderController:
             target_mm=list(target),
             azimuth_degrees=azimuth,
             elevation_degrees=elevation,
-            roll_degrees=0.0,
+            roll_degrees=roll_degrees,
             distance_mm=distance,
             projection=projection.model_dump(mode="json"),
             aspect_ratio=aspect_ratio,

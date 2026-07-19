@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import shutil
 import time
@@ -176,7 +177,14 @@ class EvaluationBroker:
                 private_result,
                 self._artifact_root,
                 self._evaluator_root,
+                self._model_path.parent,
             )
+            comparison_path = _comparison_artifact_virtual_path(
+                private_result,
+                self._artifact_root,
+            )
+            if comparison_path is not None:
+                public_result = _with_comparison_artifact_path(public_result, comparison_path)
             public_response = response.model_copy(update={"result": public_result})
             reply = BrokerReply(ok=True, response=public_response)
         except _RejectedCommand as error:
@@ -269,12 +277,36 @@ class EvaluationBroker:
                 sequence,
                 command.request_id,
             )
-            translated_image = command.model_copy(update={"output_path": str(staging_output)})
-            byte_reservation = _render_output_reservation(pixels)
-            self._check_render_budget(render_count, pixels, byte_reservation)
+            comparison = command.comparison
+            if comparison is not None:
+                reference_path = self._readable_path(comparison.reference_image_path)
+                comparison_output = self._artifact_path(comparison.output_path)
+                comparison_staging = staging_root / comparison_output.relative_to(
+                    self._artifact_root
+                )
+                comparison = comparison.model_copy(
+                    update={
+                        "reference_image_path": str(reference_path),
+                        "output_path": str(comparison_staging),
+                    }
+                )
+            translated_image = command.model_copy(
+                update={"output_path": str(staging_output), "comparison": comparison}
+            )
+            minimum_reservation = _render_output_reservation(pixels)
+            byte_reservation = minimum_reservation
+            if comparison is not None:
+                byte_reservation = self._budgets.output_bytes - self._output_bytes
+            self._check_render_budget(render_count, pixels, minimum_reservation)
             return translated_image, render_count, pixels, byte_reservation, staging_root
         if isinstance(command, RenderContactSheetCommand):
             render_count = 9
+            if command.recipe == "orbit_sweep" and command.orbit_sweep is not None:
+                render_count = (
+                    len(command.orbit_sweep.azimuth_degrees)
+                    * len(command.orbit_sweep.elevation_degrees)
+                    * len(command.orbit_sweep.roll_degrees)
+                )
             pixels = render_count * command.panel_width * command.panel_height
             output_path = self._artifact_path(command.output_path)
             staging_root, staging_output = self._staging_output(
@@ -291,6 +323,7 @@ class EvaluationBroker:
             minimum_reservation = _contact_sheet_minimum_output_reservation(
                 command.panel_width,
                 command.panel_height,
+                render_count,
             )
             self._check_render_budget(render_count, pixels, minimum_reservation)
             return translated_sheet, render_count, pixels, byte_reservation, staging_root
@@ -503,12 +536,20 @@ def _render_output_reservation(pixels: int) -> int:
     return pixels * 48 + 4 * 1024**2
 
 
-def _contact_sheet_minimum_output_reservation(panel_width: int, panel_height: int) -> int:
+def _contact_sheet_minimum_output_reservation(
+    panel_width: int,
+    panel_height: int,
+    panel_count: int = 9,
+) -> int:
+    if not 1 <= panel_count <= 9:
+        raise ValueError("contact sheets require one through nine panels")
     panel_pixels = panel_width * panel_height
     caption_height = max(48, panel_height // 10)
-    sheet_pixels = panel_width * 3 * (panel_height + caption_height) * 3
+    columns = min(3, panel_count)
+    rows = math.ceil(panel_count / columns)
+    sheet_pixels = panel_width * columns * (panel_height + caption_height) * rows
     sheet_png_bound = sheet_pixels * 4 + 1024**2
-    return 9 * _render_output_reservation(panel_pixels) + sheet_png_bound
+    return panel_count * _render_output_reservation(panel_pixels) + sheet_png_bound
 
 
 def _directory_bytes(root: Path | None) -> int:
@@ -536,12 +577,17 @@ def _rewrite_path_root(value: JsonValue, old_root: Path, new_root: Path) -> Json
     return str(new_root / candidate.relative_to(old_root))
 
 
-def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) -> JsonValue:
+def _public_result(
+    value: JsonValue,
+    artifact_root: Path,
+    evaluator_root: Path,
+    input_root: Path,
+) -> JsonValue:
     if isinstance(value, list):
-        return [_public_result(item, artifact_root, evaluator_root) for item in value]
+        return [_public_result(item, artifact_root, evaluator_root, input_root) for item in value]
     if isinstance(value, dict):
         return {
-            key: _public_result(item, artifact_root, evaluator_root)
+            key: _public_result(item, artifact_root, evaluator_root, input_root)
             for key, item in value.items()
             if key not in {"evaluator", "normalized_geometry"}
         }
@@ -555,4 +601,48 @@ def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) 
         if os.name == "nt":
             return str(candidate)
         return f"/workspace/artifacts/{relative}"
+    if candidate.is_absolute() and candidate.is_relative_to(input_root):
+        relative = candidate.relative_to(input_root).as_posix()
+        if os.name == "nt":
+            return str(candidate)
+        return f"/workspace/input/{relative}"
     return value
+
+
+def _comparison_artifact_virtual_path(value: JsonValue, artifact_root: Path) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    comparison = value.get("comparison")
+    if not isinstance(comparison, dict):
+        return None
+    artifact = comparison.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    path = artifact.get("path")
+    if not isinstance(path, str):
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute() or not candidate.is_relative_to(artifact_root):
+        return None
+    if os.name == "nt":
+        return str(candidate)
+    relative = candidate.relative_to(artifact_root).as_posix()
+    return f"/workspace/artifacts/{relative}"
+
+
+def _with_comparison_artifact_path(value: JsonValue, path: str) -> JsonValue:
+    if not isinstance(value, dict):
+        return value
+    comparison = value.get("comparison")
+    if not isinstance(comparison, dict):
+        return value
+    artifact = comparison.get("artifact")
+    if not isinstance(artifact, dict):
+        return value
+    return {
+        **value,
+        "comparison": {
+            **comparison,
+            "artifact": {**artifact, "path": path},
+        },
+    }

@@ -162,6 +162,67 @@ def test_render_replay_treats_a_missing_warnings_key_as_no_warnings() -> None:
     )
 
 
+def test_render_replay_normalizes_absent_and_derived_comparison_artifacts() -> None:
+    legacy_no_comparison: JsonValue = {"state_sha256": "a" * 64}
+    fresh_empty_comparison: JsonValue = {"state_sha256": "a" * 64, "comparison": None}
+    compared_one: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "reference": {
+                "path": "/workspace/artifacts/first.png",
+                "sha256": "b" * 64,
+            },
+            "artifact": {"path": "first.png", "sha256": "c" * 64},
+        },
+    }
+    compared_two: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "reference": {
+                "path": "/workspace/artifacts/first.png",
+                "sha256": "e" * 64,
+            },
+            "artifact": {"path": "second.png", "sha256": "d" * 64},
+        },
+    }
+
+    assert _semantic_result(Operation.RENDER_IMAGE, legacy_no_comparison) == _semantic_result(
+        Operation.RENDER_IMAGE, fresh_empty_comparison
+    )
+    assert _semantic_result(Operation.RENDER_IMAGE, compared_one) == _semantic_result(
+        Operation.RENDER_IMAGE, compared_two
+    )
+
+
+def test_render_replay_normalizes_private_host_artifact_references() -> None:
+    recorded: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "reference": {
+                "path": "/private/record/artifacts/earlier-render.png",
+                "sha256": "b" * 64,
+            },
+        },
+    }
+    replayed: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "reference": {
+                "path": "/private/replay/artifacts/earlier-render.png",
+                "sha256": "c" * 64,
+            },
+        },
+    }
+
+    assert _semantic_result(Operation.RENDER_IMAGE, recorded) == _semantic_result(
+        Operation.RENDER_IMAGE, replayed
+    )
+
+
 def test_render_replay_treats_a_missing_panel_warnings_key_as_no_warnings() -> None:
     # render.contact_sheet nests one render manifest per panel under
     # panels[*].render; a legacy trace recorded before warnings existed lacks the

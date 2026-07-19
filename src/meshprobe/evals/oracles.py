@@ -497,9 +497,12 @@ def _submitted_evidence(
     try:
         for visible_path in inputs.submission.evidence_manifest_paths:
             submitted.add(_submitted_artifact_path(visible_path, artifact_root))
-        render_paths = {
-            Path(render.color.path).resolve(strict=True): render for render in inputs.renders
-        }
+        render_paths: dict[Path, tuple[RenderManifest, object]] = {}
+        for render in inputs.renders:
+            render_paths[Path(render.color.path).resolve(strict=True)] = (render, render.color)
+            if render.comparison is not None:
+                artifact = render.comparison.artifact
+                render_paths[Path(artifact.path).resolve(strict=True)] = (render, artifact)
         sheet_paths = {
             Path(sheet.sheet.path).resolve(strict=True): sheet for sheet in inputs.contact_sheets
         }
@@ -508,17 +511,25 @@ def _submitted_evidence(
     unknown = submitted - render_paths.keys() - sheet_paths.keys()
     if unknown:
         return (), (), "submission references an unknown evidence manifest path"
-    renders = tuple(
-        render
-        for path, render in render_paths.items()
-        if path in submitted and _artifact_intact(render.color)
-    )
+    invalid_render_paths = [
+        path
+        for path in submitted & render_paths.keys()
+        if not _artifact_intact(render_paths[path][1])
+    ]
+    if invalid_render_paths:
+        return (), (), "submitted evidence artifact bytes do not match their render manifests"
+    submitted_render_ids = {id(render_paths[path][0]) for path in submitted & render_paths.keys()}
+    renders = tuple(render for render in inputs.renders if id(render) in submitted_render_ids)
     sheets = tuple(
         sheet
         for path, sheet in sheet_paths.items()
         if path in submitted and _artifact_intact(sheet.sheet)
     )
-    if len(renders) + len(sheets) != len(submitted):
+    if any(
+        not _artifact_intact(sheet.sheet)
+        for path, sheet in sheet_paths.items()
+        if path in submitted
+    ):
         return (), (), "submitted evidence artifact bytes do not match their render manifests"
     return (
         (*renders, *(panel.render for sheet in sheets for panel in sheet.panels)),
@@ -740,6 +751,8 @@ def _metrics(inputs: OracleInputs) -> EpisodeMetrics:
                 render.evaluator.highlighted,
             ):
                 artifact_bytes[artifact.path] = artifact.bytes
+        if render.comparison is not None:
+            artifact_bytes[render.comparison.artifact.path] = render.comparison.artifact.bytes
     for sheet in inputs.contact_sheets:
         artifact_bytes[sheet.sheet.path] = sheet.sheet.bytes
     starts = [event.started_monotonic for event in inputs.trace]
