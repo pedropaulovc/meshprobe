@@ -5969,6 +5969,7 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
     # identically colored screen-space label remains visible in the second render.
     assert magenta_pixel_count(highlighted_path) == 0
     assert magenta_pixel_count(labeled_path) > 100
+    assert Image.open(labeled_path).getchannel("A").getextrema() == (255, 255)
 
 
 @pytest.mark.skipif(

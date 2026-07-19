@@ -2281,7 +2281,7 @@ def composite_label_overlay(path: Path, overlay_path: Path) -> None:
         import numpy as np  # type: ignore[import-not-found]
     except ImportError as error:  # pragma: no cover - numpy ships with Blender
         raise RuntimeError(
-            "Cycles label compositing needs numpy, which is bundled with Blender but was not "
+            "Label annotation compositing needs numpy, which is bundled with Blender but was not "
             "importable in this build"
         ) from error
 
@@ -2318,6 +2318,9 @@ def composite_label_overlay(path: Path, overlay_path: Path) -> None:
                 overlay_channel = overlay_chunk[:, channel]
                 overlay_channel *= overlay_alpha
                 base_channel += overlay_channel
+        # render.image always publishes an opaque PNG: configure_render disables transparent
+        # film, and the only temporary transparent-film path composites its requested display
+        # background before annotations. Preserve that output contract after source-over RGB.
         base_pixels[:, 3] = 1.0
         np.clip(base_pixels, 0.0, 1.0, out=base_pixels)
         base.pixels.foreach_set(base_buffer)
