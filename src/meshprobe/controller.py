@@ -744,9 +744,11 @@ class BlenderController:
                 raise BlenderWorkerError("comparison output_path must end in .png")
             if not reference_image.is_file():
                 raise BlenderWorkerError(f"reference image is not a file: {reference_image}")
-            if comparison_output in {output, reference_image}:
+            comparison_staging = contact_sheet_staging_path(comparison_output)
+            comparison_paths = (output, reference_image, comparison_output, comparison_staging)
+            if len(set(comparison_paths)) != len(comparison_paths):
                 raise BlenderWorkerError(
-                    "comparison output must differ from the render and reference"
+                    "render, reference, comparison output, and comparison staging paths must differ"
                 )
         source_paths = {asset.path for asset in self._source_snapshot.assets}
         output_paths = self._render_output_paths(output, evaluator_output_dir)

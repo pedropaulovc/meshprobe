@@ -14,6 +14,7 @@ from meshprobe.protocol import (
     ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentOcclusionCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewMoveCommand,
@@ -73,6 +74,30 @@ def test_display_payload_omits_default_isolation_operation() -> None:
     )
 
     assert "isolation_operation" not in command_payload(command)
+
+
+def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+    )
+
+    assert "comparison" not in command_payload(command)
+    compared = command.model_copy(
+        update={
+            "comparison": RenderComparisonRequest(
+                reference_image_path="historical.png",
+                mode="side_by_side",
+                output_path="comparison.png",
+            )
+        }
+    )
+    assert command_payload(compared)["comparison"] == {
+        "reference_image_path": "historical.png",
+        "mode": "side_by_side",
+        "output_path": "comparison.png",
+    }
 
 
 def test_schema_contains_all_public_operations() -> None:
@@ -416,6 +441,38 @@ def test_orbit_sweep_accepts_six_panels_and_validates_focus_target() -> None:
                     "azimuth_degrees": [0],
                     "elevation_degrees": [0],
                     "target": "focus",
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "empty-roll-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "orbit_sweep",
+                "output_path": "sweep.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
+                    "roll_degrees": [],
+                },
+            }
+        )
+
+
+def test_focused_contact_sheet_rejects_orbit_sweep() -> None:
+    with pytest.raises(ValidationError, match="focused_3x3 does not accept orbit_sweep"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "focused-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "focused_3x3",
+                "focus_component_ids": ["cmp_target"],
+                "output_path": "sheet.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
                 },
             }
         )

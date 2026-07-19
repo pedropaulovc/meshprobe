@@ -105,19 +105,25 @@ def _semantic_result(operation: Operation, result: JsonValue) -> JsonValue:
     # two as equivalent so legacy no-warning traces still replay clean. A
     # render.image result IS a render manifest; a render.contact_sheet result
     # nests one per panel under `panels[*].render`.
-    _backfill_missing_warnings(normalized)
+    _normalize_optional_render_fields(normalized)
     panels = normalized.get("panels")
     if isinstance(panels, list):
         for panel in panels:
             if isinstance(panel, dict):
                 render = panel.get("render")
                 if isinstance(render, dict):
-                    _backfill_missing_warnings(render)
+                    _normalize_optional_render_fields(render)
     return normalized
 
 
-def _backfill_missing_warnings(manifest: dict[str, JsonValue]) -> None:
+def _normalize_optional_render_fields(manifest: dict[str, JsonValue]) -> None:
     manifest.setdefault("warnings", [])
+    comparison = manifest.get("comparison")
+    if comparison is None:
+        manifest.pop("comparison", None)
+        return
+    if isinstance(comparison, dict):
+        comparison.pop("artifact", None)
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:

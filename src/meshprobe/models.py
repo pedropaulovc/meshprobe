@@ -1036,7 +1036,7 @@ class OrbitSweep(ContractModel):
 
     azimuth_degrees: tuple[FiniteFloat, ...] = Field(min_length=1, max_length=9)
     elevation_degrees: tuple[FiniteFloat, ...] = Field(min_length=1, max_length=9)
-    roll_degrees: tuple[FiniteFloat, ...] = (0.0,)
+    roll_degrees: tuple[FiniteFloat, ...] = Field(default=(0.0,), min_length=1, max_length=9)
     target: Literal["scene", "focus"] = "scene"
     projection: Projection = PerspectiveProjection()
 

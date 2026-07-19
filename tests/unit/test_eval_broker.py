@@ -12,12 +12,14 @@ from meshprobe.evals.harness.broker import (
     _contact_sheet_minimum_output_reservation,
     _render_output_reservation,
 )
-from meshprobe.evals.harness.sandbox import visible_artifact_path
+from meshprobe.evals.harness.sandbox import visible_artifact_path, visible_input_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceStatus
+from meshprobe.models import OrbitSweep
 from meshprobe.protocol import (
     Command,
     ComponentOcclusionCommand,
     IlluminationSetCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -83,6 +85,16 @@ class FakeEvaluationService:
                     }
                 },
             }
+            if command.comparison is not None:
+                reference_path = Path(command.comparison.reference_image_path)
+                assert reference_path.is_file()
+                comparison_path = Path(command.comparison.output_path)
+                comparison_path.parent.mkdir(parents=True, exist_ok=True)
+                comparison_path.write_bytes(b"d" * 16)
+                result["comparison"] = {
+                    "artifact": {"path": str(comparison_path), "bytes": 16},
+                    "reference": {"path": str(reference_path)},
+                }
         else:
             raise AssertionError(operation)
         return CommandResponse(request_id=request_id, op=operation, result=result)
@@ -158,6 +170,66 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     trace = (tmp_path / "evaluator" / "trace.jsonl").read_text(encoding="utf-8")
     assert len(trace.splitlines()) == 4
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
+
+
+def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
+    tmp_path: Path,
+) -> None:
+    service = FakeEvaluationService()
+    active = broker(tmp_path, service=service)
+    reference = tmp_path / "input" / "historical.png"
+    reference.write_bytes(b"reference")
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="comparison",
+            op="render.image",
+            output_path="cad.png",
+            width=64,
+            height=64,
+            comparison=RenderComparisonRequest(
+                reference_image_path=visible_input_path(reference),
+                mode="side_by_side",
+                output_path="comparison.png",
+            ),
+        )
+    )
+
+    assert rendered.ok and rendered.response is not None
+    translated = service.commands[-1]
+    assert isinstance(translated, RenderImageCommand)
+    assert translated.comparison is not None
+    assert translated.comparison.reference_image_path == str(reference.resolve())
+    assert Path(translated.comparison.output_path).is_relative_to(tmp_path / "evaluator" / "passes")
+    assert isinstance(rendered.response.result, dict)
+    comparison = rendered.response.result["comparison"]
+    assert isinstance(comparison, dict)
+    artifact = comparison["artifact"]
+    assert isinstance(artifact, dict)
+    assert artifact["path"] == "/workspace/artifacts/comparison.png"
+    assert active.metrics.output_bytes == 36
+
+
+def test_broker_charges_orbit_sweeps_by_their_actual_panel_count(tmp_path: Path) -> None:
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(tool_calls=1, renders=1, total_pixels=128 * 128, output_bytes=10**9),
+    )
+    command = RenderContactSheetCommand(
+        request_id="sweep",
+        op="render.contact_sheet",
+        output_path="sweep.png",
+        recipe="orbit_sweep",
+        orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+        panel_width=128,
+        panel_height=128,
+        samples=1,
+    )
+
+    _translated, renders, pixels, _bytes, _staging = active._translate_and_reserve(command, 1)
+
+    assert renders == 1
+    assert pixels == 128 * 128
 
 
 def test_broker_records_occlusion_queries(tmp_path: Path) -> None:

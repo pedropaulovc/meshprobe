@@ -269,12 +269,35 @@ class EvaluationBroker:
                 sequence,
                 command.request_id,
             )
-            translated_image = command.model_copy(update={"output_path": str(staging_output)})
+            comparison = command.comparison
+            if comparison is not None:
+                reference_path = self._readable_path(comparison.reference_image_path)
+                comparison_output = self._artifact_path(comparison.output_path)
+                comparison_staging = staging_root / comparison_output.relative_to(
+                    self._artifact_root
+                )
+                comparison = comparison.model_copy(
+                    update={
+                        "reference_image_path": str(reference_path),
+                        "output_path": str(comparison_staging),
+                    }
+                )
+            translated_image = command.model_copy(
+                update={"output_path": str(staging_output), "comparison": comparison}
+            )
             byte_reservation = _render_output_reservation(pixels)
+            if comparison is not None:
+                byte_reservation = self._budgets.output_bytes - self._output_bytes
             self._check_render_budget(render_count, pixels, byte_reservation)
             return translated_image, render_count, pixels, byte_reservation, staging_root
         if isinstance(command, RenderContactSheetCommand):
             render_count = 9
+            if command.recipe == "orbit_sweep" and command.orbit_sweep is not None:
+                render_count = (
+                    len(command.orbit_sweep.azimuth_degrees)
+                    * len(command.orbit_sweep.elevation_degrees)
+                    * len(command.orbit_sweep.roll_degrees)
+                )
             pixels = render_count * command.panel_width * command.panel_height
             output_path = self._artifact_path(command.output_path)
             staging_root, staging_output = self._staging_output(

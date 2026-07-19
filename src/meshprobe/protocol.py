@@ -248,6 +248,8 @@ class RenderContactSheetCommand(CommandModel):
                 raise ValueError("focused_3x3 requires at least one focus component")
             if self.panels:
                 raise ValueError("focused_3x3 does not accept custom panels")
+            if self.orbit_sweep is not None:
+                raise ValueError("focused_3x3 does not accept orbit_sweep")
             return self
         if self.recipe == "orbit_sweep":
             if self.panels:
@@ -310,13 +312,11 @@ type Command = Annotated[
 
 def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
     """Serialize commands while preserving omitted optional wire fields."""
-    payload = command.model_dump(mode="json", exclude=exclude)
+    payload = command.model_dump(mode="json", exclude=exclude, exclude_none=True)
     if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):
         payload.pop("aspect_ratio")
-    if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is None:
-        payload.pop("isolation_operation")
     return payload
 
 

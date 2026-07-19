@@ -51,6 +51,7 @@ from meshprobe.protocol import (
     ComponentMarkCommand,
     ComponentOcclusionCommand,
     IlluminationSetCommand,
+    RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -1209,6 +1210,37 @@ def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:
     controller._source_snapshot = snapshot_source(source)
     command = RenderImageCommand(request_id="render", op="render.image", output_path=str(source))
     with pytest.raises(BlenderWorkerError, match="must not overwrite"):
+        controller.render_image(command)
+
+
+@pytest.mark.parametrize("reference_is_staging", (False, True))
+def test_render_comparison_rejects_overlapping_render_reference_and_staging_paths(
+    tmp_path: Path, reference_is_staging: bool
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    comparison_output = tmp_path / "comparison.png"
+    reference = tmp_path / "historical.png"
+    if reference_is_staging:
+        reference = comparison_output.with_name(f".{comparison_output.name}.part")
+    reference.write_bytes(b"reference")
+    output = tmp_path / "render.png"
+    if not reference_is_staging:
+        output = reference
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(output),
+        comparison=RenderComparisonRequest(
+            reference_image_path=str(reference),
+            mode="side_by_side",
+            output_path=str(comparison_output),
+        ),
+    )
+
+    with pytest.raises(BlenderWorkerError, match="paths must differ"):
         controller.render_image(command)
 
 
