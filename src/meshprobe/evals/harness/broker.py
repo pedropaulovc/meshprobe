@@ -19,6 +19,7 @@ from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceEvent, Trace
 from meshprobe.models import CustomIllumination
 from meshprobe.protocol import (
     Command,
+    CommandEffect,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -227,6 +228,11 @@ class EvaluationBroker:
         command: Command,
         sequence: int,
     ) -> tuple[Command, int, int, int, Path | None]:
+        if command.effect is CommandEffect.HISTORY:
+            raise _RejectedCommand(
+                "broker.unsupported_operation",
+                f"{command.op} requires a durable session and is unavailable in evaluations",
+            )
         if isinstance(command, SceneOpenCommand):
             if command.source_path != self.visible_model_path:
                 raise _RejectedCommand(

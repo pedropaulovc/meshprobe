@@ -64,6 +64,7 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    SessionUndoCommand,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -1910,7 +1911,7 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
 
     checkpoint_path = root / "sessions" / "review" / "checkpoint.json"
     legacy_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert legacy_checkpoint["schema_version"] == 2
+    assert legacy_checkpoint["schema_version"] == 3
     legacy_checkpoint["schema_version"] = 1
     legacy_checkpoint["accepted_commands"][0]["degrees"] = -command.degrees
     checkpoint_path.write_text(json.dumps(legacy_checkpoint), encoding="utf-8")
@@ -1933,7 +1934,7 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     assert recovered.camera.projection == rotated_camera.projection
     assert recovered.state_sha256 == rotated_state_sha256
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert checkpoint["schema_version"] == 2
+    assert checkpoint["schema_version"] == 3
     assert checkpoint["accepted_commands"] == [command.model_dump(mode="json")]
 
     recovered_manager.execute(
@@ -1952,6 +1953,59 @@ def test_source_frame_rotation_survives_checkpoint_replay_and_reset(
     assert Camera.model_validate(reapplied["camera"]) == rotated_camera
     assert reapplied["state_sha256"] == rotated_state_sha256
     recovered_manager.shutdown()
+
+
+def test_durable_undo_replays_truncated_history_after_process_restart(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(
+        root, blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
+    )
+    opened = manager.open("review", source)
+    baseline_hash = opened.state_sha256
+    scene = SceneManifest.model_validate_json(
+        (root / "sessions" / "review" / "scene.json").read_text(encoding="utf-8")
+    )
+    component_id = scene.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.execute(
+        "review",
+        ComponentMarkCommand(
+            request_id="mark",
+            op="component.mark",
+            component_ids=(component_id,),
+            mode=MarkMode.HIGHLIGHTED,
+        ),
+    )
+    manager.close("review")
+
+    recovered = SessionManager(
+        root, blender="blender", timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS
+    )
+    try:
+        receipt = recovered.execute(
+            "review",
+            SessionUndoCommand(request_id="undo-both", op="session.undo", count=2),
+        )
+        envelope = recovered.raw_result(receipt)
+    finally:
+        recovered.shutdown()
+
+    assert receipt.state_sha256 == baseline_hash
+    assert isinstance(envelope, dict)
+    assert envelope["result"] == {
+        "undone": 2,
+        "remaining": 0,
+        "state_sha256": baseline_hash,
+    }
 
 
 def test_positive_source_y_visual_rotation_matches_rotated_model(

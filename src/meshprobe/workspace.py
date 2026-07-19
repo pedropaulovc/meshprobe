@@ -32,34 +32,24 @@ from meshprobe.models import (
     RenderStyleState,
     SceneManifest,
     SessionSnapshot,
+    SessionUndoResult,
     SrgbHexColor,
 )
 from meshprobe.protocol import (
     Command,
+    CommandEffect,
     ComponentFindCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
+    SessionUndoCommand,
     ViewSetCommand,
     command_payload,
 )
 from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
-
-STATE_OPERATIONS = frozenset(
-    {
-        "view.set",
-        "view.orbit",
-        "view.frame",
-        "view.move",
-        "view.rotate",
-        "illumination.set",
-        "component.display",
-        "component.mark",
-    }
-)
 
 # The ops that always refit the camera to an aspect ratio, so their aspect_ratio is
 # the intended framing. view.move/view.rotate reuse the current projection without
@@ -104,29 +94,53 @@ class SessionMetadata(BaseModel):
 class SessionCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     source_path: str
     source_sha256: str
     blender: str | None
     state_sha256: str
     aspect_ratio: float = 1.0
-    accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
+    replay_prefix: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Compatibility baseline replayed before user mutation history.",
+    )
+    accepted_commands: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Undoable state-changing commands accepted since the last reset.",
+    )
     unit_scale: float = 1.0
 
 
 def _upgrade_checkpoint(checkpoint: SessionCheckpoint) -> tuple[SessionCheckpoint, bool]:
     """Translate persisted commands whose meaning changed between checkpoint schemas."""
-    if checkpoint.schema_version == 2:
+    if checkpoint.schema_version == 3:
         return checkpoint, False
 
     accepted_commands: list[dict[str, Any]] = []
     for raw in checkpoint.accepted_commands:
         command = dict(raw)
-        if command.get("op") == "view.rotate":
+        if checkpoint.schema_version == 1 and command.get("op") == "view.rotate":
             command["degrees"] = -float(command["degrees"])
         accepted_commands.append(command)
+    replay_prefix = list(checkpoint.replay_prefix)
+    replay_prefix.extend(
+        command
+        for command in accepted_commands
+        if command.get("request_id") == "recover-v1-source-camera"
+    )
+    accepted_commands = [
+        command
+        for command in accepted_commands
+        if command.get("request_id") != "recover-v1-source-camera"
+    ]
     return (
-        checkpoint.model_copy(update={"schema_version": 2, "accepted_commands": accepted_commands}),
+        checkpoint.model_copy(
+            update={
+                "schema_version": 3,
+                "replay_prefix": replay_prefix,
+                "accepted_commands": accepted_commands,
+            }
+        ),
         True,
     )
 
@@ -288,9 +302,10 @@ def durable_state_schema_summary() -> dict[str, object]:
                 "components.{default,overrides} results artifacts",
             },
             "checkpoint.json": {
-                "purpose": "last acknowledged replay state",
+                "purpose": "authoritative commit record for replay state and undo history; "
+                "its state_sha256 detects an interrupted derived state.yml write",
                 "fields": "schema_version source_path source_sha256 blender state_sha256 "
-                "accepted_commands[]",
+                "replay_prefix[] accepted_commands[]",
             },
             "events.jsonl": {
                 "purpose": "one accepted or rejected operation per line",
@@ -498,6 +513,8 @@ class SessionManager:
         *,
         blender: str | None = None,
     ) -> OperationReceipt:
+        if command.effect is CommandEffect.UNDECLARED:
+            raise ValueError(f"command has no declared history effect: {command.op}")
         if isinstance(command, SceneOpenCommand):
             return self.open(
                 name,
@@ -509,6 +526,10 @@ class SessionManager:
             )
         with self._lock:
             files = self._require_files(name)
+            if isinstance(command, SessionUndoCommand):
+                return self._undo(name, files, command)
+            if command.effect is CommandEffect.HISTORY:
+                raise ValueError(f"unsupported history command: {command.op}")
             previous_service = self._services.get(name)
             previous_worker_pid = (
                 previous_service.worker_pid if previous_service is not None else None
@@ -561,6 +582,80 @@ class SessionManager:
                 components=self._component_references(files, command),
                 match_count=match_count,
             )
+
+    def _undo(
+        self,
+        name: str,
+        files: SessionFiles,
+        command: SessionUndoCommand,
+    ) -> OperationReceipt:
+        """Atomically replace the live renderer with a replay of truncated history."""
+
+        replacement: SessionService | None = None
+        try:
+            current = self._services.get(name)
+            persisted_checkpoint = SessionCheckpoint.model_validate_json(
+                files.checkpoint.read_text(encoding="utf-8")
+            )
+            restore_source_camera = "aspect_ratio" not in persisted_checkpoint.model_fields_set
+            checkpoint, _ = _upgrade_checkpoint(persisted_checkpoint)
+            available = len(checkpoint.accepted_commands)
+            if command.count > available:
+                raise ValueError(
+                    f"cannot undo {command.count} state-changing command(s); "
+                    f"only {available} available since the last reset"
+                )
+            updated = checkpoint.model_copy(
+                deep=True,
+                update={"accepted_commands": checkpoint.accepted_commands[: -command.count]},
+            )
+            replacement = self._restore_service(
+                updated,
+                restore_source_camera=restore_source_camera,
+            )
+            snapshot = self._snapshot(replacement)
+        except Exception as error:
+            if replacement is not None:
+                replacement.kill()
+            self._event(files, command, "rejected", error=str(error))
+            raise
+
+        updated.state_sha256 = snapshot.state_sha256
+        result = SessionUndoResult(
+            undone=command.count,
+            remaining=available - command.count,
+            state_sha256=snapshot.state_sha256,
+        )
+        response = CommandResponse(
+            request_id=command.request_id,
+            op=command.op,
+            result=result.model_dump(mode="json"),
+        )
+        previous_state = files.state.read_text(encoding="utf-8")
+        result_path: Path | None = None
+        try:
+            result_path = self._write_result(files, command.request_id, response)
+            self._write_state(files, snapshot, render_style=RenderStyleState())
+            # checkpoint.json is the commit point. A synchronous failure before its atomic
+            # replacement rolls the derived state/result files back below; after replacement,
+            # restart recovery replays this authoritative history.
+            atomic_json(files.checkpoint, updated.model_dump(mode="json"))
+        except Exception as error:
+            replacement.kill()
+            if result_path is not None:
+                with suppress(OSError):
+                    result_path.unlink()
+            with suppress(OSError):
+                atomic_text(files.state, previous_state)
+            self._event(files, command, "rejected", error=str(error))
+            raise
+
+        self._services[name] = replacement
+        if current is not None:
+            current.close()
+        self._update_metadata(files, status="active", worker_pid=replacement.worker_pid)
+        self._event(files, command, "accepted", result_path=result_path)
+        return self._receipt(files, command.op, snapshot, result_path)
 
     def close(self, name: str) -> OperationReceipt:
         with self._lock:
@@ -741,6 +836,29 @@ class SessionManager:
         # the source camera, regardless of its numeric schema version.
         pre_auto_frame_checkpoint = "aspect_ratio" not in persisted_checkpoint.model_fields_set
         checkpoint, upgraded = _upgrade_checkpoint(persisted_checkpoint)
+        service = self._restore_service(
+            checkpoint,
+            restore_source_camera=pre_auto_frame_checkpoint,
+        )
+        if pre_auto_frame_checkpoint:
+            upgraded = True
+        try:
+            if upgraded:
+                atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
+        except Exception:
+            service.kill()
+            raise
+        self._services[name] = service
+        return service
+
+    def _restore_service(
+        self,
+        checkpoint: SessionCheckpoint,
+        *,
+        restore_source_camera: bool = False,
+    ) -> SessionService:
+        """Build a renderer from a checkpoint without changing live or durable state."""
+
         service = self._new_service(checkpoint.blender)
         try:
             opened = service.execute(
@@ -757,25 +875,20 @@ class SessionManager:
                 raise ValueError("source asset bundle changed since the session checkpoint")
             from meshprobe.protocol import COMMAND_ADAPTER
 
-            if pre_auto_frame_checkpoint:
-                # A v1 checkpoint predates default auto-framing. Its recorded relative
-                # camera commands therefore start from the source camera, not the new
-                # framed default. Restore that exact baseline before replaying them.
+            if restore_source_camera and not checkpoint.replay_prefix:
+                # Checkpoints predating default auto-framing replay relative camera commands
+                # from the source camera. Keep that compatibility baseline outside undo history.
                 baseline = ViewSetCommand(
                     request_id="recover-v1-source-camera",
                     op="view.set",
                     camera=manifest.imported_camera,
                 )
-                checkpoint.accepted_commands.insert(0, command_payload(baseline))
-                upgraded = True
-            for raw in checkpoint.accepted_commands:
+                checkpoint.replay_prefix.append(command_payload(baseline))
+            for raw in (*checkpoint.replay_prefix, *checkpoint.accepted_commands):
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
-            if upgraded:
-                atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
         except Exception:
             service.kill()
             raise
-        self._services[name] = service
         return service
 
     def _new_service(self, blender: str | None) -> SessionService:
@@ -977,10 +1090,11 @@ class SessionManager:
             SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         if isinstance(command, SessionResetCommand):
+            checkpoint.replay_prefix.clear()
             checkpoint.accepted_commands.clear()
             if "aspect_ratio" in command.model_fields_set:
                 checkpoint.aspect_ratio = command.aspect_ratio
-        elif command.op in STATE_OPERATIONS:
+        elif command.effect is CommandEffect.STATE_MUTATION:
             accepted = command
             if isinstance(command, IlluminationSetCommand):
                 accepted = command.model_copy(update={"illumination": snapshot.illumination})

@@ -633,6 +633,8 @@ class FakeClient:
     def read_result(self, receipt: OperationReceipt) -> object:
         if receipt.op == "component.find" and self.find_results is not None:
             return {"result": self.find_results}
+        if receipt.op == "session.undo":
+            return {"result": {"undone": 1, "remaining": 2, "state_sha256": "a" * 64}}
         return {"result": {"op": receipt.op}}
 
     def framed_aspect_ratio(self, session: str) -> float:
@@ -726,6 +728,22 @@ def test_reset_omits_aspect_ratio_unless_explicitly_provided(
     assert isinstance(explicit_command, SessionResetCommand)
     assert "aspect_ratio" in explicit_command.model_fields_set
     assert explicit_command.aspect_ratio == 0.5
+
+
+def test_undo_uses_an_optional_positional_count_and_compact_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "undo"])
+    counted = runner.invoke(app, ["--session", "review", "undo", "3"])
+
+    assert result.exit_code == 0
+    assert "op=session.undo undone=1 remaining=2" in result.stdout
+    assert counted.exit_code == 0
+    assert client.commands[0].count == 1  # type: ignore[union-attr]
+    assert client.commands[1].count == 3  # type: ignore[union-attr]
 
 
 def test_cli_resolves_source_and_render_paths_before_daemon_handoff(

@@ -32,14 +32,17 @@ class Operation(StrEnum):
     RENDER_IMAGE = "render.image"
     RENDER_CONTACT_SHEET = "render.contact_sheet"
     SESSION_RESET = "session.reset"
+    SESSION_UNDO = "session.undo"
 
 
 # view.frame is a camera convenience that the controller resolves to a concrete view.orbit.
-# Agents may call it (so it is a valid Operation the broker can trace), but episodes are
-# neither generated nor scored against it, so it stays out of the evaluated set — keeping it
-# in would force generator coverage over it and shift every corpus digest.
+# session.undo requires a durable workspace, which the isolated evaluation service deliberately
+# does not expose. Agents may call both (so the broker must trace them), but episodes are neither
+# generated nor scored against them; keeping them out avoids shifting every corpus digest.
 EVALUATED_OPERATIONS: tuple[Operation, ...] = tuple(
-    operation for operation in Operation if operation is not Operation.VIEW_FRAME
+    operation
+    for operation in Operation
+    if operation not in {Operation.VIEW_FRAME, Operation.SESSION_UNDO}
 )
 
 

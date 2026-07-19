@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
-from meshprobe.protocol import Command, SceneOpenCommand, command_payload
+from meshprobe.protocol import Command, SceneOpenCommand, SessionUndoCommand, command_payload
 from meshprobe.workspace import (
     OperationReceipt,
     SessionFiles,
@@ -63,7 +63,7 @@ class MeshProbeClient:
                 blender=self.blender,
             )
         except ValueError as error:
-            if not self._old_daemon_rejected_camera_option(command, error):
+            if not self._old_daemon_rejected_command(command, error):
                 raise
             # `close_all` is part of the original daemon protocol and checkpoints sessions before
             # stopping it. Restart through that known action, then retry against the new daemon so
@@ -78,8 +78,13 @@ class MeshProbeClient:
         return OperationReceipt.model_validate(payload)
 
     @staticmethod
-    def _old_daemon_rejected_camera_option(command: Command, error: ValueError) -> bool:
+    def _old_daemon_rejected_command(command: Command, error: ValueError) -> bool:
         message = str(error).lower()
+        if isinstance(command, SessionUndoCommand):
+            validation_markers = ("tag", "discriminator", "literal", "unknown", "invalid")
+            return "session.undo" in message and any(
+                marker in message for marker in validation_markers
+            )
         if "extra" not in message and "unknown" not in message and "forbid" not in message:
             return False
         if "unit_scale" in message and isinstance(command, SceneOpenCommand):
