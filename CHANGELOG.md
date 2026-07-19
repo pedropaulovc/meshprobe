@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-07-18
 
+### Added
+
+- Incremental isolation controls: an isolated component set can now be replaced, extended, or
+  reduced without rebuilding the selection from scratch.
+- Orbit-sweep contact sheets for comparing bounded camera combinations, and optional side-by-side
+  reference-image comparisons with deterministic placement metadata.
+
+### Changed
+
+- An explicit `view-orbit --aspect-ratio` now updates inherited perspective sensor geometry, so
+  the requested framing is reflected by the actual camera rather than diagnostics alone.
+
 ### Fixed
 
 - Compact JSON receipts from `open` now include every scene-import warning with its stable code,
