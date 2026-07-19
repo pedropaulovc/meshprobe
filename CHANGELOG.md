@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including generated illumination, flattened hierarchy, and reconstructed camera lenses.
 - Compact JSON receipts from `find` now include each matched component's ref, ID, name, and path.
 
+### Changed
+
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.1.0 runtime.
+
 ## [1.0.0] - 2026-07-18
 
 ### Added

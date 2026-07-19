@@ -5,8 +5,8 @@
   "corpus_manifest_sha256": "b43fdce2fde5e8781f0e5c81a910d843f44ad084ca5c31c7f836d6e26198bbe0",
   "generator_sha256": "aec013a4ffc11a6f01865fbcf388d15b6868f6dac9c853f6047ba98a53920e2f",
   "runtime": {
-    "meshprobe_version": "1.0.0",
-    "meshprobe_sha256": "2151efdd475b178527f53936a4d25b9a6add4701d0dd1c738051fd9f21359ec2",
+    "meshprobe_version": "1.1.0",
+    "meshprobe_sha256": "9ad492cf1c581dbef8b7fd9c179473d4e438c45148b32c470cd3991544edb6e1",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
     "importer_sha256": "2e76af9c73bde2a8e8df17971f9ebfc508f4c56b5949ab76a33c84dc692cea26",
