@@ -1736,6 +1736,32 @@ def create_component_label(component_id: str, color: tuple[float, float, float, 
     orient_component_labels()
 
 
+def component_label_overlay_transform(
+    camera: bpy.types.Object,
+    anchor: Vector,
+    basis: tuple[Vector, Vector, Vector, Vector],
+) -> tuple[Vector, float] | None:
+    position, right, up, forward = basis
+    near = camera.data.clip_start
+    far = camera.data.clip_end
+    offset = anchor - position
+    depth = offset @ forward
+    if not near < depth < far:
+        return None
+    # Prefer a small gap behind the near plane, but never consume more than one percent of
+    # the available clip interval. This keeps the annotation both strictly inside and ahead
+    # of ordinary scene geometry even for a valid, unusually tight range such as 9.5-10 m.
+    preferred_clearance = max(near * 0.1, 0.0001)
+    overlay_depth = near + min(preferred_clearance, (far - near) * 0.01)
+    horizontal = offset @ right
+    vertical = offset @ up
+    scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
+    location = (
+        position + forward * overlay_depth + right * horizontal * scale + up * vertical * scale
+    )
+    return location, scale
+
+
 def orient_component_labels() -> None:
     camera = camera_object()
     orientation = camera.matrix_world.to_quaternion()
@@ -1743,25 +1769,19 @@ def orient_component_labels() -> None:
     right = orientation @ Vector((1.0, 0.0, 0.0))
     up = orientation @ Vector((0.0, 1.0, 0.0))
     forward = orientation @ Vector((0.0, 0.0, -1.0))
-    near = camera.data.clip_start
-    overlay_depth = near + max(near * 0.1, 0.0001)
+    basis = (position, right, up, forward)
     for label in MARK_OBJECTS.values():
         label.rotation_quaternion = orientation
         anchor = Vector(label["meshprobe_anchor_m"])
-        offset = anchor - position
-        depth = offset @ forward
-        if depth <= near:
-            # Behind-camera and near-clipped anchors have no meaningful screen position. Keep
-            # their world placement deterministic; a later camera move can project them again.
+        transform = component_label_overlay_transform(camera, anchor, basis)
+        label.hide_render = transform is None
+        if transform is None:
+            # A clipped semantic anchor has no meaningful annotation in this frame. Keep its
+            # world transform deterministic so a later camera move can project it again.
             label.location = anchor
             label.scale = (1.0, 1.0, 1.0)
             continue
-        horizontal = offset @ right
-        vertical = offset @ up
-        scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
-        label.location = (
-            position + forward * overlay_depth + right * horizontal * scale + up * vertical * scale
-        )
+        label.location, scale = transform
         label.scale = (scale, scale, scale)
 
 
@@ -1928,6 +1948,14 @@ def runtime_diagnostics() -> dict[str, Any]:
                     list(MARK_OBJECTS[component_id].rotation_quaternion)
                     if component_id in MARK_OBJECTS
                     else None
+                ),
+                "label_location_m": (
+                    list(MARK_OBJECTS[component_id].location)
+                    if component_id in MARK_OBJECTS
+                    else None
+                ),
+                "label_hide_render": (
+                    MARK_OBJECTS[component_id].hide_render if component_id in MARK_OBJECTS else None
                 ),
             }
             for component_id, obj in COMPONENT_OBJECTS.items()
@@ -2309,7 +2337,9 @@ def render_cycles_label_overlay(path: Path) -> None:
         return
     scene = bpy.context.scene
     camera = camera_object()
-    labels = tuple(MARK_OBJECTS.values())
+    labels = tuple(label for label in MARK_OBJECTS.values() if not label.hide_render)
+    if not labels:
+        return
     original_visibility = {obj: obj.hide_render for obj in scene.objects if obj.type != "CAMERA"}
     original_engine = scene.render.engine
     original_film_transparent = scene.render.film_transparent
@@ -2342,7 +2372,7 @@ def cycles_label_overlay_required(command: dict[str, Any]) -> bool:
     camera = camera_object()
     return (
         command["engine"] == "cycles"
-        and bool(MARK_OBJECTS)
+        and any(not label.hide_render for label in MARK_OBJECTS.values())
         and camera.data.type == "PERSP"
         and camera.data.dof.use_dof
     )

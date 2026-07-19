@@ -981,7 +981,12 @@ bpy.ops.export_scene.gltf(
     return output
 
 
-def build_hidden_label_glb(tmp_path: Path) -> Path:
+def build_hidden_label_glb(
+    tmp_path: Path,
+    *,
+    target_size: float = 0.5,
+    wall_x: float = 2.0,
+) -> Path:
     output = tmp_path / "hidden-label.glb"
     script = tmp_path / "build_hidden_label.py"
     script.write_text(
@@ -989,9 +994,9 @@ def build_hidden_label_glb(tmp_path: Path) -> Path:
 import bpy
 from mathutils import Vector
 bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.mesh.primitive_cube_add(size=0.5, location=(0, 0, 0))
+bpy.ops.mesh.primitive_cube_add(size={target_size!r}, location=(0, 0, 0))
 bpy.context.object.name = 'target-behind-wall'
-bpy.ops.mesh.primitive_cube_add(size=1.0, location=(2, 0, 0))
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=({wall_x!r}, 0, 0))
 bpy.context.object.name = 'wall'
 bpy.context.object.scale = (0.2, 4, 4)
 bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
@@ -5606,6 +5611,136 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     assert ranking["unresolved_rays"] == 0
 
 
+def magenta_pixel_count(path: Path) -> int:
+    image = Image.open(path).convert("RGB")
+    pixels = cast(list[tuple[int, int, int]], image.get_flattened_data())
+    return sum(red > 40 and red > green + 10 and blue > green + 10 for red, green, blue in pixels)
+
+
+def test_labeled_mark_stays_clipped_when_anchor_is_beyond_far_plane(tmp_path: Path) -> None:
+    source = build_hidden_label_glb(tmp_path)
+    labeled_path = tmp_path / "far-clipped-label.png"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        camera = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        ).camera
+        assert isinstance(camera.projection, PerspectiveProjection)
+        controller.execute(
+            ViewSetCommand(
+                request_id="far-clipped-camera",
+                op="view.set",
+                camera=camera.model_copy(
+                    update={
+                        "projection": camera.projection.model_copy(
+                            update={"near_clip_mm": 1, "far_clip_mm": 5_500}
+                        )
+                    }
+                ),
+            )
+        )
+        target = next(
+            component.id
+            for component in manifest.components
+            if component.display_name == "target-behind-wall"
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        label_runtime = controller.request("session.runtime")["components"][target]
+        controller.render_image(
+            RenderImageCommand(
+                request_id="far-clipped-label",
+                op="render.image",
+                output_path=str(labeled_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+
+    assert label_runtime["label_hide_render"] is True
+    assert magenta_pixel_count(labeled_path) == 0
+
+
+def test_labeled_mark_uses_overlay_plane_inside_tight_clip_range(tmp_path: Path) -> None:
+    source = build_hidden_label_glb(tmp_path, target_size=0.1, wall_x=0.125)
+    highlighted_path = tmp_path / "tight-clip-highlight.png"
+    labeled_path = tmp_path / "tight-clip-label.png"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        camera = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        ).camera
+        assert isinstance(camera.projection, PerspectiveProjection)
+        controller.execute(
+            ViewSetCommand(
+                request_id="tight-clip-camera",
+                op="view.set",
+                camera=camera.model_copy(
+                    update={
+                        "pose": camera.pose.model_copy(update={"position_mm": (9_750, 0, 0)}),
+                        "projection": camera.projection.model_copy(
+                            update={"near_clip_mm": 9_500, "far_clip_mm": 10_000}
+                        ),
+                    }
+                ),
+            )
+        )
+        target = next(
+            component.id
+            for component in manifest.components
+            if component.display_name == "target-behind-wall"
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="highlighted",
+            color="#ff00ff",
+        )
+        controller.render_image(
+            RenderImageCommand(
+                request_id="tight-clip-highlight",
+                op="render.image",
+                output_path=str(highlighted_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        label_runtime = controller.request("session.runtime")["components"][target]
+        controller.render_image(
+            RenderImageCommand(
+                request_id="tight-clip-label",
+                op="render.image",
+                output_path=str(labeled_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+
+    assert label_runtime["label_hide_render"] is False
+    label_depth_mm = 9_750 - label_runtime["label_location_m"][0] * 1_000
+    assert 9_500 < label_depth_mm < 10_000
+    assert magenta_pixel_count(highlighted_path) == 0
+    assert magenta_pixel_count(labeled_path) > 100
+
+
 @pytest.mark.parametrize(
     ("render_engine", "depth_of_field"),
     [
@@ -5703,17 +5838,10 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
 
     assert rendered.engine is render_engine
 
-    def magenta_pixels(path: Path) -> int:
-        image = Image.open(path).convert("RGB")
-        pixels = cast(list[tuple[int, int, int]], image.get_flattened_data())
-        return sum(
-            red > 40 and red > green + 10 and blue > green + 10 for red, green, blue in pixels
-        )
-
     # The wall completely hides the highlighted target (the positive control), while the
     # identically colored screen-space label remains visible in the second render.
-    assert magenta_pixels(highlighted_path) == 0
-    assert magenta_pixels(labeled_path) > 100
+    assert magenta_pixel_count(highlighted_path) == 0
+    assert magenta_pixel_count(labeled_path) > 100
 
 
 def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:
