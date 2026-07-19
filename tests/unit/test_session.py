@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from meshprobe.models import CameraPoseFrame, DisplayMode, MarkMode, SceneManifest
+from meshprobe.models import (
+    CameraPoseFrame,
+    DisplayMode,
+    IsolationOperation,
+    MarkMode,
+    SceneManifest,
+)
 from meshprobe.session import InspectionSession
 
 
@@ -17,6 +23,19 @@ def test_isolate_hides_every_other_component(scene_manifest: SceneManifest) -> N
         for component_id, state in snapshot.components.items()
         if component_id != target
     )
+
+
+def test_isolation_can_add_and_remove_components(scene_manifest: SceneManifest) -> None:
+    session = InspectionSession(scene_manifest)
+    first, second = (component.id for component in scene_manifest.components[-2:])
+    session.display([first], DisplayMode.ISOLATED)
+    added = session.display([second], DisplayMode.ISOLATED, IsolationOperation.ADD)
+    removed = session.display([first], DisplayMode.ISOLATED, IsolationOperation.REMOVE)
+
+    assert added.components[first].display is DisplayMode.ISOLATED
+    assert added.components[second].display is DisplayMode.ISOLATED
+    assert removed.components[first].display is DisplayMode.HIDDEN
+    assert removed.components[second].display is DisplayMode.ISOLATED
 
 
 def test_reset_restores_imported_state_and_hash(scene_manifest: SceneManifest) -> None:

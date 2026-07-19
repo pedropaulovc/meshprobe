@@ -54,6 +54,57 @@ def test_schema_command_emits_discriminated_union() -> None:
     assert json.loads(result.stdout)["discriminator"]["propertyName"] == "op"
 
 
+def test_render_commands_accept_orbit_sweep_and_reference_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    reference = tmp_path / "historical.png"
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), "black").save(reference)
+
+    sweep = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "render-sheet",
+            "--azimuth",
+            "-5,-20,-35",
+            "--elevation",
+            "-10,-25",
+            "--samples",
+            "1",
+        ],
+    )
+    comparison = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "render-image",
+            "--reference-image",
+            str(reference),
+            "--comparison",
+            "side-by-side",
+            "--comparison-output",
+            str(tmp_path / "comparison.png"),
+        ],
+    )
+
+    assert sweep.exit_code == 0, sweep.output
+    assert comparison.exit_code == 0, comparison.output
+    sheet_command, image_command = client.commands
+    assert isinstance(sheet_command, RenderContactSheetCommand)
+    assert sheet_command.recipe == "orbit_sweep"
+    assert sheet_command.orbit_sweep is not None
+    assert sheet_command.orbit_sweep.roll_degrees == (0.0,)
+    assert isinstance(image_command, RenderImageCommand)
+    assert image_command.comparison is not None
+    assert image_command.comparison.mode == "side_by_side"
+
+
 def test_schema_per_command_lookup_returns_only_that_command() -> None:
     """Regression test for #98: `schema view-orbit` used to not exist at all, forcing a
     grep of the whole `--kind commands` dump for e.g. PerspectiveProjection."""

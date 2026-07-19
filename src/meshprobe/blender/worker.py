@@ -796,6 +796,21 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         if requested_projection is not None
         else deepcopy(CURRENT_CAMERA["projection"])
     )
+    if (
+        requested_projection is None
+        and "aspect_ratio" in command
+        and projection["mode"] == "perspective"
+    ):
+        sensor_fit = projection["sensor_fit"]
+        effective_fit = (
+            sensor_fit
+            if sensor_fit != "auto"
+            else ("horizontal" if aspect_ratio >= 1 else "vertical")
+        )
+        if effective_fit == "horizontal":
+            projection["sensor_height_mm"] = projection["sensor_width_mm"] / aspect_ratio
+        else:
+            projection["sensor_width_mm"] = projection["sensor_height_mm"] * aspect_ratio
     camera = {
         "pose": {
             "position_mm": [value * MILLIMETERS_PER_METER for value in position],
@@ -1836,6 +1851,18 @@ def component_display(command: dict[str, Any]) -> dict[str, Any]:
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode: {mode}")
     if mode == "isolated":
+        operation = command.get("operation", "replace")
+        if operation not in {"replace", "add", "remove"}:
+            raise ValueError(f"unknown isolation operation: {operation}")
+        current = {
+            component_id
+            for component_id, state in COMPONENT_STATES.items()
+            if state["display"] == "isolated"
+        }
+        if operation == "add":
+            selected |= current
+        if operation == "remove":
+            selected = current - selected
         for component_id in COMPONENT_OBJECTS:
             set_component_visibility(
                 component_id, "isolated" if component_id in selected else "hidden"

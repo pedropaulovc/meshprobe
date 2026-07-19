@@ -563,6 +563,12 @@ class DisplayMode(StrEnum):
     GHOSTED = "ghosted"
 
 
+class IsolationOperation(StrEnum):
+    REPLACE = "replace"
+    ADD = "add"
+    REMOVE = "remove"
+
+
 class MarkMode(StrEnum):
     UNMARKED = "unmarked"
     SELECTED = "selected"
@@ -817,6 +823,40 @@ class ImageArtifact(ContractModel):
     bytes: Annotated[int, Field(ge=1)]
 
 
+class RasterDimensions(ContractModel):
+    width: Annotated[int, Field(ge=1)]
+    height: Annotated[int, Field(ge=1)]
+
+
+class ReferenceImage(ContractModel):
+    """An immutable local raster input, deliberately not a generated artifact."""
+
+    path: Annotated[str, StringConstraints(min_length=1, max_length=4_096)]
+    media_type: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    dimensions: RasterDimensions
+
+
+class ImagePlacement(ContractModel):
+    """A no-distortion placement of one source image in a comparison cell."""
+
+    source_dimensions: RasterDimensions
+    scale: PositiveFiniteFloat
+    output_dimensions: RasterDimensions
+    padding_left: Annotated[int, Field(ge=0)]
+    padding_top: Annotated[int, Field(ge=0)]
+    padding_right: Annotated[int, Field(ge=0)]
+    padding_bottom: Annotated[int, Field(ge=0)]
+
+
+class RenderComparisonManifest(ContractModel):
+    mode: Literal["side_by_side"]
+    artifact: ImageArtifact
+    reference: ReferenceImage
+    render_placement: ImagePlacement
+    reference_placement: ImagePlacement
+
+
 class LuminanceSummary(ContractModel):
     """Exposure statistics of a rendered frame's luminance.
 
@@ -934,6 +974,7 @@ class RenderManifest(ContractModel):
     foreground: RenderForeground | None = None
     warnings: tuple[Annotated[str, StringConstraints(min_length=1, max_length=1_024)], ...] = ()
     resolved_depth_of_field: ResolvedDepthOfField | None = None
+    comparison: RenderComparisonManifest | None = None
 
     @model_validator(mode="after")
     def validate_session_hash(self) -> Self:
@@ -988,6 +1029,23 @@ class ContactSheetOrbit(ContractModel):
     projection: Projection
     reference_focal_length_mm: PositiveFiniteFloat | None = None
     reference_distance_mm: PositiveFiniteFloat | None = None
+
+
+class OrbitSweep(ContractModel):
+    """A bounded cartesian camera search for matching a reference view."""
+
+    azimuth_degrees: tuple[FiniteFloat, ...] = Field(min_length=1, max_length=9)
+    elevation_degrees: tuple[FiniteFloat, ...] = Field(min_length=1, max_length=9)
+    roll_degrees: tuple[FiniteFloat, ...] = (0.0,)
+    target: Literal["scene", "focus"] = "scene"
+    projection: Projection = PerspectiveProjection()
+
+    @model_validator(mode="after")
+    def validate_panel_count(self) -> Self:
+        count = len(self.azimuth_degrees) * len(self.elevation_degrees) * len(self.roll_degrees)
+        if count > 9:
+            raise ValueError("orbit_sweep supports at most nine camera combinations")
+        return self
 
 
 class ContactSheetPanelSpec(ContractModel):
@@ -1247,8 +1305,8 @@ class OcclusionQueryResult(ContractModel):
 
 class ContactSheetManifest(ContractModel):
     schema_version: Literal[5] = 5
-    recipe: Literal["focused_3x3", "custom_3x3"]
-    focus_component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    recipe: Literal["focused_3x3", "custom_3x3", "orbit_sweep"]
+    focus_component_ids: tuple[Identifier, ...] = ()
     removed_occluder_ids: tuple[Identifier, ...] = ()
     occlusion: OcclusionEvidence | None = Field(
         default=None,
@@ -1256,15 +1314,17 @@ class ContactSheetManifest(ContractModel):
     )
     sheet: ImageArtifact
     panels: tuple[ContactSheetPanel, ...] = Field(
-        min_length=9,
+        min_length=1,
         max_length=9,
-        description="The nine rendered panels, each with its caption and numbered callouts.",
+        description="Rendered panels in row-major order, each with its caption and callouts.",
     )
 
     @model_validator(mode="after")
     def validate_panel_indices(self) -> Self:
-        if tuple(panel.index for panel in self.panels) != tuple(range(1, 10)):
-            raise ValueError("focused contact-sheet panel indices must be 1 through 9")
+        if tuple(panel.index for panel in self.panels) != tuple(range(1, len(self.panels) + 1)):
+            raise ValueError("contact-sheet panel indices must be consecutive from 1")
+        if self.recipe in {"focused_3x3", "custom_3x3"} and len(self.panels) != 9:
+            raise ValueError(f"{self.recipe} requires exactly nine panels")
         return self
 
 

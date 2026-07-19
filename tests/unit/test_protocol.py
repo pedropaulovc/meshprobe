@@ -6,12 +6,13 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from meshprobe.models import CoordinateFrame
+from meshprobe.models import CoordinateFrame, DisplayMode, IsolationOperation
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     COMMAND_MODELS,
     CommandEffect,
     ComponentFindCommand,
+    ComponentDisplayCommand,
     ComponentOcclusionCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -40,6 +41,26 @@ def test_find_command_round_trip() -> None:
 def test_unknown_operation_fails() -> None:
     with pytest.raises(ValidationError):
         parse_command_json('{"request_id":"req-1","op":"geometry.delete"}')
+
+
+def test_display_isolation_operation_requires_isolation_mode() -> None:
+    command = ComponentDisplayCommand(
+        request_id="display",
+        op="component.display",
+        component_ids=("cmp-a",),
+        mode=DisplayMode.ISOLATED,
+        operation=IsolationOperation.ADD,
+    )
+
+    assert command.operation is IsolationOperation.ADD
+    with pytest.raises(ValidationError, match="operation requires mode=isolated"):
+        ComponentDisplayCommand(
+            request_id="display",
+            op="component.display",
+            component_ids=("cmp-a",),
+            mode=DisplayMode.SHOWN,
+            operation=IsolationOperation.ADD,
+        )
 
 
 def test_schema_contains_all_public_operations() -> None:
@@ -348,6 +369,42 @@ def test_custom_contact_sheet_requires_nine_declared_panels() -> None:
                 "focus_component_ids": ["cmp_target"],
                 "output_path": "sheet.png",
                 "panels": [panel],
+            }
+        )
+
+
+def test_orbit_sweep_accepts_six_panels_and_validates_focus_target() -> None:
+    command = COMMAND_ADAPTER.validate_python(
+        {
+            "request_id": "sweep",
+            "op": "render.contact_sheet",
+            "recipe": "orbit_sweep",
+            "output_path": "sweep.png",
+            "orbit_sweep": {
+                "azimuth_degrees": [-5, -20, -35],
+                "elevation_degrees": [-10, -25],
+            },
+        }
+    )
+
+    assert isinstance(command, RenderContactSheetCommand)
+    assert command.orbit_sweep is not None
+    combinations = len(command.orbit_sweep.azimuth_degrees) * len(
+        command.orbit_sweep.elevation_degrees
+    )
+    assert combinations == 6
+    with pytest.raises(ValidationError, match="focus-targeted"):
+        COMMAND_ADAPTER.validate_python(
+            {
+                "request_id": "focus-sweep",
+                "op": "render.contact_sheet",
+                "recipe": "orbit_sweep",
+                "output_path": "sweep.png",
+                "orbit_sweep": {
+                    "azimuth_degrees": [0],
+                    "elevation_degrees": [0],
+                    "target": "focus",
+                },
             }
         )
 
