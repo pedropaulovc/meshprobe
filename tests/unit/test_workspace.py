@@ -10,6 +10,7 @@ from pydantic import JsonValue
 
 from meshprobe.camera import orbit_angles_from_orientation
 from meshprobe.models import (
+    CapabilityWarning,
     CustomIllumination,
     DisplayMode,
     EdgeType,
@@ -604,8 +605,38 @@ def test_find_receipt_reports_match_count(tmp_path: Path, scene_manifest: SceneM
     )
 
     assert hit.match_count == 1
+    assert [(component.ref, component.name, component.path) for component in hit.components] == [
+        ("c3", "idler", "assembly/drive/idler")
+    ]
     assert miss.match_count == 0
+    assert miss.components == ()
     assert snapshot.match_count is None
+
+
+def test_open_receipt_surfaces_all_manifest_warnings(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manifest = scene_manifest.model_copy(
+        update={
+            "warnings": (
+                CapabilityWarning(code="illumination.generated", message="Generated lighting."),
+                CapabilityWarning(code="hierarchy.flattened", message="Flattened hierarchy."),
+            )
+        }
+    )
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+
+    receipt = manager.open("review", source)
+
+    assert receipt.warnings == (
+        "illumination.generated: Generated lighting.",
+        "hierarchy.flattened: Flattened hierarchy.",
+    )
 
 
 def test_view_frame_is_recorded_for_checkpoint_recovery(
