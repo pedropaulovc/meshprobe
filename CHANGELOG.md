@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-18
+
+### Added
+
+- `--render` on `open`, `display`, `mark`, `illumination-set`, every `view-*` command,
+  and `reset`, so agents can mutate visual state and inspect the resulting frame in one CLI
+  invocation while retaining separate journal entries and machine-readable receipts.
+- Durable `undo [COUNT]` for visual state changes. Queries and renders do not consume history,
+  reset starts a new undo boundary, and undo remains atomic across renderer and daemon failures.
+
+### Changed
+
+- Opt-in renders preserve the session's framing aspect ratio within the default 2576-pixel
+  render budget and report partial success clearly when the mutation succeeds but rendering fails.
+- CLI help now lists illumination presets, explains every mark mode, and documents the focused
+  contact sheet's context, blocker-removal, and six-axis panels.
+- Durable `checkpoint.json` state now uses schema 3: compatibility baselines live in
+  `replay_prefix`, while `accepted_commands` contains only undoable mutations since the last reset.
+- Opaque-scene foreground checks use a uniform material override instead of rebuilding materials
+  for every component, while transparent and mixed-culling scenes retain exact material handling.
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.0.0 package
+  and importer identities.
+
+### Fixed
+
+- Labeled components are now composited as clip-aware annotations, so surrounding geometry cannot
+  hide them and depth of field cannot blur them. Labels remain excluded from scene lighting and
+  evaluator Depth/Normal evidence in both Eevee and Cycles.
+
 ## [0.4.0] - 2026-07-18
 
 ### Added
@@ -135,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pedropaulovc/meshprobe/releases/tag/v0.2.0
