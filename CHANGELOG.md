@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-18
+
+### Fixed
+
+- Compact JSON receipts from `open` now include every scene-import warning with its stable code,
+  including generated illumination, flattened hierarchy, and reconstructed camera lenses.
+- Compact JSON receipts from `find` now include each matched component's ref, ID, name, and path.
+
 ## [1.0.0] - 2026-07-18
 
 ### Added
@@ -164,7 +172,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.2.0...v0.3.0
