@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import JsonValue
 
+import meshprobe.evals.harness.broker as broker_module
 from meshprobe.evals.harness.broker import (
     EvaluationBroker,
+    _comparison_artifact_virtual_path,
     _contact_sheet_minimum_output_reservation,
     _render_output_reservation,
 )
@@ -206,7 +209,12 @@ def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
     assert isinstance(comparison, dict)
     artifact = comparison["artifact"]
     assert isinstance(artifact, dict)
-    assert artifact["path"] == "/workspace/artifacts/comparison.png"
+    assert artifact["path"] == visible_artifact_path(
+        tmp_path / "agent" / "artifacts" / "comparison.png"
+    )
+    reference_manifest = comparison["reference"]
+    assert isinstance(reference_manifest, dict)
+    assert reference_manifest["path"] == visible_input_path(reference)
     private_result = active.events[-1].result
     assert isinstance(private_result, dict)
     private_comparison = private_result["comparison"]
@@ -237,6 +245,36 @@ def test_broker_charges_orbit_sweeps_by_their_actual_panel_count(tmp_path: Path)
 
     assert renders == 1
     assert pixels == 128 * 128
+
+
+def test_broker_reserves_orbit_sweep_bytes_by_actual_panel_count(tmp_path: Path) -> None:
+    one_panel_reservation = _contact_sheet_minimum_output_reservation(128, 128, 1)
+    assert one_panel_reservation < _contact_sheet_minimum_output_reservation(128, 128, 9)
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(
+            tool_calls=1,
+            renders=1,
+            total_pixels=128 * 128,
+            output_bytes=one_panel_reservation,
+        ),
+    )
+    command = RenderContactSheetCommand(
+        request_id="one-panel-sweep",
+        op="render.contact_sheet",
+        output_path="sweep.png",
+        recipe="orbit_sweep",
+        orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+        panel_width=128,
+        panel_height=128,
+        samples=1,
+    )
+
+    _translated, renders, pixels, byte_reservation, _staging = active._translate_and_reserve(
+        command, 1
+    )
+
+    assert (renders, pixels, byte_reservation) == (1, 128 * 128, one_panel_reservation)
 
 
 def test_broker_records_occlusion_queries(tmp_path: Path) -> None:
@@ -480,6 +518,56 @@ def test_broker_reserves_output_bytes_before_calling_renderer(tmp_path: Path) ->
     assert service.commands == []
     assert active.metrics.output_bytes == 0
     assert not (tmp_path / "agent" / "artifacts" / "evidence.png").exists()
+
+
+def test_broker_rejects_undersized_comparison_before_calling_renderer(tmp_path: Path) -> None:
+    service = FakeEvaluationService()
+    required = _render_output_reservation(64 * 64)
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(
+            tool_calls=1,
+            renders=1,
+            total_pixels=64 * 64,
+            output_bytes=required - 1,
+        ),
+    )
+    reference = tmp_path / "input" / "reference.png"
+    reference.write_bytes(b"reference")
+
+    rejected = active.execute(
+        RenderImageCommand(
+            request_id="comparison-too-large",
+            op="render.image",
+            output_path="evidence.png",
+            width=64,
+            height=64,
+            comparison=RenderComparisonRequest(
+                reference_image_path=visible_input_path(reference),
+                mode="side_by_side",
+                output_path="comparison.png",
+            ),
+        )
+    )
+
+    assert rejected.error is not None
+    assert rejected.error.code == "budget.output_bytes"
+    assert service.commands == []
+
+
+def test_comparison_artifact_path_stays_host_visible_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact = artifact_root / "comparison.png"
+    monkeypatch.setattr(broker_module, "os", SimpleNamespace(name="nt"))
+
+    visible = _comparison_artifact_virtual_path(
+        {"comparison": {"artifact": {"path": str(artifact)}}}, artifact_root
+    )
+
+    assert visible == str(artifact)
 
 
 def test_broker_reserves_remaining_bytes_for_dynamic_contact_sheet_captions(

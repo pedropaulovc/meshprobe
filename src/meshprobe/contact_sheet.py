@@ -16,6 +16,8 @@ from meshprobe.models import (
 )
 from meshprobe.sources import sha256_file
 
+_MAX_COMPARISON_CELL_DIMENSION = 2576
+
 
 def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
@@ -26,7 +28,7 @@ def compose_side_by_side_comparison(
     reference_path: Path,
     output_path: Path,
 ) -> tuple[ImageArtifact, ReferenceImage, ImagePlacement, ImagePlacement]:
-    """Compose two complete images at one height without cropping or distortion."""
+    """Compose two complete images in bounded cells without cropping or distortion."""
 
     reference_sha256 = sha256_file(reference_path)
     with Image.open(render_path) as render_source, Image.open(reference_path) as reference_source:
@@ -39,37 +41,63 @@ def compose_side_by_side_comparison(
         reference_dimensions = RasterDimensions(
             width=reference_image.width, height=reference_image.height
         )
-        target_height = max(render.height, reference_image.height)
+        # Comparison images are independently supplied, unlike two contact-sheet panels
+        # that share one render size. A very tall render alongside a very wide reference
+        # used to expand the wide image to the tall image's height and allocate a canvas
+        # measuring millions of pixels across. Keep the familiar shared-height layout
+        # where it fits, but bound every cell to the normal render long-edge budget.
+        target_height = min(
+            max(render.height, reference_image.height), _MAX_COMPARISON_CELL_DIMENSION
+        )
+
+        def target_width(source: Image.Image) -> int:
+            return max(1, round(source.width * target_height / source.height))
+
+        cell_width = min(
+            max(target_width(render), target_width(reference_image)),
+            _MAX_COMPARISON_CELL_DIMENSION,
+        )
 
         def resize(source: Image.Image) -> tuple[Image.Image, float]:
-            scale = target_height / source.height
+            scale = min(target_height / source.height, cell_width / source.width)
             width = max(1, round(source.width * scale))
-            return source.resize((width, target_height), Image.Resampling.LANCZOS), scale
+            height = max(1, round(source.height * scale))
+            return source.resize((width, height), Image.Resampling.LANCZOS), scale
 
         fitted_render, render_scale = resize(render)
         fitted_reference, reference_scale = resize(reference_image)
-        cell_width = max(fitted_render.width, fitted_reference.width)
 
         def placement(
             source: Image.Image, dimensions: RasterDimensions, scale: float
         ) -> ImagePlacement:
             left = (cell_width - source.width) // 2
             right = cell_width - source.width - left
+            top = (target_height - source.height) // 2
+            bottom = target_height - source.height - top
             return ImagePlacement(
                 source_dimensions=dimensions,
                 scale=scale,
                 output_dimensions=RasterDimensions(width=source.width, height=source.height),
                 padding_left=left,
-                padding_top=0,
+                padding_top=top,
                 padding_right=right,
-                padding_bottom=0,
+                padding_bottom=bottom,
             )
 
         render_placement = placement(fitted_render, render_dimensions, render_scale)
         reference_placement = placement(fitted_reference, reference_dimensions, reference_scale)
         comparison = Image.new("RGB", (cell_width * 2, target_height), "#17191d")
-        comparison.paste(fitted_render, (render_placement.padding_left, 0))
-        comparison.paste(fitted_reference, (cell_width + reference_placement.padding_left, 0))
+        comparison.paste(
+            fitted_render,
+            (render_placement.padding_left, render_placement.padding_top),
+        )
+        comparison.paste(
+            fitted_reference,
+            (
+                cell_width + reference_placement.padding_left,
+                reference_placement.padding_top,
+            ),
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = contact_sheet_staging_path(output_path)
         comparison.save(staging, format="PNG", optimize=True)

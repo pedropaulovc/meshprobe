@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from pydantic import JsonValue
 
@@ -124,6 +125,18 @@ def _normalize_optional_render_fields(manifest: dict[str, JsonValue]) -> None:
         return
     if isinstance(comparison, dict):
         comparison.pop("artifact", None)
+        reference = comparison.get("reference")
+        if isinstance(reference, dict) and _is_generated_artifact_reference(reference.get("path")):
+            reference.pop("sha256", None)
+
+
+def _is_generated_artifact_reference(path: JsonValue | None) -> bool:
+    if not isinstance(path, str):
+        return False
+    candidate = PurePosixPath(path)
+    return candidate.is_absolute() and candidate.is_relative_to(
+        PurePosixPath("/workspace/artifacts")
+    )
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:

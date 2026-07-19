@@ -169,7 +169,10 @@ def test_render_replay_normalizes_absent_and_derived_comparison_artifacts() -> N
         "state_sha256": "a" * 64,
         "comparison": {
             "mode": "side_by_side",
-            "reference": {"sha256": "b" * 64},
+            "reference": {
+                "path": "/workspace/artifacts/first.png",
+                "sha256": "b" * 64,
+            },
             "artifact": {"path": "first.png", "sha256": "c" * 64},
         },
     }
@@ -177,7 +180,10 @@ def test_render_replay_normalizes_absent_and_derived_comparison_artifacts() -> N
         "state_sha256": "a" * 64,
         "comparison": {
             "mode": "side_by_side",
-            "reference": {"sha256": "b" * 64},
+            "reference": {
+                "path": "/workspace/artifacts/first.png",
+                "sha256": "e" * 64,
+            },
             "artifact": {"path": "second.png", "sha256": "d" * 64},
         },
     }

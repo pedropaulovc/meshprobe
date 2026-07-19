@@ -17,6 +17,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
+from PIL import Image
+
 from meshprobe.artifacts import ArtifactCache, JsonValue
 from meshprobe.camera import camera_diagnostics, orbit_camera
 from meshprobe.contact_sheet import (
@@ -750,6 +752,13 @@ class BlenderController:
                 raise BlenderWorkerError(
                     "render, reference, comparison output, and comparison staging paths must differ"
                 )
+            try:
+                with Image.open(reference_image) as image:
+                    image.verify()
+            except (OSError, ValueError) as error:
+                raise BlenderWorkerError(
+                    f"reference image is not decodable: {reference_image}"
+                ) from error
         source_paths = {asset.path for asset in self._source_snapshot.assets}
         output_paths = self._render_output_paths(output, evaluator_output_dir)
         if comparison_output is not None:

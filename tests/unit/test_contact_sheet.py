@@ -84,6 +84,24 @@ def test_side_by_side_comparison_preserves_aspect_ratios_and_reference_hash(
     assert reference_placement.padding_right == 175
 
 
+def test_side_by_side_comparison_bounds_opposite_extreme_aspect_ratios(tmp_path: Path) -> None:
+    render = tmp_path / "render.png"
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (64, 16_384), "red").save(render)
+    Image.new("RGB", (16_384, 64), "blue").save(reference)
+
+    artifact, _reference_manifest, render_placement, reference_placement = (
+        compose_side_by_side_comparison(render, reference, tmp_path / "comparison.png")
+    )
+
+    assert Image.open(artifact.path).size == (5_152, 2_576)
+    assert render_placement.output_dimensions.model_dump() == {"width": 10, "height": 2_576}
+    assert render_placement.padding_top == render_placement.padding_bottom == 0
+    assert reference_placement.output_dimensions.model_dump() == {"width": 2_576, "height": 10}
+    assert reference_placement.padding_top == reference_placement.padding_bottom == 1_283
+    assert render_placement.scale == reference_placement.scale == pytest.approx(2576 / 16384)
+
+
 def test_compose_contact_sheet_expands_to_render_every_caption_line(tmp_path: Path) -> None:
     names = tuple(f"blocker-{index}-" + "x" * 80 for index in range(1, 10))
     caption = "Occluders removed:\n" + "\n".join(

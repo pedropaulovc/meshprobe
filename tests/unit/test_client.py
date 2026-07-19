@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
-from meshprobe.models import PerspectiveProjection
+from meshprobe.models import DisplayMode, IsolationOperation, PerspectiveProjection
 from meshprobe.protocol import (
+    ComponentDisplayCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
@@ -320,6 +321,61 @@ def test_execute_restarts_old_daemon_for_explicit_aspect_ratio(
     assert execute_commands == [
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
+    ]
+
+
+def test_execute_restarts_old_daemon_for_additive_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append({"action": action, **arguments})
+        if (
+            action == "execute"
+            and len([call for call in captured if call["action"] == "execute"]) == 1
+        ):
+            raise ValueError("isolation_operation: Extra inputs are not permitted")
+        return {"session": "review", "op": "component.display"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    client.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="isolate-add",
+            op="component.display",
+            component_ids=("cmp-a",),
+            mode=DisplayMode.ISOLATED,
+            isolation_operation=IsolationOperation.ADD,
+        ),
+    )
+
+    assert close_all_calls == 1
+    execute_commands = [call["command"] for call in captured if call["action"] == "execute"]
+    assert execute_commands == [
+        {
+            "request_id": "isolate-add",
+            "op": "component.display",
+            "component_ids": ["cmp-a"],
+            "mode": "isolated",
+            "isolation_operation": "add",
+        },
+        {
+            "request_id": "isolate-add",
+            "op": "component.display",
+            "component_ids": ["cmp-a"],
+            "mode": "isolated",
+            "isolation_operation": "add",
+        },
     ]
 
 

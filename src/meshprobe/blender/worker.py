@@ -4240,12 +4240,15 @@ def dispatch(command: dict[str, Any]) -> dict[str, Any]:
     if operation == "view.set":
         require_session()
         global CURRENT_CAMERA_OPERATION
-        remember_perspective_sensor_intrinsics(command["camera"]["projection"])
         apply_camera(
             command["camera"],
             command.get("focus_component_ids", ()),
             command.get("aspect_ratio", 1.0),
         )
+        # ``apply_camera`` validates the full request before publishing camera state.
+        # Keep the hidden physical sensor pair equally transactional: a rejected
+        # view.set must not affect the next bare AUTO-fit orbit.
+        remember_perspective_sensor_intrinsics(command["camera"]["projection"])
         CURRENT_CAMERA_OPERATION = None
         return session_snapshot()
     if operation == "view.orbit":
