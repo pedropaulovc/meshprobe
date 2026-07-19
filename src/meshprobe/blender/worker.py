@@ -1707,20 +1707,50 @@ def create_component_label(component_id: str, color: tuple[float, float, float, 
         (minimum[1] + maximum[1]) / 2 / MILLIMETERS_PER_METER,
         (maximum[2] + scene_span * 0.02) / MILLIMETERS_PER_METER,
     )
+    # Keep the semantic world-space anchor separately: the rendered text is projected onto a
+    # camera-facing overlay plane below so dense surrounding geometry cannot hide it. Camera
+    # moves recompute that projection from this stable anchor rather than compounding transforms.
+    label["meshprobe_anchor_m"] = list(label.location)
     label.rotation_mode = "QUATERNION"
-    label.rotation_quaternion = camera_object().matrix_world.to_quaternion()
     color_suffix = COMPONENT_STATES[component_id]["mark_color"]
     material_name = "MeshProbeMark-labeled"
     if color_suffix is not None:
         material_name = f"{material_name}-{color_suffix[1:]}"
     data.materials.append(replacement_material(material_name, color))
     MARK_OBJECTS[component_id] = label
+    orient_component_labels()
 
 
 def orient_component_labels() -> None:
-    orientation = camera_object().matrix_world.to_quaternion()
+    camera = camera_object()
+    orientation = camera.matrix_world.to_quaternion()
+    position = camera.matrix_world.translation
+    right = orientation @ Vector((1.0, 0.0, 0.0))
+    up = orientation @ Vector((0.0, 1.0, 0.0))
+    forward = orientation @ Vector((0.0, 0.0, -1.0))
+    near = camera.data.clip_start
+    overlay_depth = near + max(near * 0.1, 0.0001)
     for label in MARK_OBJECTS.values():
         label.rotation_quaternion = orientation
+        anchor = Vector(label["meshprobe_anchor_m"])
+        offset = anchor - position
+        depth = offset @ forward
+        if depth <= near:
+            # Behind-camera and near-clipped anchors have no meaningful screen position. Keep
+            # their world placement deterministic; a later camera move can project them again.
+            label.location = anchor
+            label.scale = (1.0, 1.0, 1.0)
+            continue
+        horizontal = offset @ right
+        vertical = offset @ up
+        scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
+        label.location = (
+            position
+            + forward * overlay_depth
+            + right * horizontal * scale
+            + up * vertical * scale
+        )
+        label.scale = (scale, scale, scale)
 
 
 def refresh_component_appearance(component_id: str) -> None:
@@ -2383,6 +2413,30 @@ def count_foreground_pixels(path: Path) -> int:
         bpy.data.images.remove(image)
 
 
+def foreground_needs_material_variants() -> bool:
+    """Return whether a flat material override would change visible coverage."""
+
+    for obj in COMPONENT_OBJECTS.values():
+        if obj.hide_render:
+            continue
+        for material in obj.data.materials:
+            if material is None:
+                continue
+            if material.use_backface_culling or material.diffuse_color[3] < 1.0:
+                return True
+            if not material.use_nodes:
+                continue
+            principled = material.node_tree.nodes.get("Principled BSDF")
+            if principled is None:
+                # Unknown node graphs may contain Transparent/Holdout shaders. Preserve them
+                # instead of guessing that an arbitrary graph is opaque.
+                return True
+            alpha = principled.inputs.get("Alpha")
+            if alpha is None or alpha.is_linked or float(alpha.default_value) < 1.0:
+                return True
+    return False
+
+
 def foreground_coverage() -> dict[str, Any]:
     """Measure how much of the current frame any shown component actually covers.
 
@@ -2416,7 +2470,11 @@ def foreground_coverage() -> dict[str, Any]:
             scene.render.resolution_x = sample_width
             scene.render.resolution_y = sample_height
             scene.render.resolution_percentage = 100
-            render_mask(mask_path, colors, respect_material_visibility=True)
+            render_mask(
+                mask_path,
+                colors,
+                respect_material_visibility=foreground_needs_material_variants(),
+            )
             visible_pixels = count_foreground_pixels(mask_path)
         finally:
             (
@@ -2550,6 +2608,7 @@ def render_mask(
     respect_material_visibility: bool = False,
 ) -> None:
     scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
     original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
     other_visibility = {
         obj: obj.hide_render for obj in scene.objects if obj.type not in {"MESH", "CAMERA"}
@@ -2570,6 +2629,7 @@ def render_mask(
     original_exposure = scene.view_settings.exposure
     original_gamma = scene.view_settings.gamma
     original_dither = scene.render.dither_intensity
+    original_material_override = view_layer.material_override
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     scene.view_settings.exposure = 0.0
@@ -2582,57 +2642,71 @@ def render_mask(
     # just to answer a yes/no coverage question.
     configure_eevee_samples(1)
     mask_variants: list[bpy.types.Material] = []
+    uniform_color = next(iter(set(colors.values()))) if len(set(colors.values())) == 1 else None
     try:
         for obj in other_visibility:
             obj.hide_render = True
-        for component_id, obj in COMPONENT_OBJECTS.items():
-            source_materials = list(obj.data.materials)
-            mesh = obj.data.copy()
-            mesh.materials.clear()
-            red, green, blue = colors[component_id]
-            color = (
-                srgb_channel_to_linear(red),
-                srgb_channel_to_linear(green),
-                srgb_channel_to_linear(blue),
-                1.0,
+        if uniform_color is not None and not respect_material_visibility:
+            red, green, blue = uniform_color
+            view_layer.material_override = emission_material(
+                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}",
+                (
+                    srgb_channel_to_linear(red),
+                    srgb_channel_to_linear(green),
+                    srgb_channel_to_linear(blue),
+                    1.0,
+                ),
             )
-            base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
-            if not respect_material_visibility:
-                mesh.materials.append(emission_material(base_name, color))
-                for polygon in mesh.polygons:
-                    polygon.material_index = 0
-            else:
-                # Preserve each source material's transparency/culling instead of forcing
-                # every polygon opaque and front-and-back visible: a component that is
-                # invisible in the real color render (transparent material — constant,
-                # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
-                # must read the same way in this mask, or the foreground check can't tell
-                # "geometry exists" from "geometry is actually visible". Each source
-                # material gets one alpha-preserving emissive variant; polygons with no
-                # material fall back to a flat opaque mask.
-                flat_index = -1
-                variant_index: dict[str, int] = {}
-                for polygon in mesh.polygons:
-                    original = (
-                        source_materials[polygon.material_index]
-                        if polygon.material_index < len(source_materials)
-                        else None
-                    )
-                    if original is None:
-                        if flat_index < 0:
-                            flat_index = len(mesh.materials)
-                            mesh.materials.append(emission_material(f"{base_name}-flat", color))
-                        polygon.material_index = flat_index
-                        continue
-                    if original.name not in variant_index:
-                        variant = mask_alpha_variant_material(original, color)
-                        mask_variants.append(variant)
-                        variant_index[original.name] = len(mesh.materials)
-                        mesh.materials.append(variant)
-                    polygon.material_index = variant_index[original.name]
-            obj.data = mesh
+        else:
+            for component_id, obj in COMPONENT_OBJECTS.items():
+                source_materials = list(obj.data.materials)
+                mesh = obj.data.copy()
+                mesh.materials.clear()
+                red, green, blue = colors[component_id]
+                color = (
+                    srgb_channel_to_linear(red),
+                    srgb_channel_to_linear(green),
+                    srgb_channel_to_linear(blue),
+                    1.0,
+                )
+                base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
+                if not respect_material_visibility:
+                    mesh.materials.append(emission_material(base_name, color))
+                    for polygon in mesh.polygons:
+                        polygon.material_index = 0
+                else:
+                    # Preserve each source material's transparency/culling instead of forcing
+                    # every polygon opaque and front-and-back visible: a component that is
+                    # invisible in the real color render (transparent material — constant,
+                    # glTF MASK cutoff, or a per-pixel alpha texture — or a culled backface)
+                    # must read the same way in this mask, or the foreground check can't tell
+                    # "geometry exists" from "geometry is actually visible". Each source
+                    # material gets one alpha-preserving emissive variant; polygons with no
+                    # material fall back to a flat opaque mask.
+                    flat_index = -1
+                    variant_index: dict[str, int] = {}
+                    for polygon in mesh.polygons:
+                        original = (
+                            source_materials[polygon.material_index]
+                            if polygon.material_index < len(source_materials)
+                            else None
+                        )
+                        if original is None:
+                            if flat_index < 0:
+                                flat_index = len(mesh.materials)
+                                mesh.materials.append(emission_material(f"{base_name}-flat", color))
+                            polygon.material_index = flat_index
+                            continue
+                        if original.name not in variant_index:
+                            variant = mask_alpha_variant_material(original, color)
+                            mask_variants.append(variant)
+                            variant_index[original.name] = len(mesh.materials)
+                            mesh.materials.append(variant)
+                        polygon.material_index = variant_index[original.name]
+                obj.data = mesh
         render_still(path)
     finally:
+        view_layer.material_override = original_material_override
         for component_id, obj in COMPONENT_OBJECTS.items():
             replacement = obj.data
             obj.data = original_meshes[component_id]
