@@ -207,6 +207,13 @@ def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
     artifact = comparison["artifact"]
     assert isinstance(artifact, dict)
     assert artifact["path"] == "/workspace/artifacts/comparison.png"
+    private_result = active.events[-1].result
+    assert isinstance(private_result, dict)
+    private_comparison = private_result["comparison"]
+    assert isinstance(private_comparison, dict)
+    private_artifact = private_comparison["artifact"]
+    assert isinstance(private_artifact, dict)
+    assert private_artifact["path"] == str(tmp_path / "agent" / "artifacts" / "comparison.png")
     assert active.metrics.output_bytes == 36
 
 

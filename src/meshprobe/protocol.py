@@ -312,7 +312,11 @@ type Command = Annotated[
 
 def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
     """Serialize commands while preserving omitted optional wire fields."""
-    payload = command.model_dump(mode="json", exclude=exclude, exclude_none=True)
+    payload = command.model_dump(mode="json", exclude=exclude)
+    if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is None:
+        payload.pop("isolation_operation")
+    if isinstance(command, RenderImageCommand) and command.comparison is None:
+        payload.pop("comparison")
     if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):

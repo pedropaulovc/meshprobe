@@ -177,6 +177,12 @@ class EvaluationBroker:
                 self._artifact_root,
                 self._evaluator_root,
             )
+            comparison_path = _comparison_artifact_virtual_path(
+                private_result,
+                self._artifact_root,
+            )
+            if comparison_path is not None:
+                public_result = _with_comparison_artifact_path(public_result, comparison_path)
             public_response = response.model_copy(update={"result": public_result})
             reply = BrokerReply(ok=True, response=public_response)
         except _RejectedCommand as error:
@@ -579,3 +585,40 @@ def _public_result(value: JsonValue, artifact_root: Path, evaluator_root: Path) 
             return str(candidate)
         return f"/workspace/artifacts/{relative}"
     return value
+
+
+def _comparison_artifact_virtual_path(value: JsonValue, artifact_root: Path) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    comparison = value.get("comparison")
+    if not isinstance(comparison, dict):
+        return None
+    artifact = comparison.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    path = artifact.get("path")
+    if not isinstance(path, str):
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute() or not candidate.is_relative_to(artifact_root):
+        return None
+    relative = candidate.relative_to(artifact_root).as_posix()
+    return f"/workspace/artifacts/{relative}"
+
+
+def _with_comparison_artifact_path(value: JsonValue, path: str) -> JsonValue:
+    if not isinstance(value, dict):
+        return value
+    comparison = value.get("comparison")
+    if not isinstance(comparison, dict):
+        return value
+    artifact = comparison.get("artifact")
+    if not isinstance(artifact, dict):
+        return value
+    return {
+        **value,
+        "comparison": {
+            **comparison,
+            "artifact": {**artifact, "path": path},
+        },
+    }

@@ -17,6 +17,7 @@ from meshprobe.protocol import (
     RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
+    ViewFrameCommand,
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
@@ -98,6 +99,18 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
         "mode": "side_by_side",
         "output_path": "comparison.png",
     }
+
+
+def test_payload_preserves_legacy_nested_none_fields() -> None:
+    command = ViewFrameCommand(
+        request_id="frame",
+        op="view.frame",
+        focus_component_ids=("cmp-a",),
+    )
+
+    depth_of_field = command_payload(command)["projection"]["depth_of_field"]
+    assert depth_of_field["focus_distance_mm"] is None
+    assert depth_of_field["focus"] is None
 
 
 def test_schema_contains_all_public_operations() -> None:

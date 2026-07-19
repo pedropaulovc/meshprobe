@@ -666,9 +666,10 @@ def camera_object() -> bpy.types.Object:
 def remember_perspective_sensor_intrinsics(projection: dict[str, Any]) -> None:
     """Record the physical sensor dimensions before aspect-ratio derivation."""
     global CURRENT_PERSPECTIVE_SENSOR_INTRINSICS
-    if projection["mode"] != "perspective":
+    if projection.get("mode") != "perspective":
         CURRENT_PERSPECTIVE_SENSOR_INTRINSICS = None
         return
+    projection = normalize_camera_projection(projection)
     CURRENT_PERSPECTIVE_SENSOR_INTRINSICS = (
         projection["sensor_width_mm"],
         projection.get("sensor_height_mm", 24.0),
@@ -1968,7 +1969,9 @@ def reset_session(command: dict[str, Any]) -> dict[str, Any]:
         visible_root_bounds(require_session()["root_bounds"]),
         aspect_ratio=aspect_ratio,
     )
-    remember_perspective_sensor_intrinsics(default_camera["projection"])
+    projection = default_camera.get("projection")
+    if isinstance(projection, dict):
+        remember_perspective_sensor_intrinsics(projection)
     apply_camera(
         default_camera,
         aspect_ratio=aspect_ratio,
