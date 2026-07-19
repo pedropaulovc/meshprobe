@@ -48,6 +48,9 @@ Normal output is a short receipt containing the result and state paths. Add `--j
 `--yaml` for a machine-readable receipt, or `--raw` when the full operation result is actually
 needed. `meshprobe schema --kind state` gives a compact field map for every durable file;
 add `--full` for formal JSON Schemas, and `--yaml` (before or after the subcommand) for YAML output.
+Visual mutations (`open`, `display`, `mark`, `illumination-set`, `view-*`, and `reset`) accept
+`--render` when the next step is to inspect an image. The mutation and render stay as separate
+journaled operations but run in one CLI invocation. Leave it off while chaining setup commands.
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
 `--name NAME` for an exact display name and `--kind regex` only when regular-expression

@@ -205,7 +205,66 @@ def test_render_sheet_help_advertises_occlusion_analysis() -> None:
     result = runner.invoke(app, ["render-sheet", "--help"])
 
     assert result.exit_code == 0
-    assert "automatic occlusion analysis" in unstyle(result.stdout)
+    help_text = " ".join(unstyle(result.stdout).split())
+    assert "automatic occlusion analysis" in help_text
+    assert "Deep pink marks the focus, not the occluders" in help_text
+    assert "one combined focus" in help_text
+    assert "--raw" in help_text
+
+
+def test_mark_help_explains_mode_semantics() -> None:
+    result = runner.invoke(app, ["mark", "--help"])
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.stdout).split())
+    for description in (
+        "unmarked restores source materials",
+        "selected applies cyan",
+        "highlighted applies deep pink",
+        "labeled applies gold and adds the component name",
+    ):
+        assert description in help_text
+
+
+def test_illumination_help_lists_every_preset() -> None:
+    result = runner.invoke(app, ["illumination-set", "--help"])
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.stdout).split())
+    for preset in (
+        "neutral_studio",
+        "high_key",
+        "raking_left",
+        "raking_right",
+        "backlit",
+        "flat_diagnostic",
+        "custom",
+    ):
+        assert preset in help_text
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "open",
+        "view-set",
+        "view-orbit",
+        "view-frame",
+        "view-move",
+        "view-rotate",
+        "illumination-set",
+        "display",
+        "mark",
+        "reset",
+    ),
+)
+def test_visual_mutation_help_offers_opt_in_render(command: str) -> None:
+    result = runner.invoke(app, [command, "--help"], env={"COLUMNS": "140"})
+
+    assert result.exit_code == 0
+    help_text = " ".join(unstyle(result.stdout).split())
+    assert "--render" in help_text
+    assert "resulting state in this CLI call" in help_text
 
 
 def test_render_image_style_help_documents_shaded_edges_cost() -> None:
@@ -844,6 +903,57 @@ def test_component_commands_resolve_short_references(
     mark_command = client.commands[-1]
     assert isinstance(mark_command, ComponentMarkCommand)
     assert mark_command.component_ids == ("component-id",)
+
+
+@pytest.mark.parametrize("output_option", ("--json", "--yaml", "--raw"))
+def test_visual_mutation_can_render_in_one_machine_readable_invocation(
+    output_option: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [output_option, "--session", "review", "mark", "c2", "--mode", "selected", "--render"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [command.op for command in client.commands] == ["component.mark", "render.image"]
+    render_command = client.commands[-1]
+    assert isinstance(render_command, RenderImageCommand)
+    assert Path(render_command.output_path).name.startswith("render-")
+    if output_option == "--yaml":
+        payload = yaml.safe_load(result.stdout)
+    else:
+        payload = json.loads(result.stdout)
+    key = "results" if output_option == "--raw" else "receipts"
+    assert [item["op"] for item in payload[key]] == ["component.mark", "render.image"]
+
+
+def test_visual_mutation_reports_partial_success_when_requested_render_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    execute = client.execute
+
+    def fail_render(session: str, command: Command) -> OperationReceipt:
+        if isinstance(command, RenderImageCommand):
+            raise RuntimeError("renderer unavailable")
+        return execute(session, command)
+
+    monkeypatch.setattr(client, "execute", fail_render)
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "mark", "c2", "--mode", "selected", "--render"],
+    )
+
+    assert result.exit_code == 2
+    assert "component.mark succeeded" in result.output
+    assert "requested render failed: renderer unavailable" in result.output
+    assert [command.op for command in client.commands] == ["component.mark"]
 
 
 def test_compact_receipt_includes_readable_and_stable_component_identity(
