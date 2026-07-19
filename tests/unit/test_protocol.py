@@ -19,6 +19,7 @@ from meshprobe.protocol import (
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
+    command_payload,
     command_result_json_schema,
     parse_command_json,
 )
@@ -61,6 +62,17 @@ def test_display_isolation_operation_requires_isolation_mode() -> None:
             mode=DisplayMode.SHOWN,
             isolation_operation=IsolationOperation.ADD,
         )
+
+
+def test_display_payload_omits_default_isolation_operation() -> None:
+    command = ComponentDisplayCommand(
+        request_id="display",
+        op="component.display",
+        component_ids=("cmp-a",),
+        mode=DisplayMode.ISOLATED,
+    )
+
+    assert "isolation_operation" not in command_payload(command)
 
 
 def test_schema_contains_all_public_operations() -> None:

@@ -309,12 +309,14 @@ type Command = Annotated[
 
 
 def command_payload(command: Command, *, exclude: set[str] | None = None) -> dict[str, Any]:
-    """Serialize a command without turning an omitted framing aspect into an explicit one."""
+    """Serialize commands while preserving omitted optional wire fields."""
     payload = command.model_dump(mode="json", exclude=exclude)
     if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):
         payload.pop("aspect_ratio")
+    if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is None:
+        payload.pop("isolation_operation")
     return payload
 
 

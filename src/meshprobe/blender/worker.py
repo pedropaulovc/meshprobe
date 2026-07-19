@@ -1851,7 +1851,7 @@ def component_display(command: dict[str, Any]) -> dict[str, Any]:
     if mode not in DISPLAY_MODES:
         raise ValueError(f"unknown display mode: {mode}")
     if mode == "isolated":
-        operation = command.get("isolation_operation", "replace")
+        operation = command.get("isolation_operation") or "replace"
         if operation not in {"replace", "add", "remove"}:
             raise ValueError(f"unknown isolation operation: {operation}")
         current = {
