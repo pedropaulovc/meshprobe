@@ -256,9 +256,7 @@ def test_undo_counts_mutation_commands_not_components_or_reads(
         SessionSnapshotCommand(request_id="read-only", op="session.snapshot"),
     )
 
-    first = manager.execute(
-        "review", SessionUndoCommand(request_id="undo-mark", op="session.undo")
-    )
+    first = manager.execute("review", SessionUndoCommand(request_id="undo-mark", op="session.undo"))
     first_result = manager.raw_result(first)
     assert first_result["result"]["undone"] == 1  # type: ignore[index]
     assert first_result["result"]["remaining"] == 1  # type: ignore[index]
@@ -270,9 +268,7 @@ def test_undo_counts_mutation_commands_not_components_or_reads(
         for component_id in component_ids
     )
 
-    manager.execute(
-        "review", SessionUndoCommand(request_id="undo-display", op="session.undo")
-    )
+    manager.execute("review", SessionUndoCommand(request_id="undo-display", op="session.undo"))
     assert services[-1].session is not None
     restored = services[-1].session.snapshot()
     assert all(
@@ -305,9 +301,7 @@ def test_undo_counts_mutation_commands_not_components_or_reads(
     assert counted_result["result"]["undone"] == 2  # type: ignore[index]
     assert counted_result["result"]["remaining"] == 0  # type: ignore[index]
     with pytest.raises(ValueError, match="only 0 available"):
-        manager.execute(
-            "review", SessionUndoCommand(request_id="too-many", op="session.undo")
-        )
+        manager.execute("review", SessionUndoCommand(request_id="too-many", op="session.undo"))
 
 
 def test_undo_survives_manager_restart_and_reset_is_a_hard_boundary(
@@ -355,9 +349,7 @@ def test_undo_survives_manager_restart_and_reset_is_a_hard_boundary(
     )
     recovered.execute("review", SessionResetCommand(request_id="reset", op="session.reset"))
     with pytest.raises(ValueError, match="only 0 available since the last reset"):
-        recovered.execute(
-            "review", SessionUndoCommand(request_id="past-reset", op="session.undo")
-        )
+        recovered.execute("review", SessionUndoCommand(request_id="past-reset", op="session.undo"))
 
 
 def test_undo_replay_failure_keeps_original_service_and_durable_state(
@@ -400,9 +392,7 @@ def test_undo_replay_failure_keeps_original_service_and_durable_state(
     state_before = files.state.read_bytes()
 
     with pytest.raises(RuntimeError, match="forced replay failure: hide"):
-        manager.execute(
-            "review", SessionUndoCommand(request_id="undo-fails", op="session.undo")
-        )
+        manager.execute("review", SessionUndoCommand(request_id="undo-fails", op="session.undo"))
 
     assert len(services) == 2
     assert services[1].killed
@@ -460,9 +450,7 @@ def test_undo_checkpoint_write_failure_rolls_back_derived_files(
 
     monkeypatch.setattr("meshprobe.workspace.atomic_json", fail_checkpoint)
     with pytest.raises(OSError, match="forced checkpoint write failure"):
-        manager.execute(
-            "review", SessionUndoCommand(request_id="undo-write", op="session.undo")
-        )
+        manager.execute("review", SessionUndoCommand(request_id="undo-write", op="session.undo"))
 
     assert services[-1].killed
     assert not services[0].closed

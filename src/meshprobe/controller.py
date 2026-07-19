@@ -82,6 +82,7 @@ __all__ = [
 
 DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
 
+
 def _default_cache_root() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if os.name == "nt" and local_app_data:
