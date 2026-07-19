@@ -2278,58 +2278,26 @@ def hidden_component_labels() -> Iterator[None]:
 
 def composite_label_overlay(path: Path, overlay_path: Path) -> None:
     try:
-        import numpy as np  # type: ignore[import-not-found]
-    except ImportError as error:  # pragma: no cover - numpy ships with Blender
+        import OpenImageIO as oiio  # type: ignore[import-not-found]
+    except ImportError as error:  # pragma: no cover - OpenImageIO ships with Blender
         raise RuntimeError(
-            "Label annotation compositing needs numpy, which is bundled with Blender but was not "
-            "importable in this build"
+            "Label annotation compositing needs OpenImageIO, which is bundled with Blender but "
+            "was not importable in this build"
         ) from error
 
-    base = bpy.data.images.load(str(path), check_existing=False)
-    overlay = bpy.data.images.load(str(overlay_path), check_existing=False)
-    try:
-        if tuple(base.size) != tuple(overlay.size):
-            raise RuntimeError(
-                f"label overlay size {tuple(overlay.size)} does not match render {tuple(base.size)}"
-            )
-        base.colorspace_settings.name = "Non-Color"
-        overlay.colorspace_settings.name = "Non-Color"
-        pixel_count = base.size[0] * base.size[1]
-        base_buffer = np.empty(pixel_count * 4, dtype=np.float32)
-        base.pixels.foreach_get(base_buffer)
-        base_pixels = base_buffer.reshape(-1, 4)
-        # Keep only the base render in one full-size numpy buffer. Blender already stores both
-        # decoded images internally, so another full RGBA overlay buffer would add about 4 GiB
-        # at the public 16k limit. Chunking the sparse annotation layer bounds that extra memory.
-        chunk_pixels = 1_048_576
-        for start in range(0, pixel_count, chunk_pixels):
-            end = min(start + chunk_pixels, pixel_count)
-            overlay_chunk = np.asarray(
-                overlay.pixels[start * 4 : end * 4],
-                dtype=np.float32,
-            ).reshape(-1, 4)
-            overlay_alpha = overlay_chunk[:, 3]
-            inverse_alpha = np.empty_like(overlay_alpha)
-            np.subtract(1.0, overlay_alpha, out=inverse_alpha)
-            base_chunk = base_pixels[start:end]
-            for channel in range(3):
-                base_channel = base_chunk[:, channel]
-                base_channel *= inverse_alpha
-                overlay_channel = overlay_chunk[:, channel]
-                overlay_channel *= overlay_alpha
-                base_channel += overlay_channel
-        # render.image always publishes an opaque PNG: configure_render disables transparent
-        # film, and the only temporary transparent-film path composites its requested display
-        # background before annotations. Preserve that output contract after source-over RGB.
-        base_pixels[:, 3] = 1.0
-        np.clip(base_pixels, 0.0, 1.0, out=base_pixels)
-        base.pixels.foreach_set(base_buffer)
-        base.file_format = "PNG"
-        base.filepath_raw = str(path)
-        base.save()
-    finally:
-        bpy.data.images.remove(overlay)
-        bpy.data.images.remove(base)
+    base = oiio.ImageBuf(str(path))
+    overlay = oiio.ImageBuf(str(overlay_path))
+    base_spec = base.spec()
+    overlay_spec = overlay.spec()
+    base_size = (base_spec.width, base_spec.height)
+    overlay_size = (overlay_spec.width, overlay_spec.height)
+    if base_size != overlay_size:
+        raise RuntimeError(f"label overlay size {overlay_size} does not match render {base_size}")
+    composited = oiio.ImageBufAlgo.over(overlay, base)
+    if composited.has_error:
+        raise RuntimeError(f"failed to composite label overlay: {composited.geterror()}")
+    if not composited.write(str(path)):
+        raise RuntimeError(f"failed to publish label overlay: {composited.geterror()}")
 
 
 def render_label_overlay(path: Path) -> None:
@@ -3065,7 +3033,7 @@ def display_referred_background() -> tuple[float, float, float] | None:
 
 def composite_over_background(path: Path, background_srgb: tuple[float, float, float]) -> None:
     try:
-        import numpy as np
+        import numpy as np  # type: ignore[import-not-found]
     except ImportError as error:  # pragma: no cover - numpy ships with Blender
         raise RuntimeError(
             "--background-srgb compositing needs numpy, which is bundled with Blender but "
