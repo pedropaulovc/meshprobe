@@ -838,6 +838,85 @@ def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None
     _emit_receipt(ctx, client, receipt)
 
 
+DEFAULT_RENDER_MAX_DIMENSION = 2576
+MINIMUM_RENDER_DIMENSION = 64
+
+
+def _aspect_preserving_render_dimensions(aspect_ratio: float) -> tuple[int, int]:
+    """Fit an aspect ratio inside the default render budget without reframing."""
+
+    if aspect_ratio >= 1:
+        width = DEFAULT_RENDER_MAX_DIMENSION
+        height = round(width / aspect_ratio)
+    else:
+        height = DEFAULT_RENDER_MAX_DIMENSION
+        width = round(height * aspect_ratio)
+    if min(width, height) >= MINIMUM_RENDER_DIMENSION:
+        return width, height
+    minimum_aspect = MINIMUM_RENDER_DIMENSION / DEFAULT_RENDER_MAX_DIMENSION
+    maximum_aspect = 1 / minimum_aspect
+    raise ValueError(
+        f"aspect ratio {aspect_ratio:g} is outside the {minimum_aspect:.5g}.."
+        f"{maximum_aspect:.5g} range supported by --render's "
+        f"{DEFAULT_RENDER_MAX_DIMENSION}px budget; use render-image with explicit "
+        "--width/--height for this extreme aspect ratio"
+    )
+
+
+def _execute_visual(
+    ctx: typer.Context,
+    command: Command,
+    *,
+    render: bool,
+    blender: str | None = None,
+) -> None:
+    """Execute a visual mutation and optionally capture its resulting frame.
+
+    The opt-in render is deliberately a second durable operation, so its result, artifact,
+    and failure remain independently inspectable in the session journal. One CLI invocation
+    still saves an agent from making a second tool call.
+    """
+
+    if not render:
+        _execute(ctx, command, blender=blender)
+        return
+
+    options = _options(ctx)
+    destination = (
+        workspace_root(options.workspace)
+        / "sessions"
+        / options.session
+        / "artifacts"
+        / f"render-{uuid.uuid4().hex[:12]}.png"
+    )
+    client = _client(ctx, blender=blender)
+    receipts: list[OperationReceipt] = []
+    try:
+        receipts.append(client.execute(options.session, command))
+        aspect_ratio = client.framed_aspect_ratio(options.session)
+        width, height = _aspect_preserving_render_dimensions(aspect_ratio)
+        render_command = RenderImageCommand(
+            request_id=_request_id("render-image"),
+            op="render.image",
+            output_path=str(destination.resolve()),
+            width=width,
+            height=height,
+        )
+        receipts.append(client.execute(options.session, render_command))
+    except (OSError, RuntimeError, ValueError, ValidationError) as error:
+        if not receipts:
+            raise typer.BadParameter(str(error)) from error
+        applied = receipts[0]
+        raise typer.BadParameter(
+            f"{applied.op} succeeded (result: {applied.result_path}); "
+            f"requested render failed: {error}"
+        ) from error
+    _emit_receipts(ctx, client, receipts)
+
+
+_RENDER_AFTER_HELP = "Also render the resulting state in this CLI call."
+
+
 def _component_ids(ctx: typer.Context, components: list[str]) -> tuple[str, ...]:
     """Resolve refs/IDs/names/paths and expand glob patterns, like `find`.
 
@@ -882,13 +961,14 @@ def open_scene(
             "meters, or 1000 for the opposite mistake.",
         ),
     ] = 1.0,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Open a model in the selected durable session."""
 
     from meshprobe.protocol import SceneOpenCommand
 
     overrides = {} if aspect_ratio is None else {"aspect_ratio": aspect_ratio}
-    _execute(
+    _execute_visual(
         ctx,
         SceneOpenCommand(
             request_id=_request_id("open"),
@@ -897,6 +977,7 @@ def open_scene(
             **overrides,
             unit_scale=unit_scale,
         ),
+        render=render,
         blender=blender,
     )
 
@@ -1004,6 +1085,7 @@ def view_set(
         typer.Option("--focus-component", help="Component ref, stable ID, or exact path."),
     ] = None,
     disable_depth_of_field: Annotated[bool, typer.Option("--disable-depth-of-field")] = False,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Set an exact camera from a JSON object."""
 
@@ -1018,7 +1100,7 @@ def view_set(
         focus_component_id=focus_component_id,
         disable=disable_depth_of_field,
     )
-    _execute(
+    _execute_visual(
         ctx,
         ViewSetCommand(
             request_id=_request_id("view-set"),
@@ -1027,6 +1109,7 @@ def view_set(
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),
+        render=render,
     )
 
 
@@ -1125,6 +1208,7 @@ def view_orbit(
         typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Set an absolute orbit in right-handed, Z-up MeshProbe world coordinates.
 
@@ -1143,7 +1227,7 @@ def view_orbit(
     """
 
     projection = _orbit_projection(projection_json, focal_length, ortho_scale)
-    _execute(
+    _execute_visual(
         ctx,
         ViewOrbitCommand(
             request_id=_request_id("view-orbit"),
@@ -1157,6 +1241,7 @@ def view_orbit(
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),
+        render=render,
     )
 
 
@@ -1197,6 +1282,7 @@ def view_frame(
         ),
     ] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Frame the camera tightly on one or more components.
 
@@ -1212,7 +1298,7 @@ def view_frame(
         projection: Projection = TypeAdapter(Projection).validate_json(projection_json)
     else:
         projection = PerspectiveProjection()
-    _execute(
+    _execute_visual(
         ctx,
         ViewFrameCommand(
             request_id=_request_id("view-frame"),
@@ -1225,6 +1311,7 @@ def view_frame(
             projection=projection,
             aspect_ratio=aspect_ratio,
         ),
+        render=render,
     )
 
 
@@ -1249,6 +1336,7 @@ def view_move(
     ] = None,
     focus: Annotated[list[str] | None, typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP)] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Move the current camera by world- and camera-frame deltas.
 
@@ -1256,7 +1344,7 @@ def view_move(
     the absolute view-orbit (which replaces the pose wholesale).
     """
 
-    _execute(
+    _execute_visual(
         ctx,
         ViewMoveCommand(
             request_id=_request_id("view-move"),
@@ -1274,6 +1362,7 @@ def view_move(
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),
+        render=render,
     )
 
 
@@ -1323,6 +1412,7 @@ def view_rotate(
     ] = None,
     focus: Annotated[list[str] | None, typer.Option("--focus", help=_FOCUS_DIAGNOSTIC_HELP)] = None,
     aspect_ratio: Annotated[float, typer.Option("--aspect-ratio", min=0.01)] = 1.0,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Show the visual equivalent of rotating the model around a basis axis.
 
@@ -1351,7 +1441,7 @@ def view_rotate(
         if basis_json is not None
         else OrthonormalBasis()
     )
-    _execute(
+    _execute_visual(
         ctx,
         ViewRotateCommand(
             request_id=_request_id("view-rotate"),
@@ -1365,13 +1455,22 @@ def view_rotate(
             focus_component_ids=_component_ids(ctx, focus or []) if focus else (),
             aspect_ratio=aspect_ratio,
         ),
+        render=render,
     )
 
 
 @app.command("illumination-set")
 def illumination_set(
     ctx: typer.Context,
-    preset: Annotated[str, typer.Argument(help="A named preset, or 'custom'.")],
+    preset: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Preset: neutral_studio, high_key, raking_left, raking_right, backlit, "
+                "flat_diagnostic, or custom."
+            )
+        ),
+    ],
     illumination_json: Annotated[
         Path | None,
         typer.Option("--illumination-json", exists=True, dir_okay=False, readable=True),
@@ -1406,6 +1505,7 @@ def illumination_set(
             ),
         ),
     ] = None,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Apply a named preset or a complete custom illumination JSON object."""
 
@@ -1477,13 +1577,14 @@ def illumination_set(
         except ValidationError as error:
             raise typer.BadParameter(str(error)) from error
 
-    _execute(
+    _execute_visual(
         ctx,
         IlluminationSetCommand(
             request_id=_request_id("illumination"),
             op="illumination.set",
             illumination=illumination,
         ),
+        render=render,
     )
 
 
@@ -1492,10 +1593,11 @@ def display_components(
     ctx: typer.Context,
     components: Annotated[list[str], typer.Argument()],
     mode: Annotated[DisplayMode, typer.Option("--mode")],
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Change visibility using refs, stable IDs, exact names, exact paths, or globs."""
 
-    _execute(
+    _execute_visual(
         ctx,
         ComponentDisplayCommand(
             request_id=_request_id("display"),
@@ -1503,6 +1605,7 @@ def display_components(
             component_ids=_component_ids(ctx, components),
             mode=mode,
         ),
+        render=render,
     )
 
 
@@ -1510,13 +1613,30 @@ def display_components(
 def mark_components(
     ctx: typer.Context,
     components: Annotated[list[str], typer.Argument()],
-    mode: Annotated[MarkMode, typer.Option("--mode")],
+    mode: Annotated[
+        MarkMode,
+        typer.Option(
+            "--mode",
+            help=(
+                "unmarked restores source materials; selected applies cyan; highlighted "
+                "applies deep pink; labeled applies gold and adds the component name."
+            ),
+        ),
+    ],
     color: Annotated[
         str | None,
         typer.Option("--color", help="sRGB highlight color in #RRGGBB form."),
     ] = None,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
-    """Mark components using refs, stable IDs, exact names, exact paths, or globs."""
+    """Mark one or more components using refs, IDs, names, paths, or globs.
+
+    Modes: `unmarked` restores source materials; `selected` applies cyan; `highlighted`
+    applies deep pink; `labeled` applies gold and adds the component name.
+
+    `--color` overrides the mode's default color for selected, highlighted, and labeled;
+    labeled still adds a text annotation. Pass `--mode unmarked` to restore source materials.
+    """
 
     try:
         command = ComponentMarkCommand(
@@ -1528,15 +1648,19 @@ def mark_components(
         )
     except ValidationError as error:
         raise typer.BadParameter(str(error)) from error
-    _execute(ctx, command)
+    _execute_visual(ctx, command, render=render)
 
 
 @app.command("render-image")
 def render_image(
     ctx: typer.Context,
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
-    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = 2576,
-    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 2576,
+    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = (
+        DEFAULT_RENDER_MAX_DIMENSION
+    ),
+    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = (
+        DEFAULT_RENDER_MAX_DIMENSION
+    ),
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     style: Annotated[
@@ -1642,9 +1766,16 @@ def render_sheet(
 ) -> None:
     """Render a focused 3x3 sheet with automatic occlusion analysis.
 
-    Each panel result carries a structured `caption` and numbered `callouts` (with marker
-    positions), and the sheet carries the full occlusion-removal trace. See
-    `meshprobe schema --kind results` for the full contact-sheet result shape.
+    The first row shows the full assembly, the highlighted focus in context, then the same
+    focused view after automatically removing blockers. The other six panels isolate the
+    focus from +X, -X, +Y, -Y, +Z, and -Z. Deep pink marks the focus, not the occluders.
+
+    Multiple component arguments or a glob form one combined focus. For example,
+    `meshprobe render-sheet '**/*bearing*' --output bearings.png` analyzes every matching
+    bearing together. Each panel result carries its full `caption`, numbered `callouts`,
+    camera, and render metadata; the sheet result carries the occlusion-removal trace. Use
+    `meshprobe --raw render-sheet ...` to print that result directly, or
+    `meshprobe schema render-sheet --kind results` for its schema.
     """
 
     options = _options(ctx)
@@ -1705,13 +1836,15 @@ def occlusion(
 def reset(
     ctx: typer.Context,
     aspect_ratio: Annotated[float | None, typer.Option("--aspect-ratio", min=0.01)] = None,
+    render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Reset visual state to the imported scene defaults."""
 
     overrides = {} if aspect_ratio is None else {"aspect_ratio": aspect_ratio}
-    _execute(
+    _execute_visual(
         ctx,
         SessionResetCommand(request_id=_request_id("reset"), op="session.reset", **overrides),
+        render=render,
     )
 
 
