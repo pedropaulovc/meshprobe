@@ -1745,10 +1745,7 @@ def orient_component_labels() -> None:
         vertical = offset @ up
         scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
         label.location = (
-            position
-            + forward * overlay_depth
-            + right * horizontal * scale
-            + up * vertical * scale
+            position + forward * overlay_depth + right * horizontal * scale + up * vertical * scale
         )
         label.scale = (scale, scale, scale)
 
@@ -2413,28 +2410,35 @@ def count_foreground_pixels(path: Path) -> int:
         bpy.data.images.remove(image)
 
 
-def foreground_needs_material_variants() -> bool:
-    """Return whether a flat material override would change visible coverage."""
+def foreground_mask_material_mode() -> str:
+    """Choose the cheapest mask material path that preserves visible coverage."""
 
+    culling_modes: set[bool] = set()
     for obj in COMPONENT_OBJECTS.values():
         if obj.hide_render:
             continue
+        if not obj.data.materials:
+            culling_modes.add(False)
         for material in obj.data.materials:
             if material is None:
+                culling_modes.add(False)
                 continue
-            if material.use_backface_culling or material.diffuse_color[3] < 1.0:
-                return True
+            culling_modes.add(bool(material.use_backface_culling))
+            if material.diffuse_color[3] < 1.0:
+                return "material_exact"
             if not material.use_nodes:
                 continue
             principled = material.node_tree.nodes.get("Principled BSDF")
             if principled is None:
                 # Unknown node graphs may contain Transparent/Holdout shaders. Preserve them
                 # instead of guessing that an arbitrary graph is opaque.
-                return True
+                return "material_exact"
             alpha = principled.inputs.get("Alpha")
             if alpha is None or alpha.is_linked or float(alpha.default_value) < 1.0:
-                return True
-    return False
+                return "material_exact"
+    if len(culling_modes) > 1:
+        return "material_exact"
+    return "uniform_backface_culled" if culling_modes == {True} else "uniform_double_sided"
 
 
 def foreground_coverage() -> dict[str, Any]:
@@ -2473,7 +2477,7 @@ def foreground_coverage() -> dict[str, Any]:
             render_mask(
                 mask_path,
                 colors,
-                respect_material_visibility=foreground_needs_material_variants(),
+                material_mode=foreground_mask_material_mode(),
             )
             visible_pixels = count_foreground_pixels(mask_path)
         finally:
@@ -2605,8 +2609,15 @@ def render_mask(
     path: Path,
     colors: dict[str, tuple[int, int, int]],
     *,
-    respect_material_visibility: bool = False,
+    material_mode: str = "flat_by_component",
 ) -> None:
+    if material_mode not in {
+        "flat_by_component",
+        "material_exact",
+        "uniform_backface_culled",
+        "uniform_double_sided",
+    }:
+        raise ValueError(f"unknown mask material mode: {material_mode}")
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
@@ -2646,10 +2657,10 @@ def render_mask(
     try:
         for obj in other_visibility:
             obj.hide_render = True
-        if uniform_color is not None and not respect_material_visibility:
+        if uniform_color is not None and material_mode.startswith("uniform_"):
             red, green, blue = uniform_color
-            view_layer.material_override = emission_material(
-                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}",
+            override = emission_material(
+                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}-{material_mode}",
                 (
                     srgb_channel_to_linear(red),
                     srgb_channel_to_linear(green),
@@ -2657,6 +2668,8 @@ def render_mask(
                     1.0,
                 ),
             )
+            override.use_backface_culling = material_mode == "uniform_backface_culled"
+            view_layer.material_override = override
         else:
             for component_id, obj in COMPONENT_OBJECTS.items():
                 source_materials = list(obj.data.materials)
@@ -2670,11 +2683,11 @@ def render_mask(
                     1.0,
                 )
                 base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
-                if not respect_material_visibility:
+                if material_mode == "flat_by_component":
                     mesh.materials.append(emission_material(base_name, color))
                     for polygon in mesh.polygons:
                         polygon.material_index = 0
-                else:
+                elif material_mode == "material_exact":
                     # Preserve each source material's transparency/culling instead of forcing
                     # every polygon opaque and front-and-back visible: a component that is
                     # invisible in the real color render (transparent material — constant,
@@ -2703,6 +2716,10 @@ def render_mask(
                             variant_index[original.name] = len(mesh.materials)
                             mesh.materials.append(variant)
                         polygon.material_index = variant_index[original.name]
+                else:
+                    raise ValueError(
+                        f"mask material mode requires one uniform color: {material_mode}"
+                    )
                 obj.data = mesh
         render_still(path)
     finally:

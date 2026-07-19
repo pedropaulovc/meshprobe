@@ -981,6 +981,46 @@ bpy.ops.export_scene.gltf(
     return output
 
 
+def build_hidden_label_glb(tmp_path: Path) -> Path:
+    output = tmp_path / "hidden-label.glb"
+    script = tmp_path / "build_hidden_label.py"
+    script.write_text(
+        f"""
+import bpy
+from mathutils import Vector
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=0.5, location=(0, 0, 0))
+bpy.context.object.name = 'target-behind-wall'
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(2, 0, 0))
+bpy.context.object.name = 'wall'
+bpy.context.object.scale = (0.2, 4, 4)
+bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+data = bpy.data.cameras.new('inspection-camera')
+camera = bpy.data.objects.new('inspection-camera', data)
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (6, 0, 0)
+camera.rotation_euler = (
+    (Vector((0, 0, 0)) - camera.location).to_track_quat('-Z', 'Y')
+).to_euler()
+bpy.context.scene.camera = camera
+bpy.ops.export_scene.gltf(
+    filepath={json.dumps(str(output))},
+    export_format='GLB',
+    export_cameras=True,
+)
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python", str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return output
+
+
 def build_multi_surface_occlusion_glb(tmp_path: Path) -> Path:
     output = tmp_path / "multi-surface-occlusion.glb"
     script = tmp_path / "build_multi_surface_occlusion.py"
@@ -5564,6 +5604,63 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     assert baseline["visible_rays"] == baseline["sample_count"]
     assert ranking["visible_rays"] == ranking["sample_count"]
     assert ranking["unresolved_rays"] == 0
+
+
+def test_labeled_mark_projects_text_in_front_of_blocking_geometry(tmp_path: Path) -> None:
+    source = build_hidden_label_glb(tmp_path)
+    highlighted_path = tmp_path / "highlighted.png"
+    labeled_path = tmp_path / "labeled.png"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        by_name = {component.display_name: component.id for component in manifest.components}
+        target = by_name["target-behind-wall"]
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="highlighted",
+            color="#ff00ff",
+        )
+        controller.render_image(
+            RenderImageCommand(
+                request_id="hidden-highlight",
+                op="render.image",
+                output_path=str(highlighted_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        controller.render_image(
+            RenderImageCommand(
+                request_id="visible-label",
+                op="render.image",
+                output_path=str(labeled_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+
+    def magenta_pixels(path: Path) -> int:
+        image = Image.open(path).convert("RGB")
+        return sum(
+            red > 40 and red > green + 10 and blue > green + 10
+            for red, green, blue in image.get_flattened_data()
+        )
+
+    # The wall completely hides the highlighted target (the positive control), while the
+    # identically colored screen-space label remains visible in the second render.
+    assert magenta_pixels(highlighted_path) == 0
+    assert magenta_pixels(labeled_path) > 10
 
 
 def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:
