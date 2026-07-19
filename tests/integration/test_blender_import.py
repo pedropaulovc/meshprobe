@@ -581,6 +581,27 @@ def render_crash_worker(tmp_path: Path) -> tuple[Path, Path]:
     return patched_worker, crash_marker
 
 
+def annotation_guard_worker(tmp_path: Path) -> Path:
+    worker = Path(__file__).parents[2] / "src" / "meshprobe" / "blender" / "worker.py"
+    patched_worker = tmp_path / "annotation_guard_worker.py"
+    source = worker.read_text(encoding="utf-8")
+    needle = (
+        "def render_still(path: Path) -> None:\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+    )
+    replacement = (
+        "def render_still(path: Path) -> None:\n"
+        "    if bpy.context.scene.render.engine == 'CYCLES' and any(\n"
+        "        not label.hide_render for label in MARK_OBJECTS.values()\n"
+        "    ):\n"
+        "        raise RuntimeError('annotation entered Cycles scene render')\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+    )
+    assert source.count(needle) == 1
+    patched_worker.write_text(source.replace(needle, replacement), encoding="utf-8")
+    return patched_worker
+
+
 def build_environment_exr(tmp_path: Path) -> Path:
     output = tmp_path / "studio.exr"
     script = tmp_path / "build_environment.py"
@@ -985,6 +1006,7 @@ def build_hidden_label_glb(
     tmp_path: Path,
     *,
     target_size: float = 0.5,
+    wall_thickness: float = 0.2,
     wall_x: float = 2.0,
 ) -> Path:
     output = tmp_path / "hidden-label.glb"
@@ -998,7 +1020,7 @@ bpy.ops.mesh.primitive_cube_add(size={target_size!r}, location=(0, 0, 0))
 bpy.context.object.name = 'target-behind-wall'
 bpy.ops.mesh.primitive_cube_add(size=1.0, location=({wall_x!r}, 0, 0))
 bpy.context.object.name = 'wall'
-bpy.context.object.scale = (0.2, 4, 4)
+bpy.context.object.scale = ({wall_thickness!r}, 4, 4)
 bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 data = bpy.data.cameras.new('inspection-camera')
 camera = bpy.data.objects.new('inspection-camera', data)
@@ -5617,6 +5639,34 @@ def magenta_pixel_count(path: Path) -> int:
     return sum(red > 40 and red > green + 10 and blue > green + 10 for red, green, blue in pixels)
 
 
+def exr_pass_digests(path: Path) -> dict[str, str]:
+    marker = "MESHPROBE_EXR_DIGESTS="
+    expression = f"""
+import hashlib
+import json
+import OpenImageIO as oiio
+image = oiio.ImageInput.open({json.dumps(str(path))})
+digests = {{}}
+subimage = 0
+while image.seek_subimage(subimage, 0):
+    spec = image.spec()
+    name = ','.join(spec.channelnames)
+    digests[name] = hashlib.sha256(memoryview(image.read_image())).hexdigest()
+    subimage += 1
+image.close()
+print({marker!r} + json.dumps(digests, sort_keys=True))
+"""
+    result = subprocess.run(
+        ["blender", "--background", "--factory-startup", "--python-expr", expression],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    line = next(line for line in result.stdout.splitlines() if line.startswith(marker))
+    return cast(dict[str, str], json.loads(line.removeprefix(marker)))
+
+
 def test_labeled_mark_stays_clipped_when_anchor_is_beyond_far_plane(tmp_path: Path) -> None:
     source = build_hidden_label_glb(tmp_path)
     labeled_path = tmp_path / "far-clipped-label.png"
@@ -5741,6 +5791,83 @@ def test_labeled_mark_uses_overlay_plane_inside_tight_clip_range(tmp_path: Path)
     assert magenta_pixel_count(labeled_path) > 100
 
 
+def test_labeled_mark_overlay_stays_in_front_of_near_adjacent_anchor(tmp_path: Path) -> None:
+    source = build_hidden_label_glb(
+        tmp_path,
+        target_size=0.002,
+        wall_thickness=0.002,
+        wall_x=0.003,
+    )
+    highlighted_path = tmp_path / "near-anchor-highlight.png"
+    labeled_path = tmp_path / "near-anchor-label.png"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        camera = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        ).camera
+        assert isinstance(camera.projection, PerspectiveProjection)
+        controller.execute(
+            ViewSetCommand(
+                request_id="near-anchor-camera",
+                op="view.set",
+                camera=camera.model_copy(
+                    update={
+                        "pose": camera.pose.model_copy(update={"position_mm": (9_510, 0, 0)}),
+                        "projection": camera.projection.model_copy(
+                            update={"near_clip_mm": 9_500, "far_clip_mm": 100_000}
+                        ),
+                    }
+                ),
+            )
+        )
+        target = next(
+            component.id
+            for component in manifest.components
+            if component.display_name == "target-behind-wall"
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="highlighted",
+            color="#ff00ff",
+        )
+        controller.render_image(
+            RenderImageCommand(
+                request_id="near-anchor-highlight",
+                op="render.image",
+                output_path=str(highlighted_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        label_runtime = controller.request("session.runtime")["components"][target]
+        controller.render_image(
+            RenderImageCommand(
+                request_id="near-anchor-label",
+                op="render.image",
+                output_path=str(labeled_path),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            )
+        )
+
+    label_depth_mm = 9_510 - label_runtime["label_location_m"][0] * 1_000
+    assert 9_500 < label_depth_mm < 9_510
+    assert magenta_pixel_count(highlighted_path) == 0
+    assert magenta_pixel_count(labeled_path) > 100
+
+
 @pytest.mark.parametrize(
     ("render_engine", "depth_of_field"),
     [
@@ -5842,6 +5969,115 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
     # identically colored screen-space label remains visible in the second render.
     assert magenta_pixel_count(highlighted_path) == 0
     assert magenta_pixel_count(labeled_path) > 100
+
+
+@pytest.mark.skipif(
+    shutil.which("nvidia-smi") is None,
+    reason="this host has no CUDA device",
+)
+@pytest.mark.parametrize(
+    "projection",
+    [
+        pytest.param(PerspectiveProjection(), id="perspective-no-dof"),
+        pytest.param(OrthographicProjection(scale_mm=8_000), id="orthographic"),
+    ],
+)
+def test_labeled_mark_never_enters_cycles_scene_render(
+    tmp_path: Path,
+    projection: PerspectiveProjection | OrthographicProjection,
+) -> None:
+    source = build_hidden_label_glb(tmp_path)
+    output = tmp_path / "cycles-annotation.png"
+    controller = BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS)
+    controller._worker_path = annotation_guard_worker(tmp_path)
+    with controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        camera = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        ).camera
+        controller.execute(
+            ViewSetCommand(
+                request_id="cycles-annotation-camera",
+                op="view.set",
+                camera=camera.model_copy(update={"projection": projection}),
+            )
+        )
+        target = next(
+            component.id
+            for component in manifest.components
+            if component.display_name == "target-behind-wall"
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        rendered = controller.render_image(
+            RenderImageCommand(
+                request_id="cycles-annotation",
+                op="render.image",
+                output_path=str(output),
+                width=256,
+                height=256,
+                samples=1,
+                engine=RenderEngine.CYCLES,
+                style=RenderStyle.SHADED,
+            )
+        )
+
+    assert rendered.engine is RenderEngine.CYCLES
+    assert magenta_pixel_count(output) > 10
+
+
+def test_labeled_mark_does_not_change_evaluator_depth_or_normal(tmp_path: Path) -> None:
+    source = build_hidden_label_glb(tmp_path)
+    evaluator_dir = tmp_path / "label-evaluator"
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        _pin_source_camera(controller, manifest)
+        target = next(
+            component.id
+            for component in manifest.components
+            if component.display_name == "target-behind-wall"
+        )
+        baseline = controller.render_image(
+            RenderImageCommand(
+                request_id="baseline-evaluator",
+                op="render.image",
+                output_path=str(tmp_path / "baseline-evaluator.png"),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            ),
+            evaluator_output_dir=evaluator_dir,
+        )
+        controller.request(
+            "component.mark",
+            component_ids=[target],
+            mode="labeled",
+            color="#ff00ff",
+        )
+        labeled = controller.render_image(
+            RenderImageCommand(
+                request_id="labeled-evaluator",
+                op="render.image",
+                output_path=str(tmp_path / "labeled-evaluator.png"),
+                width=256,
+                height=256,
+                samples=1,
+                style=RenderStyle.SHADED,
+            ),
+            evaluator_output_dir=evaluator_dir,
+        )
+
+    assert baseline.evaluator is not None
+    assert labeled.evaluator is not None
+    assert exr_pass_digests(Path(baseline.evaluator.multilayer.path)) == exr_pass_digests(
+        Path(labeled.evaluator.multilayer.path)
+    )
 
 
 def test_worker_traces_all_surfaces_in_a_ghosted_component(tmp_path: Path) -> None:

@@ -1728,8 +1728,8 @@ def create_component_label(component_id: str, color: tuple[float, float, float, 
         material_name = f"{material_name}-{color_suffix[1:]}"
     label_material = emission_material(f"{material_name}-overlay", color)
     if hasattr(label_material, "surface_render_method"):
-        # Eevee composites blended surfaces outside its depth-buffer DOF pass. Combined with
-        # the near-camera placement, this keeps annotation text both unobstructed and sharp.
+        # Labels render only in a transparent annotation pass. Blended surfaces preserve their
+        # anti-aliased edge alpha when that pass is composited over the physical scene render.
         label_material.surface_render_method = "BLENDED"
     data.materials.append(label_material)
     MARK_OBJECTS[component_id] = label
@@ -1749,10 +1749,14 @@ def component_label_overlay_transform(
     if not near < depth < far:
         return None
     # Prefer a small gap behind the near plane, but never consume more than one percent of
-    # the available clip interval. This keeps the annotation both strictly inside and ahead
-    # of ordinary scene geometry even for a valid, unusually tight range such as 9.5-10 m.
+    # the clip interval or half the distance to the anchor. The overlay therefore stays
+    # strictly inside the clip range and strictly in front of every valid semantic anchor.
     preferred_clearance = max(near * 0.1, 0.0001)
-    overlay_depth = near + min(preferred_clearance, (far - near) * 0.01)
+    overlay_depth = near + min(
+        preferred_clearance,
+        (far - near) * 0.01,
+        (depth - near) * 0.5,
+    )
     horizontal = offset @ right
     vertical = offset @ up
     scale = overlay_depth / depth if camera.data.type == "PERSP" else 1.0
@@ -2325,12 +2329,12 @@ def composite_label_overlay(path: Path, overlay_path: Path) -> None:
         bpy.data.images.remove(base)
 
 
-def render_cycles_label_overlay(path: Path) -> None:
-    """Composite camera-facing labels separately from Cycles scene geometry.
+def render_label_overlay(path: Path) -> None:
+    """Composite camera-facing labels separately from physical scene geometry.
 
-    Cycles applies physical depth of field to geometry on the near-camera overlay plane.
-    Rendering the annotations alone through Eevee with DOF disabled preserves their semantic
-    screen projection, keeps them unobstructed, and avoids changing the requested scene engine.
+    Rendering annotations alone through one-sample Eevee with DOF disabled keeps them sharp and
+    unobstructed without letting text affect scene lighting, samples, or geometry evidence. The
+    requested engine remains responsible for the physical scene render.
     """
 
     if not MARK_OBJECTS:
@@ -2366,16 +2370,6 @@ def render_cycles_label_overlay(path: Path) -> None:
             scene.render.use_freestyle = original_freestyle
             camera.data.dof.use_dof = original_dof
             configure_eevee_samples(original_samples)
-
-
-def cycles_label_overlay_required(command: dict[str, Any]) -> bool:
-    camera = camera_object()
-    return (
-        command["engine"] == "cycles"
-        and any(not label.hide_render for label in MARK_OBJECTS.values())
-        and camera.data.type == "PERSP"
-        and camera.data.dof.use_dof
-    )
 
 
 @contextmanager
@@ -3159,24 +3153,22 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
                 return
             render_still(output)
 
-        composite_cycles_labels = cycles_label_overlay_required(command)
-        if composite_cycles_labels:
-            with hidden_component_labels():
-                render_color()
-        else:
+        # Labels are annotations, never physical scene geometry. Keep them out of every
+        # requested engine's lighting/sample pass and composite them uniformly afterward.
+        with hidden_component_labels():
             render_color()
         if backdrop is not None:
             bpy.context.scene.render.film_transparent = False
             composite_over_background(output, backdrop)
-        if composite_cycles_labels:
-            render_cycles_label_overlay(output)
+        render_label_overlay(output)
         luminance = luminance_summary(output)
         foreground = foreground_coverage()
         evaluator = None
         if command.get("evaluator_output_dir") is not None:
             evaluator_dir = Path(command["evaluator_output_dir"]).expanduser().resolve()
             evaluator_dir.mkdir(parents=True, exist_ok=True)
-            evaluator = render_evaluator_passes(evaluator_dir, output.stem)
+            with hidden_component_labels():
+                evaluator = render_evaluator_passes(evaluator_dir, output.stem)
         session = session_snapshot()
     return {
         "schema_version": 2,
