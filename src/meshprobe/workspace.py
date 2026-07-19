@@ -496,9 +496,10 @@ class SessionManager:
             self._event(files, command, "accepted", result_path=result_path)
             graphics = getattr(service, "graphics", None)
             graphics_warnings = graphics.warnings if graphics is not None else ()
-            warnings = tuple(
-                f"{warning.code}: {warning.message}" for warning in manifest.warnings
-            ) + graphics_warnings
+            warnings = (
+                tuple(f"{warning.code}: {warning.message}" for warning in manifest.warnings)
+                + graphics_warnings
+            )
             self._graphics_warned_worker_pids[name] = service.worker_pid
             return self._receipt(files, command.op, snapshot, result_path, warnings=warnings)
 
