@@ -951,8 +951,10 @@ def test_visual_mutation_reports_partial_success_when_requested_render_fails(
     )
 
     assert result.exit_code == 2
-    assert "component.mark succeeded" in result.output
-    assert "requested render failed: renderer unavailable" in result.output
+    output = " ".join(unstyle(result.output).split())
+    assert "component.mark succeeded" in output
+    assert "requested render failed:" in output
+    assert "renderer unavailable" in output
     assert [command.op for command in client.commands] == ["component.mark"]
 
 
