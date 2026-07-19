@@ -173,11 +173,11 @@ class ComponentDisplayCommand(CommandModel):
     op: Literal["component.display"]
     component_ids: tuple[str, ...] = Field(min_length=1)
     mode: DisplayMode
-    operation: IsolationOperation | None = None
+    isolation_operation: IsolationOperation | None = None
 
     @model_validator(mode="after")
     def reject_isolation_operation_without_isolation(self) -> Self:
-        if self.operation is not None and self.mode is not DisplayMode.ISOLATED:
+        if self.isolation_operation is not None and self.mode is not DisplayMode.ISOLATED:
             raise ValueError("operation requires mode=isolated")
         return self
 

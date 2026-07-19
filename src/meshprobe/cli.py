@@ -1622,7 +1622,7 @@ def display_components(
             op="component.display",
             component_ids=_component_ids(ctx, components),
             mode=mode,
-            operation=operation,
+            isolation_operation=operation,
         ),
         render=render,
     )

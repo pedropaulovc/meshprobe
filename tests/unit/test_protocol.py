@@ -49,17 +49,17 @@ def test_display_isolation_operation_requires_isolation_mode() -> None:
         op="component.display",
         component_ids=("cmp-a",),
         mode=DisplayMode.ISOLATED,
-        operation=IsolationOperation.ADD,
+        isolation_operation=IsolationOperation.ADD,
     )
 
-    assert command.operation is IsolationOperation.ADD
+    assert command.isolation_operation is IsolationOperation.ADD
     with pytest.raises(ValidationError, match="operation requires mode=isolated"):
         ComponentDisplayCommand(
             request_id="display",
             op="component.display",
             component_ids=("cmp-a",),
             mode=DisplayMode.SHOWN,
-            operation=IsolationOperation.ADD,
+            isolation_operation=IsolationOperation.ADD,
         )
 
 

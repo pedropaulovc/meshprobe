@@ -249,12 +249,12 @@ class BlenderController:
             environment.setdefault("MESA_D3D12_DEFAULT_ADAPTER_NAME", "NVIDIA")
         return environment
 
-    def request(self, operation: str, **arguments: object) -> dict[str, Any]:
+    def request(self, action: str, **arguments: object) -> dict[str, Any]:
         process = self._require_process()
         if process.stdin is None:
             raise BlenderWorkerCrashed("Blender worker stdin is unavailable")
         request_id = uuid.uuid4().hex
-        command = {"request_id": request_id, "op": operation, **arguments}
+        command = {"request_id": request_id, "op": action, **arguments}
         try:
             process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
             process.stdin.flush()
