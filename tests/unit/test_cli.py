@@ -588,6 +588,7 @@ class FakeClient:
         self.match_count: int | None = None
         self.find_results: list[object] | None = None
         self.warnings: tuple[str, ...] = ()
+        self.framed_aspect_ratio_value = 1.0
 
     def execute(self, session: str, command: Command) -> OperationReceipt:
         self.commands.append(command)
@@ -633,6 +634,10 @@ class FakeClient:
         if receipt.op == "component.find" and self.find_results is not None:
             return {"result": self.find_results}
         return {"result": {"op": receipt.op}}
+
+    def framed_aspect_ratio(self, session: str) -> float:
+        assert session == "review"
+        return self.framed_aspect_ratio_value
 
     def close(self, session: str) -> OperationReceipt:
         self.closed.append(session)
@@ -929,6 +934,78 @@ def test_visual_mutation_can_render_in_one_machine_readable_invocation(
         payload = json.loads(result.stdout)
     key = "results" if output_option == "--raw" else "receipts"
     assert [item["op"] for item in payload[key]] == ["component.mark", "render.image"]
+
+
+@pytest.mark.parametrize(
+    ("aspect_ratio", "dimensions"),
+    (
+        (2.0, (2576, 1288)),
+        (0.5, (1288, 2576)),
+        (40.25, (2576, 64)),
+        (1 / 40.25, (64, 2576)),
+    ),
+)
+def test_visual_mutation_render_preserves_landscape_and_portrait_framing(
+    aspect_ratio: float,
+    dimensions: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    client.framed_aspect_ratio_value = aspect_ratio
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-frame",
+            "c2",
+            "--aspect-ratio",
+            str(aspect_ratio),
+            "--render",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    frame_command, render_command = client.commands
+    assert isinstance(frame_command, ViewFrameCommand)
+    assert frame_command.aspect_ratio == aspect_ratio
+    assert isinstance(render_command, RenderImageCommand)
+    assert (render_command.width, render_command.height) == dimensions
+
+
+@pytest.mark.parametrize("aspect_ratio", (0.01, 100.0))
+def test_visual_mutation_render_rejects_aspects_outside_default_dimension_budget(
+    aspect_ratio: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    client.framed_aspect_ratio_value = aspect_ratio
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "view-frame",
+            "c2",
+            "--aspect-ratio",
+            str(aspect_ratio),
+            "--render",
+        ],
+    )
+
+    assert result.exit_code == 2
+    output = " ".join(unstyle(result.output).split())
+    assert "view.frame succeeded" in output
+    assert "outside the" in output
+    assert "supported by" in output
+    assert "--render" in output
+    assert "render-image" in output
+    assert "with explicit" in output
+    assert [command.op for command in client.commands] == ["view.frame"]
 
 
 def test_visual_mutation_reports_partial_success_when_requested_render_fails(

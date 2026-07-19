@@ -838,6 +838,31 @@ def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None
     _emit_receipt(ctx, client, receipt)
 
 
+DEFAULT_RENDER_MAX_DIMENSION = 2576
+MINIMUM_RENDER_DIMENSION = 64
+
+
+def _aspect_preserving_render_dimensions(aspect_ratio: float) -> tuple[int, int]:
+    """Fit an aspect ratio inside the default render budget without reframing."""
+
+    if aspect_ratio >= 1:
+        width = DEFAULT_RENDER_MAX_DIMENSION
+        height = round(width / aspect_ratio)
+    else:
+        height = DEFAULT_RENDER_MAX_DIMENSION
+        width = round(height * aspect_ratio)
+    if min(width, height) >= MINIMUM_RENDER_DIMENSION:
+        return width, height
+    minimum_aspect = MINIMUM_RENDER_DIMENSION / DEFAULT_RENDER_MAX_DIMENSION
+    maximum_aspect = 1 / minimum_aspect
+    raise ValueError(
+        f"aspect ratio {aspect_ratio:g} is outside the {minimum_aspect:.5g}.."
+        f"{maximum_aspect:.5g} range supported by --render's "
+        f"{DEFAULT_RENDER_MAX_DIMENSION}px budget; use render-image with explicit "
+        "--width/--height for this extreme aspect ratio"
+    )
+
+
 def _execute_visual(
     ctx: typer.Context,
     command: Command,
@@ -864,15 +889,19 @@ def _execute_visual(
         / "artifacts"
         / f"render-{uuid.uuid4().hex[:12]}.png"
     )
-    render_command = RenderImageCommand(
-        request_id=_request_id("render-image"),
-        op="render.image",
-        output_path=str(destination.resolve()),
-    )
     client = _client(ctx, blender=blender)
     receipts: list[OperationReceipt] = []
     try:
         receipts.append(client.execute(options.session, command))
+        aspect_ratio = client.framed_aspect_ratio(options.session)
+        width, height = _aspect_preserving_render_dimensions(aspect_ratio)
+        render_command = RenderImageCommand(
+            request_id=_request_id("render-image"),
+            op="render.image",
+            output_path=str(destination.resolve()),
+            width=width,
+            height=height,
+        )
         receipts.append(client.execute(options.session, render_command))
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         if not receipts:
@@ -1626,8 +1655,12 @@ def mark_components(
 def render_image(
     ctx: typer.Context,
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
-    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = 2576,
-    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = 2576,
+    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = (
+        DEFAULT_RENDER_MAX_DIMENSION
+    ),
+    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = (
+        DEFAULT_RENDER_MAX_DIMENSION
+    ),
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     style: Annotated[

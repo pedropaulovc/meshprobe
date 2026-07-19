@@ -373,6 +373,18 @@ class SessionFiles:
         return str(path.relative_to(self.workspace.parent))
 
 
+def framed_aspect_ratio(files: SessionFiles) -> float:
+    """Return the aspect ratio used by the last camera-refitting operation."""
+
+    checkpoint, _ = _upgrade_checkpoint(
+        SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
+    )
+    for raw in reversed(checkpoint.accepted_commands):
+        if _refits_camera(raw):
+            return float(raw.get("aspect_ratio", 1.0))
+    return checkpoint.aspect_ratio
+
+
 class SessionService(Protocol):
     @property
     def worker_pid(self) -> int | None: ...
@@ -526,9 +538,7 @@ class SessionManager:
             artifacts = self._artifact_paths(command.op, response.result)
             warnings: tuple[str, ...] = ()
             if isinstance(command, RenderImageCommand):
-                aspect_warning = self._aspect_ratio_warning(
-                    command, self._framed_aspect_ratio(files)
-                )
+                aspect_warning = self._aspect_ratio_warning(command, framed_aspect_ratio(files))
                 if aspect_warning is not None:
                     warnings = (*warnings, aspect_warning)
             if self._graphics_warned_worker_pids.get(name) != service.worker_pid:
@@ -792,22 +802,6 @@ class SessionManager:
     # tighter crop, on whichever axis the framing aspect didn't pin). >1% relative difference
     # is treated as a deliberate divergence worth flagging.
     _ASPECT_RATIO_RELATIVE_TOLERANCE = 0.01
-
-    @staticmethod
-    def _framed_aspect_ratio(files: SessionFiles) -> float:
-        # The framing aspect is the aspect_ratio of the last command that refit the camera
-        # (see _refits_camera); the snapshot's camera_diagnostics.aspect_ratio can't be used
-        # because view.move and bare view.rotate overwrite it with their own default while
-        # leaving the projection framed as before. A freshly opened session is already
-        # framed with its checkpointed open/reset aspect ratio, so use that when nothing has
-        # refit the camera yet.
-        checkpoint, _ = _upgrade_checkpoint(
-            SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
-        )
-        for raw in reversed(checkpoint.accepted_commands):
-            if _refits_camera(raw):
-                return float(raw.get("aspect_ratio", 1.0))
-        return checkpoint.aspect_ratio
 
     @classmethod
     def _aspect_ratio_warning(cls, command: RenderImageCommand, framed_aspect: float) -> str | None:

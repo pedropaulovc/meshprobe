@@ -21,6 +21,7 @@ from meshprobe.workspace import (
     SessionFiles,
     SessionMetadata,
     atomic_json,
+    framed_aspect_ratio,
     utc_now,
     workspace_root,
 )
@@ -184,6 +185,11 @@ class MeshProbeClient:
         if receipt.result_path is None:
             return receipt.model_dump(mode="json")
         return json.loads((self.root.parent / receipt.result_path).read_text(encoding="utf-8"))
+
+    def framed_aspect_ratio(self, session: str) -> float:
+        """Read the durable camera framing ratio after the latest operation."""
+
+        return framed_aspect_ratio(SessionFiles(self.root, session))
 
     def request(
         self,
