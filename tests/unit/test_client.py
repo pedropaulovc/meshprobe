@@ -9,9 +9,11 @@ from typing import Any
 import pytest
 
 from meshprobe.client import MeshProbeClient
-from meshprobe.models import DisplayMode, IsolationOperation, PerspectiveProjection
+from meshprobe.models import DisplayMode, IsolationOperation, OrbitSweep, PerspectiveProjection
 from meshprobe.protocol import (
     ComponentDisplayCommand,
+    RenderComparisonRequest,
+    RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
@@ -377,6 +379,70 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
             "isolation_operation": "add",
         },
     ]
+
+
+@pytest.mark.parametrize(
+    ("command", "field", "response_op"),
+    [
+        (
+            RenderImageCommand(
+                request_id="comparison",
+                op="render.image",
+                output_path="evidence.png",
+                comparison=RenderComparisonRequest(
+                    reference_image_path="reference.png",
+                    mode="side_by_side",
+                    output_path="comparison.png",
+                ),
+            ),
+            "comparison",
+            "render.image",
+        ),
+        (
+            RenderContactSheetCommand(
+                request_id="sweep",
+                op="render.contact_sheet",
+                output_path="sweep.png",
+                recipe="orbit_sweep",
+                orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+            ),
+            "orbit_sweep",
+            "render.contact_sheet",
+        ),
+    ],
+)
+def test_execute_restarts_old_daemon_for_new_render_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: RenderImageCommand | RenderContactSheetCommand,
+    field: str,
+    response_op: str,
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    attempts = 0
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        nonlocal attempts
+        if action == "execute":
+            attempts += 1
+            if attempts == 1:
+                raise ValueError(f"{field}: Extra inputs are not permitted")
+        return {"session": "review", "op": response_op}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    receipt = client.execute("review", command)
+
+    assert receipt.op == response_op
+    assert attempts == 2
+    assert close_all_calls == 1
 
 
 def test_execute_restarts_old_daemon_that_does_not_recognize_session_undo(

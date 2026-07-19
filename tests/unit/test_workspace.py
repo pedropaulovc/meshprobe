@@ -37,6 +37,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     SessionUndoCommand,
     ViewFrameCommand,
+    ViewOrbitCommand,
     ViewRotateCommand,
     ViewSetCommand,
 )
@@ -96,7 +97,7 @@ class FakeSessionService:
                 component.model_dump(mode="json")
                 for component in ComponentIndex(self.manifest).find(command.selector)
             ]
-        elif isinstance(command, (ViewFrameCommand, ViewRotateCommand)):
+        elif isinstance(command, (ViewFrameCommand, ViewOrbitCommand, ViewRotateCommand)):
             assert self.session is not None
             result = {"state_sha256": self.session.snapshot().state_sha256}
         elif isinstance(command, ViewSetCommand):
@@ -1085,6 +1086,51 @@ def test_bare_view_rotate_does_not_change_the_tracked_framing_aspect(
     )
     assert len(receipt.warnings) == 1
     assert "framed for aspect ratio 2" in receipt.warnings[0]
+
+
+def test_bare_view_orbit_preserves_the_tracked_framing_aspect(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: FakeSessionService(scene_manifest),
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        ViewFrameCommand(
+            request_id="frame-wide",
+            op="view.frame",
+            focus_component_ids=(scene_manifest.components[0].id,),
+            aspect_ratio=2.0,
+        ),
+    )
+    manager.execute(
+        "review",
+        ViewOrbitCommand(
+            request_id="orbit-bare",
+            op="view.orbit",
+            target_mm=(0, 0, 0),
+            azimuth_degrees=15,
+            elevation_degrees=30,
+            distance_mm=1_000,
+        ),
+    )
+
+    receipt = manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="matches-wide-framing",
+            op="render.image",
+            output_path=str(tmp_path / "wide.png"),
+            width=1024,
+            height=512,
+        ),
+    )
+
+    assert receipt.warnings == ()
 
 
 def test_recreated_worker_resets_durable_render_style(

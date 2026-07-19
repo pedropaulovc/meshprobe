@@ -317,6 +317,8 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
         payload.pop("isolation_operation")
     if isinstance(command, RenderImageCommand) and command.comparison is None:
         payload.pop("comparison")
+    if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is None:
+        payload.pop("orbit_sweep")
     if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):

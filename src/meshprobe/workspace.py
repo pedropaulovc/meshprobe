@@ -51,19 +51,20 @@ from meshprobe.selectors import is_glob_pattern, normalize_glob, path_glob_match
 from meshprobe.service import CommandResponse, MeshProbeService
 
 # The ops that always refit the camera to an aspect ratio, so their aspect_ratio is
-# the intended framing. view.move/view.rotate reuse the current projection without
-# refitting, so their aspect_ratio only feeds diagnostics and must NOT be read as the
-# framing aspect — a bare move/rotate after a wide orbit would otherwise reset the
-# tracked framing to its 1.0 default and false-warn a matching render. The exception is
-# a view.rotate that carries its own projection (see _refits_camera): that replaces the
-# projection, so it reframes at the given aspect just like the always-framing ops.
-FRAMING_OPERATIONS = frozenset({"view.set", "view.orbit", "view.frame"})
+# the intended framing. A bare view.orbit, view.move, or view.rotate reuses the current
+# projection without refitting, so its default aspect_ratio must NOT replace the tracked
+# framing. Otherwise a bare orbit after a wide frame would false-warn a matching render.
+# The exceptions are an orbit with an explicit aspect ratio and a view.rotate that carries
+# its own projection: both replace the effective framing.
+FRAMING_OPERATIONS = frozenset({"view.set", "view.frame"})
 
 
 def _refits_camera(command: dict[str, Any]) -> bool:
     op = command.get("op")
     if op in FRAMING_OPERATIONS:
         return True
+    if op == "view.orbit":
+        return "aspect_ratio" in command
     # A bare view.rotate reuses the current projection (a nudge, like view.move); one that
     # supplies a projection replaces it, reframing at the command's aspect_ratio.
     return op == "view.rotate" and command.get("projection") is not None

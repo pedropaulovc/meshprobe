@@ -101,6 +101,17 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     }
 
 
+def test_contact_sheet_payload_omits_absent_orbit_sweep_for_older_daemons() -> None:
+    command = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path="evidence.png",
+        focus_component_ids=("cmp-a",),
+    )
+
+    assert "orbit_sweep" not in command_payload(command)
+
+
 def test_payload_preserves_legacy_nested_none_fields() -> None:
     command = ViewFrameCommand(
         request_id="frame",

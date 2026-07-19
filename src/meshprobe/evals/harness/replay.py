@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 from pydantic import JsonValue
 
@@ -127,16 +127,28 @@ def _normalize_optional_render_fields(manifest: dict[str, JsonValue]) -> None:
         comparison.pop("artifact", None)
         reference = comparison.get("reference")
         if isinstance(reference, dict) and _is_generated_artifact_reference(reference.get("path")):
+            reference.pop("path", None)
             reference.pop("sha256", None)
 
 
 def _is_generated_artifact_reference(path: JsonValue | None) -> bool:
     if not isinstance(path, str):
         return False
-    candidate = PurePosixPath(path)
-    return candidate.is_absolute() and candidate.is_relative_to(
-        PurePosixPath("/workspace/artifacts")
-    )
+    candidates = (PurePosixPath(path), PureWindowsPath(path))
+    public_root = PurePosixPath("/workspace/artifacts")
+    for candidate in candidates:
+        if not candidate.is_absolute():
+            continue
+        if isinstance(candidate, PurePosixPath) and candidate.is_relative_to(public_root):
+            return True
+        # Trace events deliberately retain the renderer's private result. An
+        # artifact reused as a comparison reference therefore has the broker's
+        # host artifact root here, rather than its public /workspace path. The
+        # root changes for a fresh replay, so neither its location nor digest
+        # is semantic evidence.
+        if "artifacts" in candidate.parts:
+            return True
+    return False
 
 
 def _without_render_variance(value: JsonValue) -> JsonValue:

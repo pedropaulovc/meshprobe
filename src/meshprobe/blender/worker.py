@@ -814,8 +814,6 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         if requested_projection is not None
         else deepcopy(CURRENT_CAMERA["projection"])
     )
-    if requested_projection is not None:
-        remember_perspective_sensor_intrinsics(projection)
     if (
         requested_projection is None
         and "aspect_ratio" in command
@@ -852,6 +850,12 @@ def orbit_camera(command: dict[str, Any]) -> dict[str, Any]:
         aspect_ratio,
         command["target_mm"],
     )
+    # A supplied projection establishes the physical sensor pair that later bare
+    # AUTO-fit orbits reuse.  Publish it only after ``apply_camera`` accepts the
+    # complete camera request; otherwise a rejected orbit would poison the next
+    # aspect-ratio derivation with intrinsics that never became session state.
+    if requested_projection is not None:
+        remember_perspective_sensor_intrinsics(projection)
     CURRENT_CAMERA_OPERATION = None
     return session_snapshot()
 
