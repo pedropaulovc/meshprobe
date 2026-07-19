@@ -23,8 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render budget and report partial success clearly when the mutation succeeds but rendering fails.
 - CLI help now lists illumination presets, explains every mark mode, and documents the focused
   contact sheet's context, blocker-removal, and six-axis panels.
+- Durable `checkpoint.json` state now uses schema 3: compatibility baselines live in
+  `replay_prefix`, while `accepted_commands` contains only undoable mutations since the last reset.
 - Opaque-scene foreground checks use a uniform material override instead of rebuilding materials
   for every component, while transparent and mixed-culling scenes retain exact material handling.
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.0.0 package
+  and importer identities.
 
 ### Fixed
 
