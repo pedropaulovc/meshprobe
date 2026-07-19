@@ -571,7 +571,12 @@ class SessionManager:
             if isinstance(command, ComponentFindCommand) and isinstance(response.result, list):
                 components = self._component_references_for_ids(
                     files,
-                    [item["id"] for item in response.result if isinstance(item, dict)],
+                    [
+                        component_id
+                        for item in response.result
+                        if isinstance(item, dict)
+                        and isinstance(component_id := item.get("id"), str)
+                    ],
                 )
             warnings = (*warnings, *self._render_warnings(command.op, response.result))
             return self._receipt(
