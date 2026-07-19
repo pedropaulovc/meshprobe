@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from meshprobe.models import CoordinateFrame
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
+    COMMAND_MODELS,
+    CommandEffect,
     ComponentFindCommand,
     ComponentOcclusionCommand,
     RenderContactSheetCommand,
@@ -60,6 +62,7 @@ def test_schema_contains_all_public_operations() -> None:
         "render.image",
         "render.contact_sheet",
         "session.reset",
+        "session.undo",
     ):
         assert operation in encoded
     defs = schema["$defs"]
@@ -97,8 +100,14 @@ def test_result_schema_covers_every_command_operation() -> None:
         "render.image",
         "render.contact_sheet",
         "session.reset",
+        "session.undo",
     ):
         assert operation in result_schema, f"missing result schema for {operation}"
+
+
+def test_every_public_command_declares_its_history_effect() -> None:
+    assert COMMAND_MODELS
+    assert all(model.effect is not CommandEffect.UNDECLARED for model in COMMAND_MODELS.values())
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,7 @@ from meshprobe.models import (
     EnvironmentMap,
     GraphicsDeviceClass,
     GraphicsPlatform,
+    MarkMode,
     PerspectiveProjection,
     RenderStyle,
     RenderStyleState,
@@ -26,12 +27,14 @@ from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
     ComponentFindCommand,
+    ComponentMarkCommand,
     IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
     SessionResetCommand,
     SessionSnapshotCommand,
+    SessionUndoCommand,
     ViewFrameCommand,
     ViewRotateCommand,
     ViewSetCommand,
@@ -78,6 +81,11 @@ class FakeSessionService:
             result = self.session.display(command.component_ids, command.mode).model_dump(
                 mode="json"
             )
+        elif isinstance(command, ComponentMarkCommand):
+            assert self.session is not None
+            result = self.session.mark(
+                command.component_ids, command.mode, color=command.color
+            ).model_dump(mode="json")
         elif isinstance(command, ComponentFindCommand):
             assert self.session is not None
             result = [
@@ -205,6 +213,148 @@ def test_session_manager_writes_compact_queryable_state(
     }
     checkpoint = json.loads((session_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert [command["op"] for command in checkpoint["accepted_commands"]] == ["component.display"]
+
+
+def test_undo_counts_mutation_commands_not_components_or_reads(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager = SessionManager(tmp_path / ".meshprobe", service_factory=factory)
+    manager.open("review", source)
+    component_ids = tuple(component.id for component in scene_manifest.components[:2])
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide-two",
+            op="component.display",
+            component_ids=component_ids,
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.execute(
+        "review",
+        ComponentMarkCommand(
+            request_id="mark-one",
+            op="component.mark",
+            component_ids=(component_ids[0],),
+            mode=MarkMode.HIGHLIGHTED,
+        ),
+    )
+    manager.execute(
+        "review",
+        SessionSnapshotCommand(request_id="read-only", op="session.snapshot"),
+    )
+
+    first = manager.execute(
+        "review", SessionUndoCommand(request_id="undo-mark", op="session.undo")
+    )
+    first_result = manager.raw_result(first)
+    assert first_result["result"]["undone"] == 1  # type: ignore[index]
+    assert first_result["result"]["remaining"] == 1  # type: ignore[index]
+    assert services[-1].session is not None
+    first_snapshot = services[-1].session.snapshot()
+    assert first_snapshot.components[component_ids[0]].mark is MarkMode.UNMARKED
+    assert all(
+        first_snapshot.components[component_id].display is DisplayMode.HIDDEN
+        for component_id in component_ids
+    )
+
+    manager.execute(
+        "review", SessionUndoCommand(request_id="undo-display", op="session.undo")
+    )
+    assert services[-1].session is not None
+    restored = services[-1].session.snapshot()
+    assert all(
+        restored.components[component_id].display is DisplayMode.SHOWN
+        for component_id in component_ids
+    )
+
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide-two-again",
+            op="component.display",
+            component_ids=component_ids,
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.execute(
+        "review",
+        ComponentMarkCommand(
+            request_id="mark-one-again",
+            op="component.mark",
+            component_ids=(component_ids[0],),
+            mode=MarkMode.HIGHLIGHTED,
+        ),
+    )
+    counted = manager.execute(
+        "review", SessionUndoCommand(request_id="undo-two", op="session.undo", count=2)
+    )
+    counted_result = manager.raw_result(counted)
+    assert counted_result["result"]["undone"] == 2  # type: ignore[index]
+    assert counted_result["result"]["remaining"] == 0  # type: ignore[index]
+    with pytest.raises(ValueError, match="only 0 available"):
+        manager.execute(
+            "review", SessionUndoCommand(request_id="too-many", op="session.undo")
+        )
+
+
+def test_undo_survives_manager_restart_and_reset_is_a_hard_boundary(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    services: list[FakeSessionService] = []
+
+    def factory() -> FakeSessionService:
+        service = FakeSessionService(scene_manifest)
+        services.append(service)
+        return service
+
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    root = tmp_path / ".meshprobe"
+    manager = SessionManager(root, service_factory=factory)
+    manager.open("review", source)
+    component_id = scene_manifest.components[0].id
+    manager.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    manager.close("review")
+
+    recovered = SessionManager(root, service_factory=factory)
+    recovered.execute(
+        "review", SessionUndoCommand(request_id="undo-after-restart", op="session.undo")
+    )
+    assert services[-1].session is not None
+    assert services[-1].session.snapshot().components[component_id].display is DisplayMode.SHOWN
+
+    recovered.execute(
+        "review",
+        ComponentDisplayCommand(
+            request_id="hide-again",
+            op="component.display",
+            component_ids=(component_id,),
+            mode=DisplayMode.HIDDEN,
+        ),
+    )
+    recovered.execute("review", SessionResetCommand(request_id="reset", op="session.reset"))
+    with pytest.raises(ValueError, match="only 0 available since the last reset"):
+        recovered.execute(
+            "review", SessionUndoCommand(request_id="past-reset", op="session.undo")
+        )
 
 
 def test_session_manager_execute_propagates_open_aspect_ratio_to_the_worker(
@@ -1146,7 +1296,7 @@ def test_bare_reset_stays_omitted_in_durable_events(
     assert "aspect_ratio" not in events[-1]["command"]
 
 
-@pytest.mark.parametrize("schema_version", (1, 2))
+@pytest.mark.parametrize("schema_version", (1, 2, 3))
 def test_checkpoint_without_framing_marker_restores_the_source_camera_before_replaying(
     tmp_path: Path, scene_manifest: SceneManifest, schema_version: int
 ) -> None:
@@ -1181,8 +1331,9 @@ def test_checkpoint_without_framing_marker_restores_the_source_camera_before_rep
     assert recovered_commands[1].camera == scene_manifest.imported_camera
 
     upgraded = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    assert upgraded["schema_version"] == 2
-    assert upgraded["accepted_commands"][0] == {
+    assert upgraded["schema_version"] == 3
+    assert upgraded["accepted_commands"] == []
+    assert upgraded["replay_prefix"][0] == {
         "request_id": "recover-v1-source-camera",
         "op": "view.set",
         "camera": scene_manifest.imported_camera.model_dump(mode="json"),

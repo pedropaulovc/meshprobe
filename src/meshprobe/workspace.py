@@ -31,8 +31,8 @@ from meshprobe.models import (
     RenderStyle,
     RenderStyleState,
     SceneManifest,
-    SessionUndoResult,
     SessionSnapshot,
+    SessionUndoResult,
     SrgbHexColor,
 )
 from meshprobe.protocol import (
@@ -94,29 +94,53 @@ class SessionMetadata(BaseModel):
 class SessionCheckpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1, 2] = 2
+    schema_version: Literal[1, 2, 3] = 3
     source_path: str
     source_sha256: str
     blender: str | None
     state_sha256: str
     aspect_ratio: float = 1.0
-    accepted_commands: list[dict[str, Any]] = Field(default_factory=list)
+    replay_prefix: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Compatibility baseline replayed before user mutation history.",
+    )
+    accepted_commands: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Undoable state-changing commands accepted since the last reset.",
+    )
     unit_scale: float = 1.0
 
 
 def _upgrade_checkpoint(checkpoint: SessionCheckpoint) -> tuple[SessionCheckpoint, bool]:
     """Translate persisted commands whose meaning changed between checkpoint schemas."""
-    if checkpoint.schema_version == 2:
+    if checkpoint.schema_version == 3:
         return checkpoint, False
 
     accepted_commands: list[dict[str, Any]] = []
     for raw in checkpoint.accepted_commands:
         command = dict(raw)
-        if command.get("op") == "view.rotate":
+        if checkpoint.schema_version == 1 and command.get("op") == "view.rotate":
             command["degrees"] = -float(command["degrees"])
         accepted_commands.append(command)
+    replay_prefix = list(checkpoint.replay_prefix)
+    replay_prefix.extend(
+        command
+        for command in accepted_commands
+        if command.get("request_id") == "recover-v1-source-camera"
+    )
+    accepted_commands = [
+        command
+        for command in accepted_commands
+        if command.get("request_id") != "recover-v1-source-camera"
+    ]
     return (
-        checkpoint.model_copy(update={"schema_version": 2, "accepted_commands": accepted_commands}),
+        checkpoint.model_copy(
+            update={
+                "schema_version": 3,
+                "replay_prefix": replay_prefix,
+                "accepted_commands": accepted_commands,
+            }
+        ),
         True,
     )
 
@@ -278,9 +302,9 @@ def durable_state_schema_summary() -> dict[str, object]:
                 "components.{default,overrides} results artifacts",
             },
             "checkpoint.json": {
-                "purpose": "last acknowledged replay state",
+                "purpose": "last acknowledged replay state and undo history",
                 "fields": "schema_version source_path source_sha256 blender state_sha256 "
-                "accepted_commands[]",
+                "replay_prefix[] accepted_commands[]",
             },
             "events.jsonl": {
                 "purpose": "one accepted or rejected operation per line",
@@ -566,30 +590,27 @@ class SessionManager:
     ) -> OperationReceipt:
         """Atomically replace the live renderer with a replay of truncated history."""
 
+        replacement: SessionService | None = None
         try:
             current = self._service(name, files)
             checkpoint, _ = _upgrade_checkpoint(
                 SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
             )
-            undoable_indexes = [
-                index
-                for index, raw in enumerate(checkpoint.accepted_commands)
-                if raw.get("request_id") != "recover-v1-source-camera"
-            ]
-            available = len(undoable_indexes)
+            available = len(checkpoint.accepted_commands)
             if command.count > available:
                 raise ValueError(
                     f"cannot undo {command.count} state-changing command(s); "
                     f"only {available} available since the last reset"
                 )
-            cutoff = undoable_indexes[-command.count]
             updated = checkpoint.model_copy(
                 deep=True,
-                update={"accepted_commands": checkpoint.accepted_commands[:cutoff]},
+                update={"accepted_commands": checkpoint.accepted_commands[: -command.count]},
             )
             replacement = self._restore_service(updated)
             snapshot = self._snapshot(replacement)
         except Exception as error:
+            if replacement is not None:
+                replacement.kill()
             self._event(files, command, "rejected", error=str(error))
             raise
 
@@ -608,14 +629,14 @@ class SessionManager:
             result_path = self._write_result(files, command.request_id, response)
             self._write_state(files, snapshot)
             atomic_json(files.checkpoint, updated.model_dump(mode="json"))
-            self._update_metadata(files, status="active", worker_pid=replacement.worker_pid)
-            self._event(files, command, "accepted", result_path=result_path)
         except Exception:
             replacement.kill()
             raise
 
         self._services[name] = replacement
         current.close()
+        self._update_metadata(files, status="active", worker_pid=replacement.worker_pid)
+        self._event(files, command, "accepted", result_path=result_path)
         return self._receipt(files, command.op, snapshot, result_path)
 
     def close(self, name: str) -> OperationReceipt:
@@ -822,9 +843,9 @@ class SessionManager:
                     op="view.set",
                     camera=manifest.imported_camera,
                 )
-                checkpoint.accepted_commands.insert(0, command_payload(baseline))
+                checkpoint.replay_prefix.append(command_payload(baseline))
                 upgraded = True
-            for raw in checkpoint.accepted_commands:
+            for raw in (*checkpoint.replay_prefix, *checkpoint.accepted_commands):
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
             if upgraded:
                 atomic_json(files.checkpoint, checkpoint.model_dump(mode="json"))
@@ -853,7 +874,7 @@ class SessionManager:
                 raise ValueError("source asset bundle changed since the session checkpoint")
             from meshprobe.protocol import COMMAND_ADAPTER
 
-            for raw in checkpoint.accepted_commands:
+            for raw in (*checkpoint.replay_prefix, *checkpoint.accepted_commands):
                 service.execute(COMMAND_ADAPTER.validate_python(raw))
         except Exception:
             service.kill()
@@ -1059,6 +1080,7 @@ class SessionManager:
             SessionCheckpoint.model_validate_json(files.checkpoint.read_text(encoding="utf-8"))
         )
         if isinstance(command, SessionResetCommand):
+            checkpoint.replay_prefix.clear()
             checkpoint.accepted_commands.clear()
             if "aspect_ratio" in command.model_fields_set:
                 checkpoint.aspect_ratio = command.aspect_ratio
