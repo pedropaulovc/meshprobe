@@ -5606,13 +5606,47 @@ def test_worker_ignores_component_label_geometry(tmp_path: Path) -> None:
     assert ranking["unresolved_rays"] == 0
 
 
-def test_labeled_mark_projects_text_in_front_of_blocking_geometry(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "depth_of_field",
+    [
+        pytest.param(DepthOfField(), id="dof-disabled"),
+        pytest.param(
+            DepthOfField(
+                mode=DepthOfFieldMode.ENABLED,
+                aperture_fstop=1.4,
+                focus_distance_mm=6_000,
+            ),
+            id="dof-enabled",
+        ),
+    ],
+)
+def test_labeled_mark_projects_text_in_front_of_blocking_geometry(
+    tmp_path: Path,
+    depth_of_field: DepthOfField,
+) -> None:
     source = build_hidden_label_glb(tmp_path)
     highlighted_path = tmp_path / "highlighted.png"
     labeled_path = tmp_path / "labeled.png"
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
         _pin_source_camera(controller, manifest)
+        camera = SessionSnapshot.model_validate(
+            controller.request("session.snapshot")["session"]
+        ).camera
+        assert isinstance(camera.projection, PerspectiveProjection)
+        controller.execute(
+            ViewSetCommand(
+                request_id="label-camera",
+                op="view.set",
+                camera=camera.model_copy(
+                    update={
+                        "projection": camera.projection.model_copy(
+                            update={"depth_of_field": depth_of_field}
+                        )
+                    }
+                ),
+            )
+        )
         by_name = {component.display_name: component.id for component in manifest.components}
         target = by_name["target-behind-wall"]
         controller.request(
@@ -5652,9 +5686,9 @@ def test_labeled_mark_projects_text_in_front_of_blocking_geometry(tmp_path: Path
 
     def magenta_pixels(path: Path) -> int:
         image = Image.open(path).convert("RGB")
+        pixels = cast(list[tuple[int, int, int]], image.get_flattened_data())
         return sum(
-            red > 40 and red > green + 10 and blue > green + 10
-            for red, green, blue in image.get_flattened_data()
+            red > 40 and red > green + 10 and blue > green + 10 for red, green, blue in pixels
         )
 
     # The wall completely hides the highlighted target (the positive control), while the

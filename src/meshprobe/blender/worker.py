@@ -21,6 +21,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from enum import StrEnum
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -53,6 +54,15 @@ PLAUSIBLE_MAX_SPAN_METERS = 50.0
 # under anything meaningful to inspect standalone here, and far more likely a units (or a
 # wrong --unit-scale) mistake than a real part.
 PLAUSIBLE_MIN_SPAN_METERS = 0.001
+
+
+class MaskMaterialMode(StrEnum):
+    FLAT_BY_COMPONENT = "flat_by_component"
+    MATERIAL_EXACT = "material_exact"
+    UNIFORM_BACKFACE_CULLED = "uniform_backface_culled"
+    UNIFORM_DOUBLE_SIDED = "uniform_double_sided"
+
+
 DISPLAY_MODES = {"shown", "hidden", "isolated", "ghosted"}
 MARK_MODES = {"unmarked", "selected", "highlighted", "labeled"}
 MARK_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
@@ -1716,7 +1726,12 @@ def create_component_label(component_id: str, color: tuple[float, float, float, 
     material_name = "MeshProbeMark-labeled"
     if color_suffix is not None:
         material_name = f"{material_name}-{color_suffix[1:]}"
-    data.materials.append(replacement_material(material_name, color))
+    label_material = emission_material(f"{material_name}-overlay", color)
+    if hasattr(label_material, "surface_render_method"):
+        # Eevee composites blended surfaces outside its depth-buffer DOF pass. Combined with
+        # the near-camera placement, this keeps annotation text both unobstructed and sharp.
+        label_material.surface_render_method = "BLENDED"
+    data.materials.append(label_material)
     MARK_OBJECTS[component_id] = label
     orient_component_labels()
 
@@ -2410,7 +2425,7 @@ def count_foreground_pixels(path: Path) -> int:
         bpy.data.images.remove(image)
 
 
-def foreground_mask_material_mode() -> str:
+def foreground_mask_material_mode() -> MaskMaterialMode:
     """Choose the cheapest mask material path that preserves visible coverage."""
 
     culling_modes: set[bool] = set()
@@ -2425,20 +2440,22 @@ def foreground_mask_material_mode() -> str:
                 continue
             culling_modes.add(bool(material.use_backface_culling))
             if material.diffuse_color[3] < 1.0:
-                return "material_exact"
+                return MaskMaterialMode.MATERIAL_EXACT
             if not material.use_nodes:
                 continue
             principled = material.node_tree.nodes.get("Principled BSDF")
             if principled is None:
                 # Unknown node graphs may contain Transparent/Holdout shaders. Preserve them
                 # instead of guessing that an arbitrary graph is opaque.
-                return "material_exact"
+                return MaskMaterialMode.MATERIAL_EXACT
             alpha = principled.inputs.get("Alpha")
             if alpha is None or alpha.is_linked or float(alpha.default_value) < 1.0:
-                return "material_exact"
+                return MaskMaterialMode.MATERIAL_EXACT
     if len(culling_modes) > 1:
-        return "material_exact"
-    return "uniform_backface_culled" if culling_modes == {True} else "uniform_double_sided"
+        return MaskMaterialMode.MATERIAL_EXACT
+    if culling_modes == {True}:
+        return MaskMaterialMode.UNIFORM_BACKFACE_CULLED
+    return MaskMaterialMode.UNIFORM_DOUBLE_SIDED
 
 
 def foreground_coverage() -> dict[str, Any]:
@@ -2609,15 +2626,8 @@ def render_mask(
     path: Path,
     colors: dict[str, tuple[int, int, int]],
     *,
-    material_mode: str = "flat_by_component",
+    material_mode: MaskMaterialMode = MaskMaterialMode.FLAT_BY_COMPONENT,
 ) -> None:
-    if material_mode not in {
-        "flat_by_component",
-        "material_exact",
-        "uniform_backface_culled",
-        "uniform_double_sided",
-    }:
-        raise ValueError(f"unknown mask material mode: {material_mode}")
     scene = bpy.context.scene
     view_layer = bpy.context.view_layer
     original_meshes = {component_id: obj.data for component_id, obj in COMPONENT_OBJECTS.items()}
@@ -2657,10 +2667,13 @@ def render_mask(
     try:
         for obj in other_visibility:
             obj.hide_render = True
-        if uniform_color is not None and material_mode.startswith("uniform_"):
+        if uniform_color is not None and material_mode in {
+            MaskMaterialMode.UNIFORM_BACKFACE_CULLED,
+            MaskMaterialMode.UNIFORM_DOUBLE_SIDED,
+        }:
             red, green, blue = uniform_color
             override = emission_material(
-                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}-{material_mode}",
+                f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}-{material_mode.value}",
                 (
                     srgb_channel_to_linear(red),
                     srgb_channel_to_linear(green),
@@ -2668,7 +2681,9 @@ def render_mask(
                     1.0,
                 ),
             )
-            override.use_backface_culling = material_mode == "uniform_backface_culled"
+            override.use_backface_culling = (
+                material_mode is MaskMaterialMode.UNIFORM_BACKFACE_CULLED
+            )
             view_layer.material_override = override
         else:
             for component_id, obj in COMPONENT_OBJECTS.items():
@@ -2683,11 +2698,11 @@ def render_mask(
                     1.0,
                 )
                 base_name = f"MeshProbeMask-{red:02x}{green:02x}{blue:02x}"
-                if material_mode == "flat_by_component":
+                if material_mode is MaskMaterialMode.FLAT_BY_COMPONENT:
                     mesh.materials.append(emission_material(base_name, color))
                     for polygon in mesh.polygons:
                         polygon.material_index = 0
-                elif material_mode == "material_exact":
+                elif material_mode is MaskMaterialMode.MATERIAL_EXACT:
                     # Preserve each source material's transparency/culling instead of forcing
                     # every polygon opaque and front-and-back visible: a component that is
                     # invisible in the real color render (transparent material — constant,
@@ -2718,7 +2733,7 @@ def render_mask(
                         polygon.material_index = variant_index[original.name]
                 else:
                     raise ValueError(
-                        f"mask material mode requires one uniform color: {material_mode}"
+                        f"mask material mode requires one uniform color: {material_mode.value}"
                     )
                 obj.data = mesh
         render_still(path)
