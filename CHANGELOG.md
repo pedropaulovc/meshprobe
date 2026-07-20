@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows worker exits now include hexadecimal exception codes and a conditional NVIDIA driver
   reset/TDR diagnostic for `0xC0000409`.
 
+### Changed
+
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.2.1 runtime.
+
 ## [1.2.0] - 2026-07-19
 
 ### Added
