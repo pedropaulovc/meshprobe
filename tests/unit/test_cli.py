@@ -48,6 +48,84 @@ from meshprobe.workspace import OperationReceipt, ResolvedComponentReference
 runner = CliRunner()
 
 
+def test_cmdhelp_capabilities_are_stable_and_side_effect_free() -> None:
+    result = runner.invoke(app, ["help", "--capabilities"])
+
+    assert result.exit_code == 0
+    assert result.stdout == "cmdhelp/0.1: text, md, json, llm\n"
+
+
+def test_cmdhelp_json_exposes_the_live_command_tree() -> None:
+    result = runner.invoke(app, ["help", "--format", "json", "--depth", "99"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["cmdhelp_version"] == "0.1"
+    assert payload["binary"] == "meshprobe"
+    assert payload["global_flags"]["session"]["flag"] == "--session"
+    assert payload["global_flags"]["workspace"]["default"] == "current directory"
+    assert payload["commands"]["view-orbit"]["flags"]["target"] == {
+        "flag": "--target",
+        "type": "float",
+        "required": True,
+        "description": "Absolute world-space X Y Z target in millimeters.",
+        "arity": 3,
+    }
+    assert payload["commands"]["display"]["flags"]["mode"]["enum"] == [
+        "shown",
+        "hidden",
+        "isolated",
+        "ghosted",
+    ]
+    assert payload["commands"]["eval generate"]["args"][0]["name"] == "output_root"
+    assert payload["commands"]["view-orbit"]["stdout"]["json_schema_ref"] == (
+        "#/schemas/view.orbit"
+    )
+    assert "view.orbit" in payload["schemas"]
+
+
+def test_cmdhelp_depth_zero_is_a_summary_and_depth_one_expands_one_level() -> None:
+    summary = runner.invoke(app, ["help", "--format", "json", "--depth", "0"])
+    expanded = runner.invoke(app, ["help", "--format", "json", "--depth", "1"])
+
+    assert summary.exit_code == 0
+    assert expanded.exit_code == 0
+    summary_commands = json.loads(summary.stdout)["commands"]
+    expanded_commands = json.loads(expanded.stdout)["commands"]
+    assert "flags" not in summary_commands["open"]
+    assert "flags" in expanded_commands["open"]
+    assert "flags" not in expanded_commands["eval generate"]
+
+
+def test_cmdhelp_scopes_to_nested_commands_and_shares_examples_between_formats() -> None:
+    json_result = runner.invoke(app, ["help", "view-orbit", "--format", "json"])
+    markdown_result = runner.invoke(app, ["help", "view-orbit", "--format", "md"])
+
+    assert json_result.exit_code == 0, json_result.output
+    assert markdown_result.exit_code == 0, markdown_result.output
+    payload = json.loads(json_result.stdout)
+    examples = payload["commands"]["view-orbit"]["examples"]
+    assert examples
+    assert examples[0]["cmd"] in markdown_result.stdout
+    assert "### Stdin" in markdown_result.stdout
+    assert "### Exit codes" in markdown_result.stdout
+
+    nested = runner.invoke(app, ["help", "eval", "generate", "--format", "json"])
+    assert nested.exit_code == 0, nested.output
+    nested_payload = json.loads(nested.stdout)
+    assert set(nested_payload["commands"]) == {"eval generate"}
+    assert "family" in nested_payload["commands"]["eval generate"]["flags"]
+
+
+def test_cmdhelp_text_preserves_the_existing_click_help_surface() -> None:
+    result = runner.invoke(app, ["help", "open", "--format", "text"])
+
+    assert result.exit_code == 0
+    assert "Usage: meshprobe open" in result.stdout
+    assert "--unit-scale" in result.stdout
+    assert "--help" in result.stdout
+
+
 def test_schema_command_emits_discriminated_union() -> None:
     result = runner.invoke(app, ["schema", "--kind", "commands"])
     assert result.exit_code == 0
