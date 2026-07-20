@@ -552,8 +552,7 @@ def _cmdhelp_command_document(
         stdout["json_schema_command"] = f"meshprobe schema {path[-1]} --kind results"
     document["exit_codes"] = _CMDHELP_EXIT_CODES
     document["examples"] = [
-        {"cmd": example, "note": note}
-        for example, note in _CMDHELP_EXAMPLES.get(name, ())
+        {"cmd": example, "note": note} for example, note in _CMDHELP_EXAMPLES.get(name, ())
     ]
     see_also = _CMDHELP_SEE_ALSO.get(name)
     if see_also:
@@ -561,8 +560,7 @@ def _cmdhelp_command_document(
     context: dict[str, str] = {
         "session": "The durable session is selected with --session (default: default).",
         "workspace": (
-            "Session data is stored under .meshprobe in --workspace "
-            "(default: current directory)."
+            "Session data is stored under .meshprobe in --workspace (default: current directory)."
         ),
     }
     if name in {"find", "inspect", "display", "mark", "occlusion", "render-sheet", "view-frame"}:
