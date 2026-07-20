@@ -209,7 +209,10 @@ app = typer.Typer(
     help="Read-only 3D model inspection for AI agents.",
     no_args_is_help=True,
     cls=GlobalOptionGroup,
-    rich_markup_mode="markdown",
+    context_settings={"show_default": True},
+    # Click's line-oriented formatter keeps every flag and command searchable
+    # with standard shell tools; Rich's box tables wrap long descriptions.
+    rich_markup_mode=None,
 )
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
@@ -2218,20 +2221,20 @@ def render_image(
 ) -> None:
     """Render the selected session to an image artifact.
 
-    **Choose a style:**
+    Choose a style:
 
-    - `screen_edges` (default): Fast GPU depth/normal edge pass for routine inspection.
-    - `shaded_edges`: Slower geometry-aware Freestyle lines for final confirmation,
-      especially when separating same-color adjacent parts.
-    - `shaded`: Unmodified shaded image with no edge overlay.
+    screen_edges (default): Fast GPU depth/normal edge pass for routine inspection.
+    shaded_edges: Slower geometry-aware Freestyle lines for final confirmation,
+    especially when separating same-color adjacent parts.
+    shaded: Unmodified shaded image with no edge overlay.
 
     Freestyle is single-threaded and CPU-bound. Its cost increases with the number of
-    visible components, not output resolution. Narrow the visible set or `--edge-types`
+    visible components, not output resolution. Narrow the visible set or --edge-types
     to reduce final-confirmation time.
 
-    The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
+    The result carries a luminance exposure summary (median, clipped/crushed fractions) so
     a too-dark or blown-out frame can be detected without inspecting pixels. See
-    `meshprobe schema --kind results` for the full render result shape.
+    meshprobe schema --kind results for the full render result shape.
     """
 
     options = _options(ctx)
