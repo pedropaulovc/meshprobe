@@ -357,6 +357,7 @@ def test_mark_help_explains_mode_semantics() -> None:
 
     assert result.exit_code == 0
     help_text = " ".join(unstyle(result.stdout).split())
+    assert "`" not in result.stdout
     for description in (
         "unmarked restores source materials",
         "selected applies cyan",
