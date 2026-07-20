@@ -53,6 +53,24 @@ Visual mutations (`open`, `display`, `mark`, `illumination-set`, `view-*`, and `
 journaled operations but run in one CLI invocation. Leave it off while chaining setup commands.
 Use `meshprobe undo [COUNT]` to reverse recent visual mutations, including after a daemon restart.
 Queries and renders do not consume history; `reset` starts a new undo boundary.
+
+### LLM-readable CLI help
+
+MeshProbe supports cmdhelp v0.1. Use it when an agent needs the full command tree and invocation
+schema:
+
+```bash
+meshprobe help --format md --depth 99
+meshprobe help --format json --depth 99
+meshprobe help view-orbit --format md
+meshprobe help --capabilities
+```
+
+`text` is the default and preserves the ordinary concise Click help. `md` includes command
+synopses, arguments, flags, examples, stream behavior, exit codes, and session context. `json`
+uses the same command metadata and examples for programmatic dispatch; `llm` is an alias for
+`md`. `--depth 0` emits a summary tree, while each additional depth expands one more level.
+
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
 `--name NAME` for an exact display name and `--kind regex` only when regular-expression

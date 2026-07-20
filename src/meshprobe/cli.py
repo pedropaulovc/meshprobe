@@ -8,7 +8,7 @@ import subprocess
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import typer
 import yaml
@@ -340,6 +340,501 @@ def _cli_command_names() -> list[str]:
     """All command names accepted by the per-command schema lookup, CLI-style."""
     reverse_aliases = {op: cli_name for cli_name, op in _CLI_COMMAND_OP_ALIASES.items()}
     return sorted(reverse_aliases.get(op, op.replace(".", "-")) for op in COMMAND_MODELS)
+
+
+# These fields cannot be recovered from Click's parameter tree.  Keeping them in a
+# small registry means the Markdown and JSON cmdhelp renderers still have one
+# canonical source for examples and stream semantics.
+_CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
+    "open": (("meshprobe open models/gearbox.glb", "Open a model in the default session."),),
+    "snapshot": (("meshprobe snapshot", "Persist and print the current session snapshot."),),
+    "find": (("meshprobe find '**/idler*'", "Find components by a wildcard path."),),
+    "inspect": (("meshprobe inspect c7", "Inspect a component by ref or stable ID."),),
+    "view-orbit": (
+        (
+            "meshprobe view-orbit --target 0 0 0 --azimuth 45 --elevation 30 --distance 500",
+            "Set an absolute camera orbit.",
+        ),
+    ),
+    "view-frame": (("meshprobe view-frame c7", "Frame a component tightly."),),
+    "view-move": (("meshprobe view-move --forward 25mm", "Move the current camera."),),
+    "view-rotate": (
+        (
+            "meshprobe view-rotate --target 0 0 0 --axis Y --degrees 15",
+            "Apply a cumulative visual rotation.",
+        ),
+    ),
+    "illumination-set": (
+        ("meshprobe illumination-set raking_left", "Apply a diagnostic lighting preset."),
+    ),
+    "display": (("meshprobe display c7 --mode isolated", "Isolate a component."),),
+    "mark": (("meshprobe mark c7 --mode highlighted", "Highlight a component."),),
+    "render-image": (("meshprobe render-image --output idler.png", "Render the current view."),),
+    "render-sheet": (
+        (
+            "meshprobe render-sheet '**/*bearing*' --output bearings.png",
+            "Render a focused 3x3 inspection sheet.",
+        ),
+    ),
+    "occlusion": (("meshprobe occlusion c7", "Measure visibility and blockers."),),
+    "reset": (("meshprobe reset", "Restore imported visual state."),),
+    "undo": (("meshprobe undo 2", "Undo the two latest state-changing commands."),),
+    "list": (("meshprobe list", "List durable sessions."),),
+    "close": (("meshprobe close", "Checkpoint and stop the selected renderer."),),
+    "kill": (("meshprobe kill --all", "Force-stop all renderers."),),
+    "delete-data": (("meshprobe delete-data", "Delete stopped session data."),),
+    "schema": (("meshprobe schema --kind results", "Inspect command result schemas."),),
+    "eval generate": (
+        (
+            "meshprobe eval generate .corpora --version procedural-v7",
+            "Build the procedural evaluation corpus.",
+        ),
+    ),
+    "eval validate": (("meshprobe eval validate .corpora/procedural-v7", "Validate a corpus."),),
+    "eval migrate": (
+        (
+            "meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v7",
+            "Migrate a corpus while preserving identities.",
+        ),
+    ),
+    "eval merge": (
+        (
+            "meshprobe eval merge .corpora .corpora/procedural-v7 .corpora/curated-tasks-v7",
+            "Combine validated corpora.",
+        ),
+    ),
+}
+
+_CMDHELP_SEE_ALSO: dict[str, tuple[str, ...]] = {
+    "open": ("snapshot", "close", "delete-data"),
+    "find": ("inspect", "occlusion"),
+    "view-orbit": ("view-frame", "view-move", "view-rotate"),
+    "view-frame": ("view-orbit", "render-image"),
+    "render-image": ("render-sheet", "schema"),
+    "render-sheet": ("occlusion", "render-image"),
+    "schema": ("help",),
+}
+
+_CMDHELP_EXIT_CODES: dict[str, object] = {
+    "0": "ok",
+    "1": {"when": "unexpected runtime failure", "recovery": "Inspect the error and retry."},
+    "2": {
+        "when": "invalid arguments or command state",
+        "recovery": "Check the command's arguments and flags, then retry.",
+    },
+}
+
+
+def _cmdhelp_command_is_group(command: object) -> bool:
+    return bool(getattr(command, "commands", None))
+
+
+def _cmdhelp_type(param: object) -> tuple[str, list[str] | None]:
+    parameter_type = getattr(param, "type", None)
+    choices = getattr(parameter_type, "choices", None)
+    if choices is not None:
+        return "enum", [str(choice) for choice in choices]
+    if getattr(param, "is_flag", False):
+        return "bool", None
+    type_name = str(getattr(parameter_type, "name", "string")).lower()
+    class_name = type(parameter_type).__name__.lower()
+    if "path" in class_name or type_name in {"path", "file", "directory"}:
+        return "path", None
+    if "int" in type_name or "intrange" in class_name:
+        return "int", None
+    if "float" in type_name or "floatrange" in class_name:
+        return "float", None
+    if "bool" in type_name:
+        return "bool", None
+    if "tuple" in class_name:
+        return "string", None
+    return {
+        "integer": "int",
+        "number": "float",
+        "text": "string",
+    }.get(
+        type_name, type_name if type_name in {"string", "json", "url", "date"} else "string"
+    ), None
+
+
+def _cmdhelp_json_value(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None and isinstance(enum_value, (str, int, float, bool)):
+        return enum_value
+    if isinstance(value, (tuple, list)):
+        return [_cmdhelp_json_value(item) for item in value]
+    return str(value)
+
+
+def _cmdhelp_parameter(param: object) -> dict[str, object]:
+    is_argument = getattr(param, "is_flag", None) is None
+    parameter_type, enum = _cmdhelp_type(param)
+    names = list(getattr(param, "opts", ()))
+    if is_argument:
+        payload: dict[str, object] = {
+            "name": getattr(param, "name", "argument"),
+            "type": parameter_type,
+            "required": bool(getattr(param, "required", False)),
+            "description": getattr(param, "help", None)
+            or f"Value for {getattr(param, 'name', 'argument')}.",
+        }
+    else:
+        long_name = next((name for name in names if name.startswith("--")), names[0])
+        key = long_name.lstrip("-").replace("-", "_")
+        payload = {
+            "flag": long_name,
+            "type": parameter_type,
+            "required": bool(getattr(param, "required", False)),
+            "description": getattr(param, "help", None) or f"Set {key}.",
+        }
+        aliases = [name for name in names if name != long_name]
+        if aliases:
+            payload["aliases"] = aliases
+        if getattr(param, "multiple", False):
+            payload["repeatable"] = True
+        if getattr(param, "is_flag", False):
+            payload["presence_switch"] = True
+    if enum is not None:
+        payload["enum"] = enum
+    nargs = getattr(param, "nargs", 1)
+    if nargs > 1:
+        payload["arity"] = nargs
+    default = getattr(param, "default", None)
+    if default is not None:
+        if getattr(param, "name", None) == "workspace" and isinstance(default, Path):
+            default = "current directory"
+        payload["default"] = _cmdhelp_json_value(default)
+    metavar = getattr(param, "metavar", None)
+    if metavar:
+        payload["metavar"] = metavar
+    return payload
+
+
+def _cmdhelp_command_document(
+    path: tuple[str, ...], command: object, detail: bool
+) -> dict[str, object]:
+    name = " ".join(path)
+    raw_help = (getattr(command, "help", None) or "").strip()
+    summary = next((line.strip() for line in raw_help.splitlines() if line.strip()), name)
+    document: dict[str, object] = {"summary": summary}
+    if raw_help and raw_help != summary:
+        document["description"] = raw_help
+    children = tuple(getattr(command, "commands", {}).keys())
+    if children:
+        document["subcommands"] = [" ".join((*path, child)) for child in children]
+    if not detail:
+        return document
+    params = tuple(getattr(command, "params", ()))
+    arguments = [
+        _cmdhelp_parameter(param) for param in params if getattr(param, "is_flag", None) is None
+    ]
+    flags = [
+        _cmdhelp_parameter(param) for param in params if getattr(param, "is_flag", None) is not None
+    ]
+    document["usage"] = _cmdhelp_synopsis(path, params)
+    document["args"] = arguments
+    document["flags"] = {
+        str(payload["flag"]).lstrip("-").replace("-", "_"): payload for payload in flags
+    }
+    document["stdin"] = {"accepted": False, "description": "This command does not read stdin."}
+    document["stdout"] = {
+        "formats": ["text", "json", "yaml"],
+        "description": (
+            "Writes a receipt or command result to stdout; use --json, --yaml, or --raw "
+            "for structured output."
+        ),
+    }
+    op = _resolve_command_op(name)
+    if op is not None:
+        stdout = cast(dict[str, object], document["stdout"])
+        stdout["json_schema_command"] = f"meshprobe schema {path[-1]} --kind results"
+    document["exit_codes"] = _CMDHELP_EXIT_CODES
+    document["examples"] = [
+        {"cmd": example, "note": note} for example, note in _CMDHELP_EXAMPLES.get(name, ())
+    ]
+    see_also = _CMDHELP_SEE_ALSO.get(name)
+    if see_also:
+        document["see_also"] = ["meshprobe " + item for item in see_also]
+    context: dict[str, str] = {
+        "session": "The durable session is selected with --session (default: default).",
+        "workspace": (
+            "Session data is stored under .meshprobe in --workspace (default: current directory)."
+        ),
+    }
+    if name in {"find", "inspect", "display", "mark", "occlusion", "render-sheet", "view-frame"}:
+        context["components"] = (
+            "Component refs, IDs, names, paths, and globs resolve against the selected session."
+        )
+    document["context"] = context
+    return document
+
+
+def _cmdhelp_synopsis(path: tuple[str, ...], params: tuple[object, ...]) -> str:
+    parts = ["meshprobe", *path]
+    for param in params:
+        if getattr(param, "is_flag", None) is None:
+            name = str(getattr(param, "metavar", None) or getattr(param, "name", "ARG")).upper()
+            if getattr(param, "required", False):
+                parts.append(name)
+            else:
+                parts.append(f"[{name}]")
+    parts.append("[OPTIONS]")
+    return " ".join(parts)
+
+
+def _cmdhelp_lookup(root: object, path: tuple[str, ...]) -> object | None:
+    command = root
+    for part in path:
+        commands = getattr(command, "commands", {})
+        command = commands.get(part)
+        if command is None:
+            return None
+    return command
+
+
+def _cmdhelp_documents(
+    root: object, selected_path: tuple[str, ...], depth: int | None, all_commands: bool
+) -> tuple[dict[str, object], object]:
+    selected = _cmdhelp_lookup(root, selected_path)
+    if selected is None:
+        valid = ", ".join(_cmdhelp_paths(root))
+        raise typer.BadParameter(
+            f"Unknown command {' '.join(selected_path)!r}. Valid commands: {valid}",
+            param_hint="COMMAND",
+        )
+    is_leaf = not _cmdhelp_command_is_group(selected)
+    effective_depth = 99 if all_commands else depth
+    if effective_depth is None:
+        effective_depth = 99 if is_leaf else 0
+    documents: dict[str, object] = {}
+    selected_detail = is_leaf and (depth is None or all_commands or depth > 0)
+    if selected_path:
+        documents[" ".join(selected_path)] = _cmdhelp_command_document(
+            selected_path, selected, selected_detail
+        )
+    max_relative = effective_depth + 1
+
+    def visit(command: object, path: tuple[str, ...], relative: int) -> None:
+        for child_name, child in getattr(command, "commands", {}).items():
+            child_path = (*path, child_name)
+            if relative > max_relative:
+                continue
+            child_is_leaf = not _cmdhelp_command_is_group(child)
+            detail = relative <= effective_depth
+            documents[" ".join(child_path)] = _cmdhelp_command_document(child_path, child, detail)
+            if not child_is_leaf:
+                visit(child, child_path, relative + 1)
+
+    if _cmdhelp_command_is_group(selected) or not selected_path:
+        visit(selected, selected_path, 1)
+    return documents, selected
+
+
+def _cmdhelp_paths(root: object) -> list[str]:
+    paths: list[str] = []
+
+    def visit(command: object, prefix: tuple[str, ...]) -> None:
+        for name, child in getattr(command, "commands", {}).items():
+            path = (*prefix, name)
+            paths.append(" ".join(path))
+            if _cmdhelp_command_is_group(child):
+                visit(child, path)
+
+    visit(root, ())
+    return paths
+
+
+def _cmdhelp_json(
+    root: object, selected_path: tuple[str, ...], depth: int | None, all_commands: bool
+) -> dict[str, object]:
+    documents, _ = _cmdhelp_documents(root, selected_path, depth, all_commands)
+    schemas: dict[str, object] = {}
+    for name, raw_document in documents.items():
+        document = cast(dict[str, object], raw_document)
+        if "usage" not in document:
+            continue
+        op = _resolve_command_op(name)
+        if op is None:
+            continue
+        schemas[op] = command_result_json_schema_for(op)
+        stdout = cast(dict[str, object], document["stdout"])
+        stdout["json_schema_ref"] = f"#/schemas/{op}"
+    root_params = tuple(getattr(root, "params", ()))
+    global_flags = {
+        str(payload["flag"]).lstrip("-").replace("-", "_"): payload
+        for payload in (_cmdhelp_parameter(param) for param in root_params)
+        if "flag" in payload
+    }
+    from meshprobe import __version__
+
+    return {
+        "cmdhelp_version": "0.1",
+        "binary": "meshprobe",
+        "version": __version__,
+        "summary": "Read-only 3D model inspection for AI agents.",
+        "homepage": "https://github.com/pedropaulovc/meshprobe",
+        "global_flags": global_flags,
+        "commands": documents,
+        "schemas": schemas,
+        "context": {
+            "workspace": "selected with --workspace; defaults to the current directory",
+            "session": "selected with --session; defaults to default",
+        },
+    }
+
+
+def _cmdhelp_escape(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _cmdhelp_markdown(
+    root: object, selected_path: tuple[str, ...], depth: int | None, all_commands: bool
+) -> str:
+    documents, _ = _cmdhelp_documents(root, selected_path, depth, all_commands)
+    from meshprobe import __version__
+
+    lines = [
+        "---",
+        'cmdhelp_version: "0.1"',
+        "binary: meshprobe",
+        f"version: {__version__}",
+        "---",
+        "",
+        "# meshprobe",
+        "",
+        "Read-only 3D model inspection for AI agents.",
+        "",
+        "## Global flags",
+        "",
+    ]
+    root_params = tuple(getattr(root, "params", ()))
+    lines.extend(["| flag | type | default | description |", "| --- | --- | --- | --- |"])
+    for param in root_params:
+        payload = _cmdhelp_parameter(param)
+        if "flag" not in payload:
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                _cmdhelp_escape(payload.get(key, ""))
+                for key in ("flag", "type", "default", "description")
+            )
+            + " |"
+        )
+    for name, raw_document in documents.items():
+        document = cast(dict[str, object], raw_document)
+        lines.extend(["", f"## `meshprobe {name}`", "", str(document["summary"])])
+        if "subcommands" in document:
+            lines.extend(["", "### Subcommands", ""])
+            for child in cast(list[str], document["subcommands"]):
+                child_document = cast(dict[str, object], documents.get(child, {}))
+                lines.append(f"- `meshprobe {child}` — {child_document.get('summary', '')}")
+        if "usage" not in document:
+            continue
+        lines.extend(["", "### Synopsis", "", f"`{document['usage']}`", "", "### Arguments", ""])
+        arguments = cast(list[dict[str, object]], document["args"])
+        lines.extend(["| name | type | required | description |", "| --- | --- | --- | --- |"])
+        for argument in arguments:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _cmdhelp_escape(argument.get(key, ""))
+                    for key in ("name", "type", "required", "description")
+                )
+                + " |"
+            )
+        lines.extend(
+            [
+                "",
+                "### Flags",
+                "",
+                "| flag | type | default | description |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for flag in cast(dict[str, dict[str, object]], document["flags"]).values():
+            lines.append(
+                "| "
+                + " | ".join(
+                    _cmdhelp_escape(flag.get(key, ""))
+                    for key in ("flag", "type", "default", "description")
+                )
+                + " |"
+            )
+        lines.extend(
+            ["", "### Stdin", "", str(cast(dict[str, object], document["stdin"])["description"])]
+        )
+        lines.extend(["", "### Examples", ""])
+        for example in cast(list[dict[str, str]], document["examples"]):
+            lines.extend([f"```bash\n{example['cmd']}\n```", f"{example['note']}", ""])
+        if not document["examples"]:
+            lines.append("No canonical examples are currently registered.")
+        stdout = cast(dict[str, object], document["stdout"])
+        lines.extend(["", "### Output", "", str(stdout["description"])])
+        if stdout.get("json_schema_command"):
+            lines.append(f"JSON result schema: `{stdout['json_schema_command']}`.")
+        lines.extend(["", "### Exit codes", "", "| code | meaning |", "| --- | --- |"])
+        for code, meaning in cast(dict[str, object], document["exit_codes"]).items():
+            detail = (
+                meaning
+                if isinstance(meaning, str)
+                else cast(dict[str, object], meaning).get("when", "")
+            )
+            lines.append(f"| {code} | {_cmdhelp_escape(detail)} |")
+        lines.extend(["", "### Workspace context", ""])
+        for key, value in cast(dict[str, str], document["context"]).items():
+            lines.append(f"- **{key}:** {value}")
+        if document.get("see_also"):
+            lines.extend(["", "### See also", ""])
+            lines.extend(f"- `{item}`" for item in cast(list[str], document["see_also"]))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@app.command("help")
+def cmdhelp(
+    ctx: typer.Context,
+    command: Annotated[list[str] | None, typer.Argument(metavar="[COMMAND]...")] = None,
+    format: Annotated[
+        Literal["text", "md", "json", "llm"], typer.Option("--format", help="Output format.")
+    ] = "text",
+    depth: Annotated[
+        int | None, typer.Option("--depth", min=0, help="Expand the command tree to N levels.")
+    ] = None,
+    all_commands: Annotated[
+        bool, typer.Option("--all", help="Expand the complete command tree.")
+    ] = False,
+    capabilities: Annotated[
+        bool, typer.Option("--capabilities", help="Print the stable cmdhelp capability line.")
+    ] = False,
+) -> None:
+    """Emit concise, Markdown, or structured documentation for MeshProbe commands."""
+
+    if capabilities:
+        typer.echo("cmdhelp/0.1: text, md, json, llm")
+        return
+    selected_path = tuple(command or ())
+    root = ctx.find_root().command
+    if format == "text":
+        selected = _cmdhelp_lookup(root, selected_path)
+        if selected is None:
+            valid = ", ".join(_cmdhelp_paths(root))
+            raise typer.BadParameter(
+                f"Unknown command {' '.join(selected_path)!r}. Valid commands: {valid}",
+                param_hint="COMMAND",
+            )
+        info_name = "meshprobe" if not selected_path else "meshprobe " + " ".join(selected_path)
+        command_object = cast(Any, selected)
+        help_context = type(ctx)(command_object, info_name=info_name)
+        typer.echo(command_object.get_help(help_context), nl=False)
+        return
+    if format == "llm":
+        format = "md"
+    if format == "json":
+        typer.echo(json.dumps(_cmdhelp_json(root, selected_path, depth, all_commands), indent=2))
+        return
+    typer.echo(_cmdhelp_markdown(root, selected_path, depth, all_commands), nl=False)
 
 
 @app.command("schema")
