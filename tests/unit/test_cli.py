@@ -127,6 +127,16 @@ def test_cmdhelp_text_preserves_the_existing_click_help_surface() -> None:
     assert "--help" in help_text
 
 
+def test_standard_help_is_plain_and_grep_friendly() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "╭" not in result.stdout
+    assert "│" not in result.stdout
+    assert "  --workspace DIRECTORY" in result.stdout
+    assert "  render-sheet" in result.stdout
+
+
 def test_schema_command_emits_discriminated_union() -> None:
     result = runner.invoke(app, ["schema", "--kind", "commands"])
     assert result.exit_code == 0
@@ -347,6 +357,7 @@ def test_mark_help_explains_mode_semantics() -> None:
 
     assert result.exit_code == 0
     help_text = " ".join(unstyle(result.stdout).split())
+    assert "`" not in result.stdout
     for description in (
         "unmarked restores source materials",
         "selected applies cyan",
@@ -1013,7 +1024,7 @@ def test_default_render_path_accepts_meshprobe_workspace_root(
     render_help_text = " ".join(unstyle(render_help.output).split())
     assert "Maximum face angle in" in render_help_text
     assert "degrees classified as a" in render_help_text
-    assert "[default: 120]" in render_help_text
+    assert "[default: 120;" in render_help_text
 
 
 def test_render_defaults_favor_inspection_resolution(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -209,7 +209,10 @@ app = typer.Typer(
     help="Read-only 3D model inspection for AI agents.",
     no_args_is_help=True,
     cls=GlobalOptionGroup,
-    rich_markup_mode="markdown",
+    context_settings={"show_default": True},
+    # Click's line-oriented formatter keeps every flag and command searchable
+    # with standard shell tools; Rich's box tables wrap long descriptions.
+    rich_markup_mode=None,
 )
 eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
@@ -862,15 +865,15 @@ def schema(
 ) -> None:
     """Print machine-readable schemas for command inputs, result envelopes, or durable state.
 
-    The ``results`` kind documents the full JSON shape each command returns — including
+    The results kind documents the full JSON shape each command returns — including
     otherwise-undocumented fields such as render luminance, projected component bounds,
     occlusion traces, and contact-sheet panel captions and callouts.
 
-    Pass a command name (its CLI name, e.g. ``view-orbit``, or its protocol op, e.g.
-    ``view.orbit``) to print just that command's schema fragment instead of the whole
-    dump — e.g. ``meshprobe schema view-orbit`` instead of grepping
-    ``meshprobe schema --kind commands`` for ``PerspectiveProjection``. Combine with
-    ``--kind results`` to see that command's result envelope instead of its input shape.
+    Pass a command name (its CLI name, e.g. view-orbit, or its protocol op, e.g.
+    view.orbit) to print just that command's schema fragment instead of the whole dump —
+    e.g. meshprobe schema view-orbit instead of grepping meshprobe schema --kind commands
+    for PerspectiveProjection. Combine with --kind results to see that command's result
+    envelope instead of its input shape.
     """
 
     if command_name is not None:
@@ -879,7 +882,7 @@ def schema(
             valid = ", ".join(_cli_command_names())
             raise typer.BadParameter(
                 f"Unknown command {command_name!r}. Valid commands: {valid}. "
-                "See `meshprobe schema --kind commands` for the full schema dump.",
+                "See meshprobe schema --kind commands for the full schema dump.",
                 param_hint="COMMAND",
             )
         kind_source = ctx.get_parameter_source("kind")
@@ -1733,7 +1736,7 @@ def view_orbit(
     replaces it (a fresh session defaults to a standard 50mm perspective); use
     --projection-json for exact control over the full intrinsics (sensor size, sensor
     fit, depth of field). The result echoes the resolved camera (including the
-    intrinsics above) and its diagnostics; see `meshprobe schema --kind results`.
+    intrinsics above) and its diagnostics; see meshprobe schema --kind results.
     """
 
     projection = _orbit_projection(projection_json, focal_length, ortho_scale)
@@ -2145,11 +2148,11 @@ def mark_components(
 ) -> None:
     """Mark one or more components using refs, IDs, names, paths, or globs.
 
-    Modes: `unmarked` restores source materials; `selected` applies cyan; `highlighted`
-    applies deep pink; `labeled` applies gold and adds the component name.
+    Modes: unmarked restores source materials; selected applies cyan; highlighted applies
+    deep pink; labeled applies gold and adds the component name.
 
-    `--color` overrides the mode's default color for selected, highlighted, and labeled;
-    labeled still adds a text annotation. Pass `--mode unmarked` to restore source materials.
+    --color overrides the mode's default color for selected, highlighted, and labeled;
+    labeled still adds a text annotation. Pass --mode unmarked to restore source materials.
     """
 
     try:
@@ -2218,20 +2221,20 @@ def render_image(
 ) -> None:
     """Render the selected session to an image artifact.
 
-    **Choose a style:**
+    Choose a style:
 
-    - `screen_edges` (default): Fast GPU depth/normal edge pass for routine inspection.
-    - `shaded_edges`: Slower geometry-aware Freestyle lines for final confirmation,
-      especially when separating same-color adjacent parts.
-    - `shaded`: Unmodified shaded image with no edge overlay.
+    screen_edges (default): Fast GPU depth/normal edge pass for routine inspection.
+    shaded_edges: Slower geometry-aware Freestyle lines for final confirmation,
+    especially when separating same-color adjacent parts.
+    shaded: Unmodified shaded image with no edge overlay.
 
     Freestyle is single-threaded and CPU-bound. Its cost increases with the number of
-    visible components, not output resolution. Narrow the visible set or `--edge-types`
+    visible components, not output resolution. Narrow the visible set or --edge-types
     to reduce final-confirmation time.
 
-    The result carries a `luminance` exposure summary (median, clipped/crushed fractions) so
+    The result carries a luminance exposure summary (median, clipped/crushed fractions) so
     a too-dark or blown-out frame can be detected without inspecting pixels. See
-    `meshprobe schema --kind results` for the full render result shape.
+    meshprobe schema --kind results for the full render result shape.
     """
 
     options = _options(ctx)
@@ -2323,11 +2326,11 @@ def render_sheet(
     focus from +X, -X, +Y, -Y, +Z, and -Z. Deep pink marks the focus, not the occluders.
 
     Multiple component arguments or a glob form one combined focus. For example,
-    `meshprobe render-sheet '**/*bearing*' --output bearings.png` analyzes every matching
-    bearing together. Each panel result carries its full `caption`, numbered `callouts`,
+    meshprobe render-sheet '**/*bearing*' --output bearings.png analyzes every matching
+    bearing together. Each panel result carries its full caption, numbered callouts,
     camera, and render metadata; the sheet result carries the occlusion-removal trace. Use
-    `meshprobe --raw render-sheet ...` to print that result directly, or
-    `meshprobe schema render-sheet --kind results` for its schema.
+    meshprobe --raw render-sheet ... to print that result directly, or
+    meshprobe schema render-sheet --kind results for its schema.
     """
 
     options = _options(ctx)
@@ -2391,9 +2394,9 @@ def occlusion(
 ) -> None:
     """Measure focus visibility and blockers from the current session camera.
 
-    The result's `camera_diagnostics.projected_bounds` reports each focus component's
-    normalized frame coverage, and the `camera` block exposes the full camera intrinsics
-    (focal length, sensor size and fit). See `meshprobe schema --kind results` for the full
+    The result's camera_diagnostics.projected_bounds reports each focus component's
+    normalized frame coverage, and the camera block exposes the full camera intrinsics
+    (focal length, sensor size and fit). See meshprobe schema --kind results for the full
     occlusion result shape.
     """
 
@@ -2505,7 +2508,7 @@ def kill_session(
 
 @app.command("delete-data")
 def delete_data(ctx: typer.Context) -> None:
-    """Delete the stopped workspace's `.meshprobe` state."""
+    """Delete the stopped workspace's .meshprobe state."""
 
     client = _client(ctx)
     try:
