@@ -651,6 +651,31 @@ def test_execute_keeps_established_default_values_on_the_wire(
     assert captured["command"]["height"] == 2576
 
 
+def test_render_execution_extends_the_daemon_read_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, object]:
+        captured["action"] = action
+        captured.update(arguments)
+        return {"session": "review", "op": "render.image"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+    client.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="/tmp/render.png",
+            timeout_seconds=600,
+        ),
+    )
+
+    assert captured["read_timeout"] == 630
+
+
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

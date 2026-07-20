@@ -222,6 +222,16 @@ class RenderImageCommand(CommandModel):
     ] = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
+    timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=86_400,
+            description=(
+                "Maximum time to wait for this render before cancelling and restoring the worker."
+            ),
+        ),
+    ] = 180
     comparison: RenderComparisonRequest | None = None
 
 

@@ -273,6 +273,16 @@ class BlenderController:
             raise BlenderWorkerError("worker returned a non-object result")
         return result
 
+    def _request_with_timeout(
+        self, action: str, timeout_seconds: float, **arguments: object
+    ) -> dict[str, Any]:
+        previous_timeout = self.timeout_seconds
+        self.timeout_seconds = timeout_seconds
+        try:
+            return self.request(action, **arguments)
+        finally:
+            self.timeout_seconds = previous_timeout
+
     def open_scene(
         self, source_path: str | Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
     ) -> SceneManifest:
@@ -765,17 +775,19 @@ class BlenderController:
             output_paths.update({comparison_output, contact_sheet_staging_path(comparison_output)})
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("render output must not overwrite a source asset")
-        arguments = command.model_dump(mode="json", exclude={"request_id", "op", "comparison"})
+        arguments = command.model_dump(
+            mode="json", exclude={"request_id", "op", "comparison", "timeout_seconds"}
+        )
         arguments["output_path"] = str(output)
         if evaluator_output_dir is not None:
             arguments["evaluator_output_dir"] = str(
                 Path(evaluator_output_dir).expanduser().resolve()
             )
         try:
-            result = self.request(command.op, **arguments)
+            result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
             self._recover_session()
-            result = self.request(command.op, **arguments)
+            raise
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during render")
@@ -878,29 +890,30 @@ class BlenderController:
                 )
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("contact-sheet output must not overwrite a source asset")
-        if command.recipe == "custom_3x3":
-            return self._render_custom_contact_sheet(
-                command,
-                output,
-                panel_paths,
-                evaluator_root,
-                focus_ids,
-            )
-        if command.recipe == "orbit_sweep":
-            return self._render_orbit_sweep(
-                command,
-                output,
-                panel_paths,
-                evaluator_root,
-                focus_ids,
-            )
-
-        accepted_commands = list(self._accepted_commands)
-        mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
-        panels: list[ContactSheetPanel] = []
-        removed_occluders: tuple[str, ...] = ()
-        occlusion: OcclusionEvidence | None = None
+        accepted_commands: list[tuple[str, dict[str, object]]] = []
         try:
+            if command.recipe == "custom_3x3":
+                return self._render_custom_contact_sheet(
+                    command,
+                    output,
+                    panel_paths,
+                    evaluator_root,
+                    focus_ids,
+                )
+            if command.recipe == "orbit_sweep":
+                return self._render_orbit_sweep(
+                    command,
+                    output,
+                    panel_paths,
+                    evaluator_root,
+                    focus_ids,
+                )
+
+            accepted_commands = list(self._accepted_commands)
+            mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
+            panels: list[ContactSheetPanel] = []
+            removed_occluders: tuple[str, ...] = ()
+            occlusion: OcclusionEvidence | None = None
             self.request("session.reset")
             self.request("illumination.set", illumination={"preset": "neutral_studio"})
             scene_center, scene_span = self._bounds_center_span(self._manifest.root_bounds)
@@ -1014,28 +1027,41 @@ class BlenderController:
                         evaluator_root,
                     )
                 )
-        finally:
-            self.request("session.reset")
-            for operation, arguments in accepted_commands:
-                self.request(operation, **arguments)
+            self._restore_temporary_state(accepted_commands)
 
-        after = snapshot_source(self._source_snapshot.assets[0].path)
-        if after != self._source_snapshot:
-            raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
-        captions = tuple(
-            (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
-        )
-        sheet = compose_contact_sheet(captions, output, command.panel_width, command.panel_height)
-        if occlusion is None:
-            raise BlenderWorkerError("contact-sheet occlusion analysis did not run")
-        return ContactSheetManifest(
-            recipe=command.recipe,
-            focus_component_ids=focus_ids,
-            removed_occluder_ids=removed_occluders,
-            occlusion=occlusion,
-            sheet=sheet,
-            panels=tuple(panels),
-        )
+            after = snapshot_source(self._source_snapshot.assets[0].path)
+            if after != self._source_snapshot:
+                raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
+            captions = tuple(
+                (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
+            )
+            sheet = compose_contact_sheet(
+                captions, output, command.panel_width, command.panel_height
+            )
+            if occlusion is None:
+                raise BlenderWorkerError("contact-sheet occlusion analysis did not run")
+            return ContactSheetManifest(
+                recipe=command.recipe,
+                focus_component_ids=focus_ids,
+                removed_occluder_ids=removed_occluders,
+                occlusion=occlusion,
+                sheet=sheet,
+                panels=tuple(panels),
+            )
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._recover_session()
+            raise
+        except Exception:
+            if accepted_commands:
+                self._restore_temporary_state(accepted_commands)
+            raise
+
+    def _restore_temporary_state(
+        self, accepted_commands: list[tuple[str, dict[str, object]]]
+    ) -> None:
+        self.request("session.reset")
+        for operation, arguments in accepted_commands:
+            self.request(operation, **arguments)
 
     def _render_orbit_sweep(
         self,
@@ -1732,4 +1758,15 @@ class BlenderController:
                 with suppress(subprocess.TimeoutExpired):
                     return_code = process.wait(timeout=1)
         recent_logs = "\n".join(self._logs[-20:])
-        return f"Blender worker exited with code {return_code}. Recent output:\n{recent_logs}"
+        rendered_code = str(return_code)
+        hint = ""
+        if return_code is not None and return_code & 0xFFFFFFFF == 0xC0000409:
+            rendered_code = f"{return_code} (0x{return_code & 0xFFFFFFFF:08X})"
+            hint = (
+                " Windows exception 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN). On NVIDIA, "
+                "this can follow a driver reset/TDR; check nvlddmkm events, free VRAM or close "
+                "other GPU clients, then retry."
+            )
+        return (
+            f"Blender worker exited with code {rendered_code}.{hint} Recent output:\n{recent_logs}"
+        )

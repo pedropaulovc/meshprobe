@@ -332,6 +332,17 @@ def test_wait_for_times_out() -> None:
         controller._wait_for(lambda payload: False)
 
 
+def test_crash_message_identifies_possible_windows_driver_reset() -> None:
+    controller = BlenderController()
+    controller._process = cast(Any, SimpleNamespace(poll=lambda: 3221226505))
+
+    message = controller._crash_message()
+
+    assert "3221226505 (0xC0000409)" in message
+    assert "STATUS_STACK_BUFFER_OVERRUN" in message
+    assert "nvlddmkm" in message
+
+
 def test_output_reader_is_bound_to_its_worker_generation() -> None:
     controller = BlenderController()
     old_queue: queue.Queue[str | None] = queue.Queue()
@@ -1201,6 +1212,41 @@ def test_render_requires_open_scene() -> None:
     command = RenderImageCommand(request_id="render", op="render.image", output_path="evidence.png")
     with pytest.raises(BlenderWorkerError, match="before a scene is open"):
         controller.render_image(command)
+
+
+def test_render_timeout_recovers_without_reissuing_the_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    requests: list[str] = []
+    recovered = False
+
+    def timeout(operation: str, **_arguments: object) -> dict[str, object]:
+        requests.append(operation)
+        raise BlenderWorkerTimeout("Blender worker did not respond within 1 seconds")
+
+    def recover() -> None:
+        nonlocal recovered
+        recovered = True
+
+    monkeypatch.setattr(controller, "request", timeout)
+    monkeypatch.setattr(controller, "_recover_session", recover)
+
+    with pytest.raises(BlenderWorkerTimeout, match="within 1 seconds"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+                timeout_seconds=1,
+            )
+        )
+
+    assert requests == ["render.image"]
+    assert recovered
 
 
 def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:

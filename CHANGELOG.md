@@ -5,7 +5,19 @@ All notable changes to MeshProbe will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-07-20
+
+### Fixed
+
+- Plain CLI help no longer includes Markdown syntax, so it remains readable and line-greppable.
+- `render-image` now uses the session camera's framing aspect by default, while explicitly supplied
+  dimensions still request an intentional reframe.
+- `render-image --timeout` supports legitimate long CPU renders; a timeout now cancels and restores
+  the Blender worker rather than retrying the render and leaving the session busy.
+- Runtime failures from `render-image` now print a plain `Render failed:` message with exit code 1
+  instead of argument-usage formatting.
+- Windows worker exits now include hexadecimal exception codes and a conditional NVIDIA driver
+  reset/TDR diagnostic for `0xC0000409`.
 
 ## [1.2.0] - 2026-07-19
 
@@ -200,7 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...v1.0.0
