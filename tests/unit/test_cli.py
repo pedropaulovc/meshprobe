@@ -121,9 +121,10 @@ def test_cmdhelp_text_preserves_the_existing_click_help_surface() -> None:
     result = runner.invoke(app, ["help", "open", "--format", "text"])
 
     assert result.exit_code == 0
-    assert "Usage: meshprobe open" in result.stdout
-    assert "--unit-scale" in result.stdout
-    assert "--help" in result.stdout
+    help_text = unstyle(result.stdout)
+    assert "Usage: meshprobe open" in help_text
+    assert "--unit-scale" in help_text
+    assert "--help" in help_text
 
 
 def test_schema_command_emits_discriminated_union() -> None:
