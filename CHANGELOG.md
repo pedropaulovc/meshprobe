@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depth-limited command trees.
 - Agent-facing help is generated from the live CLI tree and includes arguments, flags, enum values,
   examples, stdin/stdout behavior, exit codes, session context, and links to command result schemas.
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.2.0 runtime
+  and package hash.
 
 ## [1.1.0] - 2026-07-18
 
