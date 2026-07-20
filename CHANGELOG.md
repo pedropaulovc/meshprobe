@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-19
+
+### Added
+
+- `meshprobe help` now supports the cmdhelp v0.1 surface: concise text help, Markdown and JSON
+  command references, `llm` as a Markdown alias, capability discovery, scoped subcommands, and
+  depth-limited command trees.
+- Agent-facing help is generated from the live CLI tree and includes arguments, flags, enum values,
+  examples, stdin/stdout behavior, exit codes, session context, and links to command result schemas.
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.2.0 runtime
+  and package hash.
+
 ## [1.1.0] - 2026-07-18
 
 ### Added
@@ -188,7 +200,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.3.0...v0.4.0
