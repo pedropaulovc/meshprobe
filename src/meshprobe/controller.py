@@ -1732,4 +1732,15 @@ class BlenderController:
                 with suppress(subprocess.TimeoutExpired):
                     return_code = process.wait(timeout=1)
         recent_logs = "\n".join(self._logs[-20:])
-        return f"Blender worker exited with code {return_code}. Recent output:\n{recent_logs}"
+        rendered_code = str(return_code)
+        hint = ""
+        if return_code is not None and return_code & 0xFFFFFFFF == 0xC0000409:
+            rendered_code = f"{return_code} (0x{return_code & 0xFFFFFFFF:08X})"
+            hint = (
+                " Windows exception 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN). On NVIDIA, "
+                "this can follow a driver reset/TDR; check nvlddmkm events, free VRAM or close "
+                "other GPU clients, then retry."
+            )
+        return (
+            f"Blender worker exited with code {rendered_code}.{hint} Recent output:\n{recent_logs}"
+        )
