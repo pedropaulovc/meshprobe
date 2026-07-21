@@ -210,7 +210,10 @@ app = typer.Typer(
     help="Read-only 3D model inspection for AI agents.",
     no_args_is_help=True,
     cls=GlobalOptionGroup,
-    context_settings={"show_default": True},
+    # Agent callers capture help rather than display it in an interactive
+    # terminal. Keep long descriptions intact instead of applying Click's
+    # default 80-column formatter cap.
+    context_settings={"show_default": True, "terminal_width": 10_000},
     # Click's line-oriented formatter keeps every flag and command searchable
     # with standard shell tools; Rich's box tables wrap long descriptions.
     rich_markup_mode=None,
@@ -830,7 +833,11 @@ def cmdhelp(
             )
         info_name = "meshprobe" if not selected_path else "meshprobe " + " ".join(selected_path)
         command_object = cast(Any, selected)
-        help_context = type(ctx)(command_object, info_name=info_name)
+        help_context = type(ctx)(
+            command_object,
+            info_name=info_name,
+            terminal_width=ctx.terminal_width,
+        )
         typer.echo(command_object.get_help(help_context), nl=False)
         return
     if format == "llm":
