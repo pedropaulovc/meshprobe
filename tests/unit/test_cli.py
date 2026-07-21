@@ -1096,6 +1096,26 @@ def test_help_is_not_wrapped_at_the_terminal_width() -> None:
     assert len(edge_types_line) > 80
 
 
+def test_cmdhelp_text_is_not_wrapped_at_the_terminal_width() -> None:
+    result = runner.invoke(
+        app,
+        ["help", "render-image", "--format", "text"],
+        env={"COLUMNS": "80"},
+    )
+
+    assert result.exit_code == 0
+    edge_types_line = next(
+        line
+        for line in unstyle(result.output).splitlines()
+        if line.lstrip().startswith("--edge-types")
+    )
+    assert (
+        "Comma-separated silhouette, border, crease, and material boundary types."
+        in edge_types_line
+    )
+    assert len(edge_types_line) > 80
+
+
 def test_render_cli_builds_resolved_shaded_edges_style(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -833,7 +833,11 @@ def cmdhelp(
             )
         info_name = "meshprobe" if not selected_path else "meshprobe " + " ".join(selected_path)
         command_object = cast(Any, selected)
-        help_context = type(ctx)(command_object, info_name=info_name)
+        help_context = type(ctx)(
+            command_object,
+            info_name=info_name,
+            terminal_width=ctx.terminal_width,
+        )
         typer.echo(command_object.get_help(help_context), nl=False)
         return
     if format == "llm":
