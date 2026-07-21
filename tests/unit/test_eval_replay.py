@@ -21,8 +21,9 @@ class ReplayService:
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
-        del evaluator_output_dir
+        del evaluator_output_dir, wall_timeout_seconds
         result: JsonValue = {"source_sha256": "a" * 64}
         if command.op == "session.snapshot":
             result = {"session": {"state_sha256": self.state * 64}}

@@ -38,8 +38,9 @@ class RunnerService:
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
-        del evaluator_output_dir
+        del evaluator_output_dir, wall_timeout_seconds
         operation = command.op
         request_id = command.request_id
         result: JsonValue = {"source_sha256": "a" * 64}

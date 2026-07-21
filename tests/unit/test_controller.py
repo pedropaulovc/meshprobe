@@ -5,6 +5,7 @@ import math
 import os
 import queue
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -333,6 +334,17 @@ def test_wait_for_times_out() -> None:
     controller = BlenderController(timeout_seconds=0.001)
     with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
         controller._wait_for(lambda payload: False)
+
+
+def test_wait_for_honors_an_absolute_request_deadline() -> None:
+    controller = BlenderController(timeout_seconds=10)
+    controller._request_deadline_monotonic = time.monotonic() + 0.001
+    started = time.monotonic()
+
+    with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
+        controller._wait_for(lambda payload: False)
+
+    assert time.monotonic() - started < 0.1
 
 
 def test_crash_message_identifies_possible_windows_driver_reset() -> None:

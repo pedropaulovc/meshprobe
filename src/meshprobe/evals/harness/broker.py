@@ -38,6 +38,7 @@ class EvaluationService(Protocol):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse: ...
 
 
@@ -153,6 +154,11 @@ class EvaluationBroker:
             response = self._service.execute_for_evaluation(
                 translated,
                 evaluator_output_dir=str(private_dir),
+                wall_timeout_seconds=(
+                    self._render_execution_seconds()
+                    if isinstance(translated, (RenderImageCommand, RenderContactSheetCommand))
+                    else None
+                ),
             )
             private_result = response.result
             produced_bytes = _directory_bytes(private_dir) + _directory_bytes(staging_root)
@@ -238,14 +244,17 @@ class EvaluationBroker:
             raise _RejectedCommand("budget.wall_seconds", "episode wall-time budget exhausted")
         return remaining
 
-    def _bounded_render_timeout(self, requested: float) -> float:
+    def _render_execution_seconds(self) -> float:
         available = self._remaining_wall_seconds() - EVALUATION_RENDER_CLEANUP_SECONDS
         if available <= 0:
             raise _RejectedCommand(
                 "budget.wall_seconds",
                 "episode wall-time budget is too low to start and clean up a render",
             )
-        return min(requested, available)
+        return available
+
+    def _bounded_render_timeout(self, requested: float) -> float:
+        return min(requested, self._render_execution_seconds())
 
     def _translate_and_reserve(
         self,

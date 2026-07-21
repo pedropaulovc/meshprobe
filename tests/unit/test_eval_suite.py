@@ -31,8 +31,9 @@ class NoopService:
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
-        del command, evaluator_output_dir
+        del command, evaluator_output_dir, wall_timeout_seconds
         raise AssertionError("answer-only adapter must not execute tools")
 
     def close(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
@@ -61,6 +62,7 @@ class MeshProbeService:
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         """Execute while keeping private render passes outside agent storage."""
 
@@ -82,6 +84,11 @@ class MeshProbeService:
                     command,
                     evaluator_output_dir=evaluator_output_dir,
                     recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                    request_deadline_monotonic=(
+                        time.monotonic() + wall_timeout_seconds
+                        if wall_timeout_seconds is not None
+                        else None
+                    ),
                 )
             except (BlenderWorkerCrashed, BlenderWorkerTimeout):
                 self._started = False

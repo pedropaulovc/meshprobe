@@ -176,6 +176,7 @@ class BlenderController:
         self._manifest: SceneManifest | None = None
         self._source_snapshot: SourceSnapshot | None = None
         self._accepted_commands: list[tuple[str, dict[str, object]]] = []
+        self._request_deadline_monotonic: float | None = None
 
     @property
     def logs(self) -> tuple[str, ...]:
@@ -886,15 +887,26 @@ class BlenderController:
         *,
         evaluator_output_dir: str | Path | None = None,
         recovery_policy: WorkerRecoveryPolicy = WorkerRecoveryPolicy.RESTORE,
+        request_deadline_monotonic: float | None = None,
     ) -> ContactSheetManifest:
-        try:
-            return self._render_contact_sheet(
-                command,
-                evaluator_output_dir=evaluator_output_dir,
+        previous_deadline = self._request_deadline_monotonic
+        if request_deadline_monotonic is not None:
+            self._request_deadline_monotonic = (
+                request_deadline_monotonic
+                if previous_deadline is None
+                else min(previous_deadline, request_deadline_monotonic)
             )
-        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
-            self._settle_render_failure(recovery_policy)
-            raise
+        try:
+            try:
+                return self._render_contact_sheet(
+                    command,
+                    evaluator_output_dir=evaluator_output_dir,
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._settle_render_failure(recovery_policy)
+                raise
+        finally:
+            self._request_deadline_monotonic = previous_deadline
 
     def _render_contact_sheet(
         self,
@@ -1772,18 +1784,22 @@ class BlenderController:
         output_queue.put(None)
 
     def _wait_for(self, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
-        deadline = time.monotonic() + self.timeout_seconds
+        started = time.monotonic()
+        deadline = started + self.timeout_seconds
+        if self._request_deadline_monotonic is not None:
+            deadline = min(deadline, self._request_deadline_monotonic)
+        effective_timeout = max(0.0, deadline - started)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BlenderWorkerTimeout(
-                    f"Blender worker did not respond within {self.timeout_seconds:g} seconds"
+                    f"Blender worker did not respond within {effective_timeout:g} seconds"
                 )
             try:
                 line = self._lines.get(timeout=remaining)
             except queue.Empty as error:
                 raise BlenderWorkerTimeout(
-                    f"Blender worker did not respond within {self.timeout_seconds:g} seconds"
+                    f"Blender worker did not respond within {effective_timeout:g} seconds"
                 ) from error
             if line is None:
                 raise BlenderWorkerCrashed(self._crash_message())

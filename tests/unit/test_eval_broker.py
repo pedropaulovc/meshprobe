@@ -40,15 +40,18 @@ class FakeEvaluationService:
     def __init__(self) -> None:
         self.commands: list[object] = []
         self.evaluator_directories: list[str] = []
+        self.wall_timeouts: list[float | None] = []
 
     def execute_for_evaluation(
         self,
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         self.commands.append(command)
         self.evaluator_directories.append(evaluator_output_dir)
+        self.wall_timeouts.append(wall_timeout_seconds)
         request_id = command.request_id
         operation = command.op
         if operation == "scene.open":
@@ -200,6 +203,8 @@ def test_broker_caps_render_timeout_to_the_remaining_episode_wall_budget(
     translated = service.commands[-1]
     assert isinstance(translated, RenderImageCommand)
     assert 0 < translated.timeout_seconds <= 23
+    assert service.wall_timeouts[-1] is not None
+    assert 0 < service.wall_timeouts[-1] <= 23
     arguments = active.events[-1].arguments
     assert isinstance(arguments, dict)
     assert arguments["timeout_seconds"] == 86_400
@@ -735,8 +740,9 @@ class PrivatePathErrorService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
-        del command
+        del command, wall_timeout_seconds
         raise ValueError(f"private pass failed at {evaluator_output_dir}/depth.exr")
 
 
@@ -758,7 +764,9 @@ class OversizeEvaluationService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
+        del wall_timeout_seconds
         assert isinstance(command, RenderImageCommand)
         output_path = Path(command.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -816,10 +824,12 @@ class DestinationSwapService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         response = super().execute_for_evaluation(
             command,
             evaluator_output_dir=evaluator_output_dir,
+            wall_timeout_seconds=wall_timeout_seconds,
         )
         self._outside.mkdir()
         (self._artifact_root / "views").symlink_to(self._outside, target_is_directory=True)

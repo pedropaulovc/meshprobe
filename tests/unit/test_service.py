@@ -127,6 +127,7 @@ def test_evaluation_execution_routes_private_contact_sheet_outputs(tmp_path: Pat
         command,
         evaluator_output_dir=str(tmp_path / "private"),
         recovery_policy=WorkerRecoveryPolicy.CLOSE,
+        request_deadline_monotonic=None,
     )
 
 
