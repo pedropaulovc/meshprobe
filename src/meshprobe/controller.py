@@ -778,22 +778,25 @@ class BlenderController:
         arguments = command.model_dump(
             mode="json", exclude={"request_id", "op", "comparison", "timeout_seconds"}
         )
+        render_timeout = (
+            command.timeout_seconds
+            if "timeout_seconds" in command.model_fields_set
+            else self.timeout_seconds
+        )
         arguments["output_path"] = str(output)
         if evaluator_output_dir is not None:
             arguments["evaluator_output_dir"] = str(
                 Path(evaluator_output_dir).expanduser().resolve()
             )
         try:
-            result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
+            result = self._request_with_timeout(command.op, render_timeout, **arguments)
         except BlenderWorkerTimeout:
             self._recover_session()
             raise
         except BlenderWorkerCrashed:
             self._recover_session()
             try:
-                result = self._request_with_timeout(
-                    command.op, command.timeout_seconds, **arguments
-                )
+                result = self._request_with_timeout(command.op, render_timeout, **arguments)
             except BlenderWorkerTimeout:
                 self._recover_session()
                 raise

@@ -90,7 +90,7 @@ class MeshProbeClient:
     @staticmethod
     def _command_read_timeout(command: Command) -> float:
         if isinstance(command, RenderImageCommand):
-            return max(OPERATION_READ_TIMEOUT_SECONDS, command.timeout_seconds + 30.0)
+            return command.timeout_seconds + OPERATION_READ_TIMEOUT_SECONDS
         return OPERATION_READ_TIMEOUT_SECONDS
 
     @staticmethod
@@ -107,13 +107,10 @@ class MeshProbeClient:
             return command.unit_scale != 1.0
         if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is not None:
             return "isolation_operation" in message
-        if isinstance(command, RenderImageCommand) and command.comparison is not None:
-            return "comparison" in message
-        if (
-            isinstance(command, RenderImageCommand)
-            and "timeout_seconds" in command.model_fields_set
-        ):
-            return "timeout_seconds" in message
+        if isinstance(command, RenderImageCommand):
+            if command.comparison is not None and "comparison" in message:
+                return True
+            return "timeout_seconds" in command.model_fields_set and "timeout_seconds" in message
         if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is not None:
             return "orbit_sweep" in message
         return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set

@@ -106,6 +106,17 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     }
 
 
+@pytest.mark.parametrize("timeout", (float("inf"), float("-inf"), float("nan")))
+def test_render_timeout_must_be_finite(timeout: float) -> None:
+    with pytest.raises(ValueError):
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="evidence.png",
+            timeout_seconds=timeout,
+        )
+
+
 def test_contact_sheet_payload_omits_absent_orbit_sweep_for_older_daemons() -> None:
     command = RenderContactSheetCommand(
         request_id="sheet",

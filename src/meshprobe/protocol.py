@@ -227,6 +227,7 @@ class RenderImageCommand(CommandModel):
         Field(
             gt=0,
             le=86_400,
+            allow_inf_nan=False,
             description=(
                 "Maximum time to wait for this render before cancelling and restoring the worker."
             ),

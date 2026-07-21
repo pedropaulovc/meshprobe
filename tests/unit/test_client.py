@@ -399,6 +399,21 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
             "render.image",
         ),
         (
+            RenderImageCommand(
+                request_id="comparison-timeout",
+                op="render.image",
+                output_path="evidence.png",
+                timeout_seconds=600,
+                comparison=RenderComparisonRequest(
+                    reference_image_path="reference.png",
+                    mode="side_by_side",
+                    output_path="comparison.png",
+                ),
+            ),
+            "timeout_seconds",
+            "render.image",
+        ),
+        (
             RenderContactSheetCommand(
                 request_id="sweep",
                 op="render.contact_sheet",
@@ -673,7 +688,7 @@ def test_render_execution_extends_the_daemon_read_timeout(
         ),
     )
 
-    assert captured["read_timeout"] == 630
+    assert captured["read_timeout"] == 810
 
     client.execute(
         "review",
@@ -684,7 +699,7 @@ def test_render_execution_extends_the_daemon_read_timeout(
             timeout_seconds=1,
         ),
     )
-    assert cast(float, captured["read_timeout"]) == 210
+    assert cast(float, captured["read_timeout"]) == 211
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(

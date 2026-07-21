@@ -1249,6 +1249,34 @@ def test_render_timeout_recovers_without_reissuing_the_render(
     assert recovered
 
 
+def test_render_uses_the_controllers_timeout_when_the_command_does_not_override_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController(timeout_seconds=600)
+    controller._source_snapshot = snapshot_source(source)
+    observed_timeouts: list[float] = []
+
+    def timeout(operation: str, **_arguments: object) -> dict[str, object]:
+        observed_timeouts.append(controller.timeout_seconds)
+        raise BlenderWorkerTimeout(f"{operation} timed out")
+
+    monkeypatch.setattr(controller, "request", timeout)
+    monkeypatch.setattr(controller, "_recover_session", lambda: None)
+
+    with pytest.raises(BlenderWorkerTimeout, match="timed out"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+            )
+        )
+
+    assert observed_timeouts == [600]
+
+
 def test_render_recovers_when_a_crash_retry_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
