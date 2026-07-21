@@ -543,6 +543,34 @@ def test_render_image_defaults_to_the_session_framing_aspect(
     assert (command.width, command.height) == (2576, 1356)
 
 
+@pytest.mark.parametrize(
+    ("size_option", "value", "expected"),
+    (
+        ("--width", "512", (512, 269)),
+        ("--height", "512", (973, 512)),
+    ),
+)
+def test_render_image_infers_an_omitted_dimension_from_the_session_framing_aspect(
+    monkeypatch: pytest.MonkeyPatch,
+    size_option: str,
+    value: str,
+    expected: tuple[int, int],
+) -> None:
+    client = FakeClient()
+    client.framed_aspect_ratio_value = 1.9
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "render-image", size_option, value],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, RenderImageCommand)
+    assert (command.width, command.height) == expected
+
+
 def test_render_image_runtime_failures_are_plain_and_non_usage_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1377,6 +1377,31 @@ def _aspect_preserving_render_dimensions(aspect_ratio: float) -> tuple[int, int]
     )
 
 
+def _resolve_render_dimensions(
+    aspect_ratio: float,
+    width: int | None,
+    height: int | None,
+) -> tuple[int, int]:
+    if width is None and height is None:
+        return _aspect_preserving_render_dimensions(aspect_ratio)
+    if width is None:
+        assert height is not None
+        width = round(height * aspect_ratio)
+    elif height is None:
+        height = round(width / aspect_ratio)
+    if min(width, height) < MINIMUM_RENDER_DIMENSION:
+        raise ValueError(
+            f"the session framing aspect derives a dimension below "
+            f"{MINIMUM_RENDER_DIMENSION}px; pass both --width and --height to reframe"
+        )
+    if max(width, height) > 16_384:
+        raise ValueError(
+            "the session framing aspect derives a dimension above 16384px; "
+            "pass both --width and --height to reframe"
+        )
+    return width, height
+
+
 def _execute_visual(
     ctx: typer.Context,
     command: Command,
@@ -2268,17 +2293,15 @@ def render_image(
             output_path=str(comparison_output.expanduser().resolve()),
         )
     client = _client(ctx)
-    if width is None and height is None:
+    if width is None or height is None:
         try:
-            width, height = _aspect_preserving_render_dimensions(
-                client.framed_aspect_ratio(options.session)
+            width, height = _resolve_render_dimensions(
+                client.framed_aspect_ratio(options.session), width, height
             )
         except (OSError, RuntimeError, ValueError) as error:
             typer.echo(f"Render failed: {error}", err=True)
             raise typer.Exit(1) from error
-    else:
-        width = width or DEFAULT_RENDER_MAX_DIMENSION
-        height = height or DEFAULT_RENDER_MAX_DIMENSION
+    assert width is not None and height is not None
     timeout_source = ctx.get_parameter_source("timeout")
     command_fields: dict[str, object] = {
         "request_id": _request_id("render-image"),
