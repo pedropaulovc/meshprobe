@@ -15,7 +15,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
 
-from meshprobe.controller import BlenderWorkerError
+from meshprobe.controller import BlenderWorkerError, EvaluationWallTimeout
 from meshprobe.evals.harness.sandbox import visible_input_path
 from meshprobe.evals.schemas import EpisodeBudgets, Operation, TraceEvent, TraceStatus
 from meshprobe.models import CustomIllumination
@@ -214,6 +214,11 @@ class EvaluationBroker:
             status = TraceStatus.REJECTED
             error_code = error.code
             reply = self._error_reply(error.code, str(error))
+        except EvaluationWallTimeout as error:
+            self._discard_request_outputs(staging_root, private_dir, published_paths)
+            status = TraceStatus.REJECTED
+            error_code = "budget.wall_seconds"
+            reply = self._error_reply(error_code, str(error))
         except (BlenderWorkerError, OSError, ValueError) as error:
             self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.REJECTED
@@ -241,22 +246,24 @@ class EvaluationBroker:
             elapsed_seconds=time.monotonic() - started,
         )
         self._events.append(event)
-        self._checkpoint_trace()
-        if reply.ok:
-            try:
+        try:
+            self._checkpoint_trace(
+                check_deadline=self._remaining_wall_seconds if reply.ok else None
+            )
+            if reply.ok:
                 self._remaining_wall_seconds()
-            except _RejectedCommand as error:
-                self._discard_request_outputs(staging_root, private_dir, published_paths)
-                event = event.model_copy(
-                    update={
-                        "status": TraceStatus.REJECTED,
-                        "error_code": error.code,
-                        "elapsed_seconds": time.monotonic() - started,
-                    }
-                )
-                self._events[-1] = event
-                self._checkpoint_trace()
-                return self._error_reply(error.code, str(error))
+        except _RejectedCommand as error:
+            self._discard_request_outputs(staging_root, private_dir, published_paths)
+            event = event.model_copy(
+                update={
+                    "status": TraceStatus.REJECTED,
+                    "error_code": error.code,
+                    "elapsed_seconds": time.monotonic() - started,
+                }
+            )
+            self._events[-1] = event
+            self._checkpoint_trace()
+            return self._error_reply(error.code, str(error))
         return reply
 
     def _reserve_request(self, command: Command) -> None:
@@ -590,10 +597,20 @@ class EvaluationBroker:
         self._public_errors.append(message)
         return BrokerReply(ok=False, error=BrokerError(code=code, message=message))
 
-    def _checkpoint_trace(self) -> None:
-        payload = "".join(event.model_dump_json() + "\n" for event in self._events)
+    def _checkpoint_trace(
+        self,
+        *,
+        check_deadline: Callable[[], object] | None = None,
+    ) -> None:
+        records: list[str] = []
+        for event in self._events:
+            _check_deadline(check_deadline)
+            records.append(event.model_dump_json() + "\n")
+        payload = "".join(records)
+        _check_deadline(check_deadline)
         pending = self._trace_path.with_name(f".{self._trace_path.name}.pending")
         pending.write_text(payload, encoding="utf-8")
+        _check_deadline(check_deadline)
         os.replace(pending, self._trace_path)
 
 

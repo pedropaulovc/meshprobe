@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from pydantic import JsonValue
 
 import meshprobe.evals.harness.broker as broker_module
+from meshprobe.controller import EvaluationWallTimeout
 from meshprobe.evals.harness.broker import (
     EvaluationBroker,
     _comparison_artifact_virtual_path,
@@ -276,9 +278,12 @@ def test_broker_rejects_success_that_exceeds_wall_budget_during_trace_checkpoint
     checkpoint = active._checkpoint_trace
     checkpoint_calls = 0
 
-    def checkpoint_after_deadline() -> None:
+    def checkpoint_after_deadline(
+        *,
+        check_deadline: Callable[[], object] | None = None,
+    ) -> None:
         nonlocal checkpoint_calls
-        checkpoint()
+        checkpoint(check_deadline=check_deadline)
         checkpoint_calls += 1
         if checkpoint_calls == 1:
             active._started -= 31
@@ -299,6 +304,38 @@ def test_broker_rejects_success_that_exceeds_wall_budget_during_trace_checkpoint
     assert rendered.error.code == "budget.wall_seconds"
     assert active.events[-1].status is TraceStatus.REJECTED
     assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
+
+
+def test_broker_classifies_controller_wall_deadline_as_budget_rejection(
+    tmp_path: Path,
+) -> None:
+    class WallTimeoutService(FakeEvaluationService):
+        def execute_for_evaluation(
+            self,
+            command: Command,
+            *,
+            evaluator_output_dir: str,
+            wall_timeout_seconds: float | None = None,
+        ) -> CommandResponse:
+            del command, evaluator_output_dir, wall_timeout_seconds
+            raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
+
+    active = broker(tmp_path, service=WallTimeoutService())
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="controller-wall-timeout",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert active.events[-1].status is TraceStatus.REJECTED
+    assert active.events[-1].error_code == "budget.wall_seconds"
 
 
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(

@@ -85,6 +85,7 @@ __all__ = [
     "BlenderWorkerCrashed",
     "BlenderWorkerError",
     "BlenderWorkerTimeout",
+    "EvaluationWallTimeout",
     "WorkerRecoveryPolicy",
     "sha256_file",
 ]
@@ -112,6 +113,10 @@ class BlenderWorkerCrashed(BlenderWorkerError):
 
 class BlenderWorkerTimeout(BlenderWorkerError):
     """The Blender process exceeded an operation deadline."""
+
+
+class EvaluationWallTimeout(BlenderWorkerTimeout):
+    """Evaluation render work exhausted its broker-assigned wall window."""
 
 
 class WorkerRecoveryPolicy(StrEnum):
@@ -905,7 +910,7 @@ class BlenderController:
     def _ensure_request_deadline(self) -> None:
         deadline = self._request_deadline_monotonic
         if deadline is not None and time.monotonic() >= deadline:
-            raise BlenderWorkerTimeout("render exceeded the evaluation wall deadline")
+            raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
 
     def _verify_render_artifacts(self, manifest: RenderManifest) -> None:
         artifacts = [manifest.color]
