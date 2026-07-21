@@ -694,7 +694,7 @@ def test_render_execution_extends_the_daemon_read_timeout(
         ),
     )
 
-    assert captured["read_timeout"] == 1830
+    assert captured["read_timeout"] == 2460
 
     client.execute(
         "review",
@@ -705,7 +705,7 @@ def test_render_execution_extends_the_daemon_read_timeout(
             timeout_seconds=1,
         ),
     )
-    assert cast(float, captured["read_timeout"]) == 632
+    assert cast(float, captured["read_timeout"]) == 1262
 
 
 def test_render_execution_budgets_time_for_checkpoint_replay(tmp_path: Path) -> None:
@@ -731,7 +731,7 @@ def test_render_execution_budgets_time_for_checkpoint_replay(tmp_path: Path) -> 
         timeout_seconds=60,
     )
 
-    assert client._command_read_timeout("review", command) == 1380
+    assert client._command_read_timeout("review", command) == 2640
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(

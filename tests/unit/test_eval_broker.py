@@ -175,6 +175,34 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
 
 
+def test_broker_caps_render_timeout_to_the_remaining_episode_wall_budget(
+    tmp_path: Path,
+) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="bounded-render",
+            op="render.image",
+            output_path="bounded.png",
+            width=64,
+            height=64,
+            timeout_seconds=86_400,
+        )
+    )
+
+    assert rendered.ok
+    translated = service.commands[-1]
+    assert isinstance(translated, RenderImageCommand)
+    assert 0 < translated.timeout_seconds <= 30
+    assert active.events[-1].arguments["timeout_seconds"] == 86_400
+
+
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
     tmp_path: Path,
 ) -> None:

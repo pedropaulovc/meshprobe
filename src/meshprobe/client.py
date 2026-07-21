@@ -40,6 +40,7 @@ DAEMON_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 OPERATION_READ_TIMEOUT_SECONDS = DEFAULT_WORKER_TIMEOUT_SECONDS + 30.0
 KILL_RPC_TIMEOUT_SECONDS = 1.0
 RECOVERY_FIXED_OPERATION_WINDOWS = 3
+MAX_RENDER_RECOVERIES = 2
 
 
 class MeshProbeClient:
@@ -96,7 +97,8 @@ class MeshProbeClient:
                 session
             )
             return (
-                2 * command.timeout_seconds + recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
+                2 * command.timeout_seconds
+                + MAX_RENDER_RECOVERIES * recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
             )
         return OPERATION_READ_TIMEOUT_SECONDS
 

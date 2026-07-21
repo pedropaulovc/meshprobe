@@ -228,8 +228,13 @@ class EvaluationBroker:
         self._request_ids.add(command.request_id)
         if len(self._events) >= self._budgets.tool_calls:
             raise _RejectedCommand("budget.tool_calls", "tool-call budget exhausted")
-        if time.monotonic() - self._started > self._budgets.wall_seconds:
+        self._remaining_wall_seconds()
+
+    def _remaining_wall_seconds(self) -> float:
+        remaining = self._budgets.wall_seconds - (time.monotonic() - self._started)
+        if remaining <= 0:
             raise _RejectedCommand("budget.wall_seconds", "episode wall-time budget exhausted")
+        return remaining
 
     def _translate_and_reserve(
         self,
@@ -291,7 +296,14 @@ class EvaluationBroker:
                     }
                 )
             translated_image = command.model_copy(
-                update={"output_path": str(staging_output), "comparison": comparison}
+                update={
+                    "output_path": str(staging_output),
+                    "comparison": comparison,
+                    "timeout_seconds": min(
+                        command.timeout_seconds,
+                        self._remaining_wall_seconds(),
+                    ),
+                }
             )
             minimum_reservation = _render_output_reservation(pixels)
             byte_reservation = minimum_reservation
