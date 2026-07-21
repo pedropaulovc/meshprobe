@@ -20,7 +20,13 @@ from meshprobe.protocol import (
     SessionUndoCommand,
     ViewOrbitCommand,
 )
-from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
+from meshprobe.workspace import (
+    OperationReceipt,
+    SessionFiles,
+    SessionMetadata,
+    atomic_json,
+    utc_now,
+)
 
 
 def _daemon_metadata(pid: int) -> dict[str, Any]:
@@ -688,7 +694,7 @@ def test_render_execution_extends_the_daemon_read_timeout(
         ),
     )
 
-    assert captured["read_timeout"] == 810
+    assert captured["read_timeout"] == 1230
 
     client.execute(
         "review",
@@ -699,7 +705,33 @@ def test_render_execution_extends_the_daemon_read_timeout(
             timeout_seconds=1,
         ),
     )
-    assert cast(float, captured["read_timeout"]) == 211
+    assert cast(float, captured["read_timeout"]) == 631
+
+
+def test_render_execution_budgets_time_for_checkpoint_replay(tmp_path: Path) -> None:
+    client = MeshProbeClient(tmp_path)
+    files = SessionFiles(client.root, "review")
+    files.create_directories()
+    files.checkpoint.write_text(
+        json.dumps(
+            {
+                "replay_prefix": [{"op": "view.set"}],
+                "accepted_commands": [
+                    {"op": "view.orbit"},
+                    {"op": "component.display"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+        timeout_seconds=60,
+    )
+
+    assert client._command_read_timeout("review", command) == 1320
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(

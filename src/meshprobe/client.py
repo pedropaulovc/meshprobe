@@ -39,6 +39,7 @@ DAEMON_START_TIMEOUT_SECONDS = 10.0
 DAEMON_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 OPERATION_READ_TIMEOUT_SECONDS = DEFAULT_WORKER_TIMEOUT_SECONDS + 30.0
 KILL_RPC_TIMEOUT_SECONDS = 1.0
+RECOVERY_FIXED_OPERATION_WINDOWS = 3
 
 
 class MeshProbeClient:
@@ -69,7 +70,7 @@ class MeshProbeClient:
                 session=session,
                 command=wire,
                 blender=self.blender,
-                read_timeout=self._command_read_timeout(command),
+                read_timeout=self._command_read_timeout(session, command),
             )
         except ValueError as error:
             if not self._old_daemon_rejected_command(command, error):
@@ -83,15 +84,33 @@ class MeshProbeClient:
                 session=session,
                 command=wire,
                 blender=self.blender,
-                read_timeout=self._command_read_timeout(command),
+                read_timeout=self._command_read_timeout(session, command),
             )
         return OperationReceipt.model_validate(payload)
 
-    @staticmethod
-    def _command_read_timeout(command: Command) -> float:
+    def _command_read_timeout(self, session: str, command: Command) -> float:
         if isinstance(command, RenderImageCommand):
-            return command.timeout_seconds + OPERATION_READ_TIMEOUT_SECONDS
+            # Recovery starts a worker, reopens/normalizes the scene, then replays each
+            # accepted state command. Keep one extra fixed window for shutdown and setup.
+            recovery_operations = RECOVERY_FIXED_OPERATION_WINDOWS + self._replay_command_count(
+                session
+            )
+            return command.timeout_seconds + recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
         return OPERATION_READ_TIMEOUT_SECONDS
+
+    def _replay_command_count(self, session: str) -> int:
+        checkpoint = SessionFiles(self.root, session).checkpoint
+        try:
+            payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        return sum(
+            len(commands)
+            for field in ("replay_prefix", "accepted_commands")
+            if isinstance(commands := payload.get(field), list)
+        )
 
     @staticmethod
     def _old_daemon_rejected_command(command: Command, error: ValueError) -> bool:
