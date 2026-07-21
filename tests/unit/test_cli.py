@@ -1085,9 +1085,14 @@ def test_help_is_not_wrapped_at_the_terminal_width() -> None:
 
     assert result.exit_code == 0
     edge_types_line = next(
-        line for line in unstyle(result.output).splitlines() if line.lstrip().startswith("--edge-types")
+        line
+        for line in unstyle(result.output).splitlines()
+        if line.lstrip().startswith("--edge-types")
     )
-    assert "Comma-separated silhouette, border, crease, and material boundary types." in edge_types_line
+    assert (
+        "Comma-separated silhouette, border, crease, and material boundary types."
+        in edge_types_line
+    )
     assert len(edge_types_line) > 80
 
 
