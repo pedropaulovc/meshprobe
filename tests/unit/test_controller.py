@@ -332,6 +332,17 @@ def test_wait_for_times_out() -> None:
         controller._wait_for(lambda payload: False)
 
 
+def test_crash_message_identifies_possible_windows_driver_reset() -> None:
+    controller = BlenderController()
+    controller._process = cast(Any, SimpleNamespace(poll=lambda: 3221226505))
+
+    message = controller._crash_message()
+
+    assert "3221226505 (0xC0000409)" in message
+    assert "STATUS_STACK_BUFFER_OVERRUN" in message
+    assert "nvlddmkm" in message
+
+
 def test_output_reader_is_bound_to_its_worker_generation() -> None:
     controller = BlenderController()
     old_queue: queue.Queue[str | None] = queue.Queue()
