@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -144,6 +145,7 @@ class EvaluationBroker:
         error_code: str | None = None
         status = TraceStatus.ACCEPTED
         staging_root: Path | None = None
+        published_paths: list[Path] = []
         request_token = hashlib.sha256(command.request_id.encode()).hexdigest()[:16]
         private_dir = self._evaluator_root / f"{sequence:04d}-{request_token}"
         try:
@@ -160,22 +162,32 @@ class EvaluationBroker:
                     else None
                 ),
             )
+            self._remaining_wall_seconds()
             private_result = response.result
-            produced_bytes = _directory_bytes(private_dir) + _directory_bytes(staging_root)
+            produced_bytes = _directory_bytes(
+                private_dir,
+                check_deadline=self._remaining_wall_seconds,
+            ) + _directory_bytes(
+                staging_root,
+                check_deadline=self._remaining_wall_seconds,
+            )
+            self._remaining_wall_seconds()
             if produced_bytes > byte_reservation:
                 self._renders += render_count
                 self._total_pixels += pixel_count
-                self._discard_request_outputs(staging_root, private_dir)
+                self._discard_request_outputs(staging_root, private_dir, published_paths)
                 raise _RejectedCommand(
                     "budget.output_bytes",
                     "tool output exceeded its pre-reserved byte bound",
                 )
             if staging_root is not None:
-                self._publish_staged_artifacts(staging_root)
+                self._publish_staged_artifacts(staging_root, published_paths)
+                self._remaining_wall_seconds()
                 private_result = _rewrite_path_root(
                     private_result,
                     staging_root,
                     self._artifact_root,
+                    check_deadline=self._remaining_wall_seconds,
                 )
             self._state_sha256 = _state_hash(private_result) or state_before
             self._renders += render_count
@@ -186,6 +198,7 @@ class EvaluationBroker:
                 self._artifact_root,
                 self._evaluator_root,
                 self._model_path.parent,
+                check_deadline=self._remaining_wall_seconds,
             )
             comparison_path = _comparison_artifact_virtual_path(
                 private_result,
@@ -194,14 +207,15 @@ class EvaluationBroker:
             if comparison_path is not None:
                 public_result = _with_comparison_artifact_path(public_result, comparison_path)
             public_response = response.model_copy(update={"result": public_result})
+            self._remaining_wall_seconds()
             reply = BrokerReply(ok=True, response=public_response)
         except _RejectedCommand as error:
-            self._discard_request_outputs(staging_root, private_dir)
+            self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.REJECTED
             error_code = error.code
             reply = self._error_reply(error.code, str(error))
         except (BlenderWorkerError, OSError, ValueError) as error:
-            self._discard_request_outputs(staging_root, private_dir)
+            self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.REJECTED
             error_code = f"tool.{type(error).__name__}"
             reply = self._error_reply(
@@ -209,7 +223,7 @@ class EvaluationBroker:
                 str(error).replace(str(self._evaluator_root), "<private evaluator path>"),
             )
         except Exception as error:
-            self._discard_request_outputs(staging_root, private_dir)
+            self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.CRASHED
             error_code = f"tool.{type(error).__name__}"
             reply = self._error_reply(error_code, "tool execution crashed")
@@ -228,6 +242,21 @@ class EvaluationBroker:
         )
         self._events.append(event)
         self._checkpoint_trace()
+        if reply.ok:
+            try:
+                self._remaining_wall_seconds()
+            except _RejectedCommand as error:
+                self._discard_request_outputs(staging_root, private_dir, published_paths)
+                event = event.model_copy(
+                    update={
+                        "status": TraceStatus.REJECTED,
+                        "error_code": error.code,
+                        "elapsed_seconds": time.monotonic() - started,
+                    }
+                )
+                self._events[-1] = event
+                self._checkpoint_trace()
+                return self._error_reply(error.code, str(error))
         return reply
 
     def _reserve_request(self, command: Command) -> None:
@@ -481,14 +510,21 @@ class EvaluationBroker:
                 "render output cannot fit within the remaining output-byte budget",
             )
 
-    def _publish_staged_artifacts(self, staging_root: Path) -> None:
-        staged_files = tuple(path for path in staging_root.rglob("*") if path.is_file())
-        if not staged_files:
-            raise ValueError("render produced no staged artifacts")
-        for source in staged_files:
+    def _publish_staged_artifacts(
+        self,
+        staging_root: Path,
+        published_paths: list[Path],
+    ) -> None:
+        found_file = False
+        for source in staging_root.rglob("*"):
+            self._remaining_wall_seconds()
+            if not source.is_file():
+                continue
+            found_file = True
             relative = source.relative_to(staging_root)
             if os.name == "posix":
                 self._publish_staged_file_posix(source, relative)
+                published_paths.append(self._artifact_root / relative)
                 continue
             destination = self._artifact_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -502,6 +538,10 @@ class EvaluationBroker:
             if destination.exists():
                 raise _RejectedCommand("broker.output_exists", "render artifact already exists")
             os.replace(source, destination)
+            published_paths.append(destination)
+        if not found_file:
+            raise ValueError("render produced no staged artifacts")
+        self._remaining_wall_seconds()
         shutil.rmtree(staging_root)
 
     def _publish_staged_file_posix(self, source: Path, relative: Path) -> None:
@@ -534,7 +574,14 @@ class EvaluationBroker:
             os.close(root_fd)
 
     @staticmethod
-    def _discard_request_outputs(staging_root: Path | None, private_dir: Path) -> None:
+    def _discard_request_outputs(
+        staging_root: Path | None,
+        private_dir: Path,
+        published_paths: list[Path],
+    ) -> None:
+        for path in published_paths:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
         if staging_root is not None:
             shutil.rmtree(staging_root, ignore_errors=True)
         shutil.rmtree(private_dir, ignore_errors=True)
@@ -586,11 +633,16 @@ def _contact_sheet_minimum_output_reservation(
     return panel_count * _render_output_reservation(panel_pixels) + sheet_png_bound
 
 
-def _directory_bytes(root: Path | None) -> int:
+def _directory_bytes(
+    root: Path | None,
+    *,
+    check_deadline: Callable[[], object] | None = None,
+) -> int:
     if root is None or not root.exists():
         return 0
     total = 0
     for path in root.rglob("*"):
+        _check_deadline(check_deadline)
         if path.is_symlink():
             raise ValueError("render output must not contain symbolic links")
         if path.is_file():
@@ -598,11 +650,34 @@ def _directory_bytes(root: Path | None) -> int:
     return total
 
 
-def _rewrite_path_root(value: JsonValue, old_root: Path, new_root: Path) -> JsonValue:
+def _rewrite_path_root(
+    value: JsonValue,
+    old_root: Path,
+    new_root: Path,
+    *,
+    check_deadline: Callable[[], object] | None = None,
+) -> JsonValue:
+    _check_deadline(check_deadline)
     if isinstance(value, list):
-        return [_rewrite_path_root(item, old_root, new_root) for item in value]
+        return [
+            _rewrite_path_root(
+                item,
+                old_root,
+                new_root,
+                check_deadline=check_deadline,
+            )
+            for item in value
+        ]
     if isinstance(value, dict):
-        return {key: _rewrite_path_root(item, old_root, new_root) for key, item in value.items()}
+        return {
+            key: _rewrite_path_root(
+                item,
+                old_root,
+                new_root,
+                check_deadline=check_deadline,
+            )
+            for key, item in value.items()
+        }
     if not isinstance(value, str):
         return value
     candidate = Path(value)
@@ -616,12 +691,30 @@ def _public_result(
     artifact_root: Path,
     evaluator_root: Path,
     input_root: Path,
+    *,
+    check_deadline: Callable[[], object] | None = None,
 ) -> JsonValue:
+    _check_deadline(check_deadline)
     if isinstance(value, list):
-        return [_public_result(item, artifact_root, evaluator_root, input_root) for item in value]
+        return [
+            _public_result(
+                item,
+                artifact_root,
+                evaluator_root,
+                input_root,
+                check_deadline=check_deadline,
+            )
+            for item in value
+        ]
     if isinstance(value, dict):
         return {
-            key: _public_result(item, artifact_root, evaluator_root, input_root)
+            key: _public_result(
+                item,
+                artifact_root,
+                evaluator_root,
+                input_root,
+                check_deadline=check_deadline,
+            )
             for key, item in value.items()
             if key not in {"evaluator", "normalized_geometry"}
         }
@@ -641,6 +734,11 @@ def _public_result(
             return str(candidate)
         return f"/workspace/input/{relative}"
     return value
+
+
+def _check_deadline(check_deadline: Callable[[], object] | None) -> None:
+    if check_deadline is not None:
+        check_deadline()
 
 
 def _comparison_artifact_virtual_path(value: JsonValue, artifact_root: Path) -> str | None:

@@ -720,7 +720,7 @@ class BlenderController:
         source = Path(environment.path).expanduser().resolve(strict=True)
         if not source.is_file():
             raise BlenderWorkerError(f"environment map is not a file: {source}")
-        before = sha256_file(source)
+        before = sha256_file(source, check_deadline=self._ensure_request_deadline)
         if before != environment.sha256:
             raise BlenderWorkerError("environment map hash does not match its declaration")
         suffix = source.suffix.lower()
@@ -728,15 +728,26 @@ class BlenderController:
             raise BlenderWorkerError("environment map must be an HDR or EXR image")
 
         def write_output(payload: Path) -> None:
-            shutil.copyfile(source, payload / f"environment{suffix}")
+            with (
+                source.open("rb") as source_stream,
+                (payload / f"environment{suffix}").open("wb") as output_stream,
+            ):
+                while True:
+                    self._ensure_request_deadline()
+                    chunk = source_stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output_stream.write(chunk)
 
+        self._ensure_request_deadline()
         entry = self._artifact_cache.publish(
             environment.sha256,
             "meshprobe-environment-v1",
             {"extension": suffix, "projection": environment.projection},
             write_output,
         )
-        if sha256_file(source) != before:
+        self._ensure_request_deadline()
+        if sha256_file(source, check_deadline=self._ensure_request_deadline) != before:
             raise BlenderWorkerError("environment map changed while it was cached")
         output = entry.outputs[0]
         cached_environment = EnvironmentMap(
@@ -754,7 +765,36 @@ class BlenderController:
         *,
         evaluator_output_dir: str | Path | None = None,
         recovery_policy: WorkerRecoveryPolicy = WorkerRecoveryPolicy.RESTORE,
+        request_deadline_monotonic: float | None = None,
     ) -> RenderManifest:
+        previous_deadline = self._request_deadline_monotonic
+        if request_deadline_monotonic is not None:
+            self._request_deadline_monotonic = (
+                request_deadline_monotonic
+                if previous_deadline is None
+                else min(previous_deadline, request_deadline_monotonic)
+            )
+        try:
+            try:
+                return self._render_image(
+                    command,
+                    evaluator_output_dir=evaluator_output_dir,
+                    recovery_policy=recovery_policy,
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._settle_render_failure(recovery_policy)
+                raise
+        finally:
+            self._request_deadline_monotonic = previous_deadline
+
+    def _render_image(
+        self,
+        command: RenderImageCommand,
+        *,
+        evaluator_output_dir: str | Path | None,
+        recovery_policy: WorkerRecoveryPolicy,
+    ) -> RenderManifest:
+        self._ensure_request_deadline()
         if self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         output = Path(command.output_path).expanduser().resolve()
@@ -774,8 +814,10 @@ class BlenderController:
                     "render, reference, comparison output, and comparison staging paths must differ"
                 )
             try:
+                self._ensure_request_deadline()
                 with Image.open(reference_image) as image:
                     image.verify()
+                self._ensure_request_deadline()
             except (OSError, ValueError) as error:
                 raise BlenderWorkerError(
                     f"reference image is not decodable: {reference_image}"
@@ -802,19 +844,16 @@ class BlenderController:
         try:
             result = self._request_with_timeout(command.op, render_timeout, **arguments)
         except BlenderWorkerTimeout:
-            self._settle_render_failure(recovery_policy)
             raise
         except BlenderWorkerCrashed:
             if recovery_policy is WorkerRecoveryPolicy.CLOSE:
-                self.close()
                 raise
             self._recover_session()
-            try:
-                result = self._request_with_timeout(command.op, render_timeout, **arguments)
-            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
-                self._settle_render_failure(recovery_policy)
-                raise
-        after = snapshot_source(self._source_snapshot.assets[0].path)
+            result = self._request_with_timeout(command.op, render_timeout, **arguments)
+        after = snapshot_source(
+            self._source_snapshot.assets[0].path,
+            check_deadline=self._ensure_request_deadline,
+        )
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during render")
         manifest = RenderManifest.model_validate(result)
@@ -825,7 +864,10 @@ class BlenderController:
             try:
                 artifact, reference, render_placement, reference_placement = (
                     compose_side_by_side_comparison(
-                        Path(manifest.color.path), reference_image, comparison_output
+                        Path(manifest.color.path),
+                        reference_image,
+                        comparison_output,
+                        check_deadline=self._ensure_request_deadline,
                     )
                 )
             except (OSError, ValueError) as error:
@@ -860,8 +902,12 @@ class BlenderController:
             return
         self._recover_session()
 
-    @staticmethod
-    def _verify_render_artifacts(manifest: RenderManifest) -> None:
+    def _ensure_request_deadline(self) -> None:
+        deadline = self._request_deadline_monotonic
+        if deadline is not None and time.monotonic() >= deadline:
+            raise BlenderWorkerTimeout("render exceeded the evaluation wall deadline")
+
+    def _verify_render_artifacts(self, manifest: RenderManifest) -> None:
         artifacts = [manifest.color]
         if manifest.evaluator is not None:
             artifacts.extend(
@@ -872,12 +918,14 @@ class BlenderController:
                 )
             )
         for artifact_record in artifacts:
+            self._ensure_request_deadline()
             path = Path(artifact_record.path)
             if not path.is_file():
                 raise BlenderWorkerError(f"render artifact is missing: {path}")
             if (
                 path.stat().st_size != artifact_record.bytes
-                or sha256_file(path) != artifact_record.sha256
+                or sha256_file(path, check_deadline=self._ensure_request_deadline)
+                != artifact_record.sha256
             ):
                 raise BlenderWorkerError(f"render artifact digest mismatch: {path}")
 
@@ -1095,13 +1143,25 @@ class BlenderController:
                 for operation, arguments in accepted_commands:
                     self.request(operation, **arguments)
 
-        after = snapshot_source(self._source_snapshot.assets[0].path)
+        self._ensure_request_deadline()
+        after = snapshot_source(
+            self._source_snapshot.assets[0].path,
+            check_deadline=self._ensure_request_deadline,
+        )
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
         captions = tuple(
             (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
         )
-        sheet = compose_contact_sheet(captions, output, command.panel_width, command.panel_height)
+        self._ensure_request_deadline()
+        sheet = compose_contact_sheet(
+            captions,
+            output,
+            command.panel_width,
+            command.panel_height,
+            check_deadline=self._ensure_request_deadline,
+        )
+        self._ensure_request_deadline()
         if occlusion is None:
             raise BlenderWorkerError("contact-sheet occlusion analysis did not run")
         return ContactSheetManifest(
@@ -1178,18 +1238,25 @@ class BlenderController:
                 self.request("session.reset")
                 for operation, arguments in accepted_commands:
                     self.request(operation, **arguments)
-        after = snapshot_source(self._source_snapshot.assets[0].path)
+        self._ensure_request_deadline()
+        after = snapshot_source(
+            self._source_snapshot.assets[0].path,
+            check_deadline=self._ensure_request_deadline,
+        )
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during orbit sweep render")
         composed_panels = tuple(
             (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
         )
+        self._ensure_request_deadline()
         sheet = compose_contact_sheet(
             composed_panels,
             output,
             command.panel_width,
             command.panel_height,
+            check_deadline=self._ensure_request_deadline,
         )
+        self._ensure_request_deadline()
         return ContactSheetManifest(
             recipe="orbit_sweep",
             focus_component_ids=focus_ids,
@@ -1262,18 +1329,25 @@ class BlenderController:
                 for operation, arguments in accepted_commands:
                     self.request(operation, **arguments)
 
-        after = snapshot_source(self._source_snapshot.assets[0].path)
+        self._ensure_request_deadline()
+        after = snapshot_source(
+            self._source_snapshot.assets[0].path,
+            check_deadline=self._ensure_request_deadline,
+        )
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during contact-sheet render")
         composed_panels = tuple(
             (Path(panel.render.color.path), panel.caption, panel.callouts) for panel in panels
         )
+        self._ensure_request_deadline()
         sheet = compose_contact_sheet(
             composed_panels,
             output,
             command.panel_width,
             command.panel_height,
+            check_deadline=self._ensure_request_deadline,
         )
+        self._ensure_request_deadline()
         return ContactSheetManifest(
             recipe=command.recipe,
             focus_component_ids=focus_ids,
@@ -1599,6 +1673,7 @@ class BlenderController:
         labels = {component.id: component.display_name for component in self._manifest.components}
         callouts: list[ContactSheetCallout] = []
         for number, component_id in enumerate(dict.fromkeys(focus_component_ids), start=1):
+            self._ensure_request_deadline()
             bounds = render.session.camera_diagnostics.projected_bounds.get(component_id)
             if (
                 bounds is None

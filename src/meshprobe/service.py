@@ -73,6 +73,11 @@ class MeshProbeService:
                     command,
                     evaluator_output_dir=evaluator_output_dir,
                     recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                    request_deadline_monotonic=(
+                        time.monotonic() + wall_timeout_seconds
+                        if wall_timeout_seconds is not None
+                        else None
+                    ),
                 )
             except (BlenderWorkerCrashed, BlenderWorkerTimeout):
                 self._started = False

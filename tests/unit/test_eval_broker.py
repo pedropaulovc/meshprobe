@@ -234,6 +234,73 @@ def test_broker_rejects_render_when_wall_budget_cannot_cover_cleanup(tmp_path: P
     assert service.commands == []
 
 
+def test_broker_removes_published_artifact_when_wall_budget_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+    publish = active._publish_staged_artifacts
+
+    def publish_after_deadline(staging_root: Path, published_paths: list[Path]) -> None:
+        publish(staging_root, published_paths)
+        active._started -= 31
+
+    monkeypatch.setattr(active, "_publish_staged_artifacts", publish_after_deadline)
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="late-publication",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
+
+
+def test_broker_rejects_success_that_exceeds_wall_budget_during_trace_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+    checkpoint = active._checkpoint_trace
+    checkpoint_calls = 0
+
+    def checkpoint_after_deadline() -> None:
+        nonlocal checkpoint_calls
+        checkpoint()
+        checkpoint_calls += 1
+        if checkpoint_calls == 1:
+            active._started -= 31
+
+    monkeypatch.setattr(active, "_checkpoint_trace", checkpoint_after_deadline)
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="late-checkpoint",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert active.events[-1].status is TraceStatus.REJECTED
+    assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
+
+
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
     tmp_path: Path,
 ) -> None:
