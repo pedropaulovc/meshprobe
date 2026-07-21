@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-20
+
+### Fixed
+
+- Plain CLI help no longer includes Markdown syntax, so it remains readable and line-greppable.
+- `render-image` now derives omitted dimensions from the session camera's framing aspect within the
+  default 2576-pixel budget. Supplying both dimensions still requests an intentional reframe.
+- `render-image --timeout` and `render-sheet --timeout` support legitimate long renders. A timeout
+  now replaces or closes the affected Blender worker instead of retrying timed-out work or leaving
+  a durable session busy; worker crashes retain one bounded retry.
+- Evaluation renders and contact sheets now enforce episode deadlines through recovery and artifact
+  publication, rejecting late results without retaining stale output artifacts or accounting.
+- Runtime failures from `render-image` now print a plain `Render failed:` message with exit code 1
+  instead of argument-usage formatting.
+- Windows worker exits now include hexadecimal exception codes and a conditional NVIDIA driver
+  reset/TDR diagnostic for `0xC0000409`.
+
+### Changed
+
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.2.1 runtime.
+
 ## [1.2.0] - 2026-07-19
 
 ### Added
@@ -200,7 +221,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pedropaulovc/meshprobe/compare/v0.4.0...v1.0.0
