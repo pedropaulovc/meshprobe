@@ -255,6 +255,7 @@ class EvaluationBroker:
             event = event.model_copy(
                 update={
                     "status": TraceStatus.REJECTED,
+                    "result": None,
                     "error_code": error.code,
                     "state_after_sha256": state_before,
                     "elapsed_seconds": time.monotonic() - started,
