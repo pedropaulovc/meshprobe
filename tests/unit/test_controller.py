@@ -19,6 +19,7 @@ from meshprobe.controller import (
     BlenderWorkerCrashed,
     BlenderWorkerError,
     BlenderWorkerTimeout,
+    EvaluationWallTimeout,
     WorkerRecoveryPolicy,
     sha256_file,
 )
@@ -341,7 +342,7 @@ def test_wait_for_honors_an_absolute_request_deadline() -> None:
     controller._request_deadline_monotonic = time.monotonic() + 0.001
     started = time.monotonic()
 
-    with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
+    with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
         controller._wait_for(lambda payload: False)
 
     assert time.monotonic() - started < 0.1
@@ -351,7 +352,7 @@ def test_expired_request_deadline_rejects_host_side_render_work() -> None:
     controller = BlenderController()
     controller._request_deadline_monotonic = time.monotonic() - 1
 
-    with pytest.raises(BlenderWorkerTimeout, match="evaluation wall deadline"):
+    with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
         controller._ensure_request_deadline()
 
 

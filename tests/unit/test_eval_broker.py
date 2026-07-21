@@ -303,6 +303,10 @@ def test_broker_rejects_success_that_exceeds_wall_budget_during_trace_checkpoint
     assert rendered.error is not None
     assert rendered.error.code == "budget.wall_seconds"
     assert active.events[-1].status is TraceStatus.REJECTED
+    assert active.events[-1].state_after_sha256 is None
+    assert active.metrics.renders == 0
+    assert active.metrics.total_pixels == 0
+    assert active.metrics.output_bytes == 0
     assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
 
 

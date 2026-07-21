@@ -1865,19 +1865,29 @@ class BlenderController:
 
     def _wait_for(self, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         started = time.monotonic()
-        deadline = started + self.timeout_seconds
-        if self._request_deadline_monotonic is not None:
-            deadline = min(deadline, self._request_deadline_monotonic)
+        worker_deadline = started + self.timeout_seconds
+        request_deadline = self._request_deadline_monotonic
+        request_deadline_is_active = (
+            request_deadline is not None and request_deadline <= worker_deadline
+        )
+        deadline = request_deadline if request_deadline_is_active else worker_deadline
+        assert deadline is not None
         effective_timeout = max(0.0, deadline - started)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if request_deadline_is_active:
+                    raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
                 raise BlenderWorkerTimeout(
                     f"Blender worker did not respond within {effective_timeout:g} seconds"
                 )
             try:
                 line = self._lines.get(timeout=remaining)
             except queue.Empty as error:
+                if request_deadline_is_active:
+                    raise EvaluationWallTimeout(
+                        "render exceeded the evaluation wall deadline"
+                    ) from error
                 raise BlenderWorkerTimeout(
                     f"Blender worker did not respond within {effective_timeout:g} seconds"
                 ) from error

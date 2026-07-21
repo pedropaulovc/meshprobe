@@ -141,6 +141,7 @@ class EvaluationBroker:
         sequence = len(self._events) + 1
         started = time.monotonic()
         state_before = self._state_sha256
+        state_after = state_before
         private_result: JsonValue = None
         error_code: str | None = None
         status = TraceStatus.ACCEPTED
@@ -189,10 +190,7 @@ class EvaluationBroker:
                     self._artifact_root,
                     check_deadline=self._remaining_wall_seconds,
                 )
-            self._state_sha256 = _state_hash(private_result) or state_before
-            self._renders += render_count
-            self._total_pixels += pixel_count
-            self._output_bytes += produced_bytes
+            state_after = _state_hash(private_result) or state_before
             public_result = _public_result(
                 private_result,
                 self._artifact_root,
@@ -241,7 +239,7 @@ class EvaluationBroker:
             result=private_result,
             error_code=error_code,
             state_before_sha256=state_before,
-            state_after_sha256=self._state_sha256,
+            state_after_sha256=(state_after if status is TraceStatus.ACCEPTED else state_before),
             started_monotonic=started,
             elapsed_seconds=time.monotonic() - started,
         )
@@ -258,12 +256,18 @@ class EvaluationBroker:
                 update={
                     "status": TraceStatus.REJECTED,
                     "error_code": error.code,
+                    "state_after_sha256": state_before,
                     "elapsed_seconds": time.monotonic() - started,
                 }
             )
             self._events[-1] = event
             self._checkpoint_trace()
             return self._error_reply(error.code, str(error))
+        if reply.ok:
+            self._state_sha256 = state_after
+            self._renders += render_count
+            self._total_pixels += pixel_count
+            self._output_bytes += produced_bytes
         return reply
 
     def _reserve_request(self, command: Command) -> None:
