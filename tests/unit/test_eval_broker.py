@@ -200,7 +200,9 @@ def test_broker_caps_render_timeout_to_the_remaining_episode_wall_budget(
     translated = service.commands[-1]
     assert isinstance(translated, RenderImageCommand)
     assert 0 < translated.timeout_seconds <= 30
-    assert active.events[-1].arguments["timeout_seconds"] == 86_400
+    arguments = active.events[-1].arguments
+    assert isinstance(arguments, dict)
+    assert arguments["timeout_seconds"] == 86_400
 
 
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
