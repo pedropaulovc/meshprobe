@@ -5,6 +5,7 @@ import math
 import os
 import queue
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +19,8 @@ from meshprobe.controller import (
     BlenderWorkerCrashed,
     BlenderWorkerError,
     BlenderWorkerTimeout,
+    EvaluationWallTimeout,
+    WorkerRecoveryPolicy,
     sha256_file,
 )
 from meshprobe.identity import stable_component_id
@@ -28,6 +31,7 @@ from meshprobe.models import (
     CameraTranslationReceipt,
     CameraViewResult,
     ComponentVisualStateResult,
+    ContactSheetPanel,
     CoordinateFrame,
     CustomIllumination,
     DisplayMode,
@@ -36,6 +40,7 @@ from meshprobe.models import (
     MarkMode,
     OccluderRemovalStep,
     OcclusionQueryResult,
+    OrbitSweep,
     OrthographicProjection,
     OrthonormalBasis,
     PerspectiveProjection,
@@ -330,6 +335,25 @@ def test_wait_for_times_out() -> None:
     controller = BlenderController(timeout_seconds=0.001)
     with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
         controller._wait_for(lambda payload: False)
+
+
+def test_wait_for_honors_an_absolute_request_deadline() -> None:
+    controller = BlenderController(timeout_seconds=10)
+    controller._request_deadline_monotonic = time.monotonic() + 0.001
+    started = time.monotonic()
+
+    with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
+        controller._wait_for(lambda payload: False)
+
+    assert time.monotonic() - started < 0.1
+
+
+def test_expired_request_deadline_rejects_host_side_render_work() -> None:
+    controller = BlenderController()
+    controller._request_deadline_monotonic = time.monotonic() - 1
+
+    with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
+        controller._ensure_request_deadline()
 
 
 def test_crash_message_identifies_possible_windows_driver_reset() -> None:
@@ -1212,6 +1236,221 @@ def test_render_requires_open_scene() -> None:
     command = RenderImageCommand(request_id="render", op="render.image", output_path="evidence.png")
     with pytest.raises(BlenderWorkerError, match="before a scene is open"):
         controller.render_image(command)
+
+
+def test_render_timeout_recovers_without_reissuing_the_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    requests: list[str] = []
+    recovered = False
+
+    def timeout(operation: str, **_arguments: object) -> dict[str, object]:
+        requests.append(operation)
+        raise BlenderWorkerTimeout("Blender worker did not respond within 1 seconds")
+
+    def recover() -> None:
+        nonlocal recovered
+        recovered = True
+
+    monkeypatch.setattr(controller, "request", timeout)
+    monkeypatch.setattr(controller, "_recover_session", recover)
+
+    with pytest.raises(BlenderWorkerTimeout, match="within 1 seconds"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+                timeout_seconds=1,
+            )
+        )
+
+    assert requests == ["render.image"]
+    assert recovered
+
+
+def test_render_uses_the_controllers_timeout_when_the_command_does_not_override_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController(timeout_seconds=600)
+    controller._source_snapshot = snapshot_source(source)
+    observed_timeouts: list[float] = []
+
+    def timeout(operation: str, **_arguments: object) -> dict[str, object]:
+        observed_timeouts.append(controller.timeout_seconds)
+        raise BlenderWorkerTimeout(f"{operation} timed out")
+
+    monkeypatch.setattr(controller, "request", timeout)
+    monkeypatch.setattr(controller, "_recover_session", lambda: None)
+
+    with pytest.raises(BlenderWorkerTimeout, match="timed out"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+            )
+        )
+
+    assert observed_timeouts == [600]
+
+
+def test_render_recovers_when_a_crash_retry_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    failures = iter(
+        (
+            BlenderWorkerCrashed("worker crashed"),
+            BlenderWorkerTimeout("Blender worker did not respond within 1 seconds"),
+        )
+    )
+    recoveries = 0
+
+    def fail(_operation: str, **_arguments: object) -> dict[str, object]:
+        raise next(failures)
+
+    def recover() -> None:
+        nonlocal recoveries
+        recoveries += 1
+
+    monkeypatch.setattr(controller, "request", fail)
+    monkeypatch.setattr(controller, "_recover_session", recover)
+
+    with pytest.raises(BlenderWorkerTimeout, match="within 1 seconds"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+                timeout_seconds=1,
+            )
+        )
+
+    assert recoveries == 2
+
+
+def test_evaluation_render_closes_instead_of_recovering_after_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    closed = False
+
+    def timeout(_operation: str, **_arguments: object) -> dict[str, object]:
+        raise BlenderWorkerTimeout("evaluation render timed out")
+
+    def close() -> None:
+        nonlocal closed
+        closed = True
+
+    monkeypatch.setattr(controller, "request", timeout)
+    monkeypatch.setattr(controller, "close", close)
+    monkeypatch.setattr(
+        controller,
+        "_recover_session",
+        lambda: pytest.fail("evaluation timeout must not recover synchronously"),
+    )
+
+    with pytest.raises(BlenderWorkerTimeout, match="evaluation render timed out"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+                timeout_seconds=1,
+            ),
+            recovery_policy=WorkerRecoveryPolicy.CLOSE,
+        )
+
+    assert closed
+
+
+def test_contact_sheet_timeout_skips_stale_restore_and_recovers_worker(
+    tmp_path: Path,
+    scene_manifest: SceneManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    controller._source_snapshot = snapshot_source(source)
+    operations: list[str] = []
+    recovered = False
+
+    def request(operation: str, **_arguments: object) -> dict[str, object]:
+        operations.append(operation)
+        return {}
+
+    def timeout(*_arguments: object, **_keywords: object) -> ContactSheetPanel:
+        raise BlenderWorkerTimeout("panel timed out")
+
+    def recover() -> None:
+        nonlocal recovered
+        recovered = True
+
+    monkeypatch.setattr(controller, "request", request)
+    monkeypatch.setattr(controller, "_render_contact_panel", timeout)
+    monkeypatch.setattr(controller, "_recover_session", recover)
+
+    with pytest.raises(BlenderWorkerTimeout, match="panel timed out"):
+        controller.render_contact_sheet(
+            RenderContactSheetCommand(
+                request_id="sheet",
+                op="render.contact_sheet",
+                output_path=str(tmp_path / "sheet.png"),
+                recipe="orbit_sweep",
+                orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+                timeout_seconds=1,
+            )
+        )
+
+    assert recovered
+    assert "session.reset" not in operations
+
+
+def test_contact_sheet_panel_preserves_controller_timeout_unless_overridden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = BlenderController(timeout_seconds=600)
+    observed: list[float] = []
+
+    def timeout(_operation: str, seconds: float, **_arguments: object) -> dict[str, object]:
+        observed.append(seconds)
+        raise BlenderWorkerTimeout("panel timed out")
+
+    monkeypatch.setattr(controller, "_request_with_timeout", timeout)
+    base = RenderContactSheetCommand(
+        request_id="sheet",
+        op="render.contact_sheet",
+        output_path=str(tmp_path / "sheet.png"),
+        focus_component_ids=("cmp-a",),
+    )
+
+    with pytest.raises(BlenderWorkerTimeout):
+        controller._render_contact_panel(base, tmp_path / "panel.png", 1, "panel", None)
+    with pytest.raises(BlenderWorkerTimeout):
+        controller._render_contact_panel(
+            base.model_copy(update={"timeout_seconds": 10}),
+            tmp_path / "panel.png",
+            1,
+            "panel",
+            None,
+        )
+
+    assert observed == [600, 10]
 
 
 def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:

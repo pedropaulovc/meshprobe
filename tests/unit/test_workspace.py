@@ -1178,6 +1178,157 @@ def test_recreated_worker_resets_durable_render_style(
     assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
 
 
+def test_recovered_worker_resets_durable_render_style_when_render_is_rejected(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class RecoveringRejectedRenderService(FakeSessionService):
+        worker_generation = 1
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 6_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "timeout":
+                self.worker_generation += 1
+                raise RuntimeError("render timed out after worker recovery")
+            return super().execute(command)
+
+    service = RecoveringRejectedRenderService(scene_manifest)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    manager.execute(
+        "review",
+        RenderImageCommand(
+            request_id="edges",
+            op="render.image",
+            output_path=str(tmp_path / "edges.png"),
+            style=RenderStyle.SHADED_EDGES,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="worker recovery"):
+        manager.execute(
+            "review",
+            RenderImageCommand(
+                request_id="timeout",
+                op="render.image",
+                output_path=str(tmp_path / "timeout.png"),
+            ),
+        )
+
+    files = SessionFiles(manager.root, "review")
+    recovered_state = yaml.safe_load(files.state.read_text(encoding="utf-8"))
+    assert recovered_state["render_style"] == RenderStyleState().model_dump(mode="json")
+    metadata = json.loads(files.metadata.read_text(encoding="utf-8"))
+    assert metadata["worker_pid"] == service.worker_pid
+
+
+def test_failed_recovered_state_persistence_closes_worker_without_masking_rejection(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class UncheckpointableRecoveredService(FakeSessionService):
+        worker_generation = 1
+        reject_snapshots = False
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 7_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            if command.request_id == "timeout":
+                self.worker_generation += 1
+                self.reject_snapshots = True
+                raise RuntimeError("original render rejection")
+            if command.request_id == "checkpoint" and self.reject_snapshots:
+                raise RuntimeError("recovery snapshot failed")
+            return super().execute(command)
+
+    service = UncheckpointableRecoveredService(scene_manifest)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+
+    with pytest.raises(RuntimeError, match="original render rejection"):
+        manager.execute(
+            "review",
+            RenderImageCommand(
+                request_id="timeout",
+                op="render.image",
+                output_path=str(tmp_path / "timeout.png"),
+            ),
+        )
+
+    files = SessionFiles(manager.root, "review")
+    metadata = json.loads(files.metadata.read_text(encoding="utf-8"))
+    assert metadata["status"] == "closed"
+    assert metadata["worker_pid"] is None
+    assert service.killed
+    assert "review" not in manager._services
+
+
+def test_recovered_rejected_mutation_is_discarded_without_persisting_its_state(
+    tmp_path: Path, scene_manifest: SceneManifest
+) -> None:
+    class MutatedBeforeRejectionService(FakeSessionService):
+        worker_generation = 1
+
+        @property
+        def worker_pid(self) -> int | None:
+            if self.closed or self.killed:
+                return None
+            return 8_000 + self.worker_generation
+
+        def execute(self, command: Command) -> CommandResponse:
+            response = super().execute(command)
+            if command.request_id == "mutated-then-rejected":
+                self.worker_generation += 1
+                raise RuntimeError("mutation retry timed out")
+            return response
+
+    service = MutatedBeforeRejectionService(scene_manifest)
+    manager = SessionManager(
+        tmp_path / ".meshprobe",
+        service_factory=lambda: service,
+    )
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"fixture")
+    manager.open("review", source)
+    files = SessionFiles(manager.root, "review")
+    before = files.state.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="mutation retry timed out"):
+        manager.execute(
+            "review",
+            ComponentDisplayCommand(
+                request_id="mutated-then-rejected",
+                op="component.display",
+                component_ids=(scene_manifest.components[0].id,),
+                mode=DisplayMode.HIDDEN,
+            ),
+        )
+
+    assert files.state.read_text(encoding="utf-8") == before
+    metadata = json.loads(files.metadata.read_text(encoding="utf-8"))
+    assert metadata["status"] == "closed"
+    assert metadata["worker_pid"] is None
+    assert service.killed
+    assert "review" not in manager._services
+
+
 def test_worker_recreated_after_render_resets_durable_render_style(
     tmp_path: Path, scene_manifest: SceneManifest
 ) -> None:

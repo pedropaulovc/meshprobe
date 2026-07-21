@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from pydantic import JsonValue
 
 import meshprobe.evals.harness.broker as broker_module
+from meshprobe.controller import EvaluationWallTimeout
 from meshprobe.evals.harness.broker import (
     EvaluationBroker,
     _comparison_artifact_virtual_path,
@@ -40,15 +42,18 @@ class FakeEvaluationService:
     def __init__(self) -> None:
         self.commands: list[object] = []
         self.evaluator_directories: list[str] = []
+        self.wall_timeouts: list[float | None] = []
 
     def execute_for_evaluation(
         self,
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         self.commands.append(command)
         self.evaluator_directories.append(evaluator_output_dir)
+        self.wall_timeouts.append(wall_timeout_seconds)
         request_id = command.request_id
         operation = command.op
         if operation == "scene.open":
@@ -173,6 +178,169 @@ def test_broker_translates_paths_redacts_private_passes_and_checkpoints(tmp_path
     trace = (tmp_path / "evaluator" / "trace.jsonl").read_text(encoding="utf-8")
     assert len(trace.splitlines()) == 4
     assert json.loads(trace.splitlines()[-1])["status"] == "accepted"
+
+
+def test_broker_caps_render_timeout_to_the_remaining_episode_wall_budget(
+    tmp_path: Path,
+) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="bounded-render",
+            op="render.image",
+            output_path="bounded.png",
+            width=64,
+            height=64,
+            timeout_seconds=86_400,
+        )
+    )
+
+    assert rendered.ok
+    translated = service.commands[-1]
+    assert isinstance(translated, RenderImageCommand)
+    assert 0 < translated.timeout_seconds <= 23
+    assert service.wall_timeouts[-1] is not None
+    assert 0 < service.wall_timeouts[-1] <= 23
+    arguments = active.events[-1].arguments
+    assert isinstance(arguments, dict)
+    assert arguments["timeout_seconds"] == 86_400
+
+
+def test_broker_rejects_render_when_wall_budget_cannot_cover_cleanup(tmp_path: Path) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(wall_seconds=1),
+    )
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="no-cleanup-budget",
+            op="render.image",
+            output_path="bounded.png",
+            width=64,
+            height=64,
+            timeout_seconds=86_400,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert service.commands == []
+
+
+def test_broker_removes_published_artifact_when_wall_budget_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+    publish = active._publish_staged_artifacts
+
+    def publish_after_deadline(staging_root: Path, published_paths: list[Path]) -> None:
+        publish(staging_root, published_paths)
+        active._started -= 31
+
+    monkeypatch.setattr(active, "_publish_staged_artifacts", publish_after_deadline)
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="late-publication",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
+
+
+def test_broker_rejects_success_that_exceeds_wall_budget_during_trace_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = broker(
+        tmp_path,
+        budgets=EpisodeBudgets(wall_seconds=30),
+    )
+    checkpoint = active._checkpoint_trace
+    checkpoint_calls = 0
+
+    def checkpoint_after_deadline(
+        *,
+        check_deadline: Callable[[], object] | None = None,
+    ) -> None:
+        nonlocal checkpoint_calls
+        checkpoint(check_deadline=check_deadline)
+        checkpoint_calls += 1
+        if checkpoint_calls == 1:
+            active._started -= 31
+
+    monkeypatch.setattr(active, "_checkpoint_trace", checkpoint_after_deadline)
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="late-checkpoint",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert active.events[-1].status is TraceStatus.REJECTED
+    assert active.events[-1].result is None
+    assert active.events[-1].state_after_sha256 is None
+    assert active.metrics.renders == 0
+    assert active.metrics.total_pixels == 0
+    assert active.metrics.output_bytes == 0
+    assert not (tmp_path / "agent" / "artifacts" / "late.png").exists()
+
+
+def test_broker_classifies_controller_wall_deadline_as_budget_rejection(
+    tmp_path: Path,
+) -> None:
+    class WallTimeoutService(FakeEvaluationService):
+        def execute_for_evaluation(
+            self,
+            command: Command,
+            *,
+            evaluator_output_dir: str,
+            wall_timeout_seconds: float | None = None,
+        ) -> CommandResponse:
+            del command, evaluator_output_dir, wall_timeout_seconds
+            raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
+
+    active = broker(tmp_path, service=WallTimeoutService())
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="controller-wall-timeout",
+            op="render.image",
+            output_path="late.png",
+            width=64,
+            height=64,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert active.events[-1].status is TraceStatus.REJECTED
+    assert active.events[-1].error_code == "budget.wall_seconds"
 
 
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(
@@ -681,8 +849,9 @@ class PrivatePathErrorService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
-        del command
+        del command, wall_timeout_seconds
         raise ValueError(f"private pass failed at {evaluator_output_dir}/depth.exr")
 
 
@@ -704,7 +873,9 @@ class OversizeEvaluationService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
+        del wall_timeout_seconds
         assert isinstance(command, RenderImageCommand)
         output_path = Path(command.output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -762,10 +933,12 @@ class DestinationSwapService(FakeEvaluationService):
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         response = super().execute_for_evaluation(
             command,
             evaluator_output_dir=evaluator_output_dir,
+            wall_timeout_seconds=wall_timeout_seconds,
         )
         self._outside.mkdir()
         (self._artifact_root / "views").symlink_to(self._outside, target_is_directory=True)

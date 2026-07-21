@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
-from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
+from meshprobe.controller import (
+    DEFAULT_WORKER_TIMEOUT_SECONDS,
+    BlenderController,
+    BlenderWorkerCrashed,
+    BlenderWorkerTimeout,
+    WorkerRecoveryPolicy,
+)
 from meshprobe.models import GraphicsPlatform
 from meshprobe.protocol import (
     Command,
@@ -55,26 +62,43 @@ class MeshProbeService:
         command: Command,
         *,
         evaluator_output_dir: str,
+        wall_timeout_seconds: float | None = None,
     ) -> CommandResponse:
         """Execute while keeping private render passes outside agent storage."""
 
         self._ensure_started(command)
         if isinstance(command, RenderImageCommand):
-            return self._response(
-                command,
-                self._controller.render_image(
+            try:
+                image_result = self._controller.render_image(
                     command,
                     evaluator_output_dir=evaluator_output_dir,
-                ),
-            )
+                    recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                    request_deadline_monotonic=(
+                        time.monotonic() + wall_timeout_seconds
+                        if wall_timeout_seconds is not None
+                        else None
+                    ),
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._started = False
+                raise
+            return self._response(command, image_result)
         if isinstance(command, RenderContactSheetCommand):
-            return self._response(
-                command,
-                self._controller.render_contact_sheet(
+            try:
+                sheet_result = self._controller.render_contact_sheet(
                     command,
                     evaluator_output_dir=evaluator_output_dir,
-                ),
-            )
+                    recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                    request_deadline_monotonic=(
+                        time.monotonic() + wall_timeout_seconds
+                        if wall_timeout_seconds is not None
+                        else None
+                    ),
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._started = False
+                raise
+            return self._response(command, sheet_result)
         return self._response(command, self._controller.execute(command))
 
     def _ensure_started(self, command: Command) -> None:

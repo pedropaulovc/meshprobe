@@ -54,6 +54,21 @@ def test_invalid_glb_still_snapshots_its_primary_file(tmp_path: Path) -> None:
     assert snapshot.sha256 == sha256_file(source)
 
 
+def test_sha256_checks_deadline_between_file_chunks(tmp_path: Path) -> None:
+    source = tmp_path / "large.bin"
+    source.write_bytes(b"x" * (3 * 1024 * 1024))
+    checks = 0
+
+    def check_deadline() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise TimeoutError("deadline expired")
+
+    with pytest.raises(TimeoutError, match="deadline expired"):
+        sha256_file(source, check_deadline=check_deadline)
+
+
 @pytest.mark.parametrize(
     ("document", "message"),
     [

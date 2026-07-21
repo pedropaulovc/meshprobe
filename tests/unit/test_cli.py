@@ -454,6 +454,80 @@ def test_raw_render_still_surfaces_receipt_warnings_on_stderr(
     assert "warning:" not in result.stdout
 
 
+def test_render_image_only_marks_an_explicit_timeout_for_the_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    default_result = runner.invoke(
+        app,
+        ["--session", "review", "render-image", "--width", "512", "--height", "512"],
+    )
+    explicit_result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "render-image",
+            "--width",
+            "512",
+            "--height",
+            "512",
+            "--timeout",
+            "600",
+        ],
+    )
+
+    assert default_result.exit_code == 0, default_result.output
+    assert explicit_result.exit_code == 0, explicit_result.output
+    assert "timeout_seconds" not in client.commands[-2].model_fields_set
+    assert "timeout_seconds" in client.commands[-1].model_fields_set
+
+
+def test_render_image_rejects_a_non_finite_timeout_before_daemon_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["render-image", "--width", "512", "--height", "512", "--timeout", "nan"],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value for --timeout" in result.output
+    assert client.commands == []
+
+
+def test_render_sheet_only_marks_an_explicit_finite_timeout_for_the_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    default_result = runner.invoke(
+        app,
+        ["--session", "review", "render-sheet", "**/idler"],
+    )
+    explicit_result = runner.invoke(
+        app,
+        ["--session", "review", "render-sheet", "**/idler", "--timeout", "600"],
+    )
+    invalid_result = runner.invoke(
+        app,
+        ["--session", "review", "render-sheet", "**/idler", "--timeout", "nan"],
+    )
+
+    assert default_result.exit_code == 0, default_result.output
+    assert explicit_result.exit_code == 0, explicit_result.output
+    assert invalid_result.exit_code == 2
+    assert "Invalid value for --timeout" in invalid_result.output
+    assert "timeout_seconds" not in client.commands[-2].model_fields_set
+    assert "timeout_seconds" in client.commands[-1].model_fields_set
+
+
 def test_occlusion_command_expands_glob_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)

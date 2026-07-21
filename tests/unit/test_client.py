@@ -4,7 +4,7 @@ import json
 import os
 import socket
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -20,7 +20,13 @@ from meshprobe.protocol import (
     SessionUndoCommand,
     ViewOrbitCommand,
 )
-from meshprobe.workspace import OperationReceipt, SessionMetadata, atomic_json, utc_now
+from meshprobe.workspace import (
+    OperationReceipt,
+    SessionFiles,
+    SessionMetadata,
+    atomic_json,
+    utc_now,
+)
 
 
 def _daemon_metadata(pid: int) -> dict[str, Any]:
@@ -399,6 +405,21 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
             "render.image",
         ),
         (
+            RenderImageCommand(
+                request_id="comparison-timeout",
+                op="render.image",
+                output_path="evidence.png",
+                timeout_seconds=600,
+                comparison=RenderComparisonRequest(
+                    reference_image_path="reference.png",
+                    mode="side_by_side",
+                    output_path="comparison.png",
+                ),
+            ),
+            "timeout_seconds",
+            "render.image",
+        ),
+        (
             RenderContactSheetCommand(
                 request_id="sweep",
                 op="render.contact_sheet",
@@ -407,6 +428,18 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
                 orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
             ),
             "orbit_sweep",
+            "render.contact_sheet",
+        ),
+        (
+            RenderContactSheetCommand(
+                request_id="sweep-timeout",
+                op="render.contact_sheet",
+                output_path="sweep.png",
+                recipe="orbit_sweep",
+                orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+                timeout_seconds=600,
+            ),
+            "timeout_seconds",
             "render.contact_sheet",
         ),
     ],
@@ -649,6 +682,93 @@ def test_execute_keeps_established_default_values_on_the_wire(
     )
     assert captured["command"]["width"] == 2576
     assert captured["command"]["height"] == 2576
+
+
+def test_render_execution_extends_the_daemon_read_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_request(action: str, **arguments: object) -> dict[str, object]:
+        captured["action"] = action
+        captured.update(arguments)
+        return {"session": "review", "op": "render.image"}
+
+    monkeypatch.setattr(client, "request", fake_request)
+    client.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="/tmp/render.png",
+            timeout_seconds=600,
+        ),
+    )
+
+    assert captured["read_timeout"] == 2460
+
+    client.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render-short",
+            op="render.image",
+            output_path="/tmp/render-short.png",
+            timeout_seconds=1,
+        ),
+    )
+    assert cast(float, captured["read_timeout"]) == 1262
+
+
+def test_render_execution_budgets_time_for_checkpoint_replay(tmp_path: Path) -> None:
+    client = MeshProbeClient(tmp_path)
+    files = SessionFiles(client.root, "review")
+    files.create_directories()
+    files.checkpoint.write_text(
+        json.dumps(
+            {
+                "replay_prefix": [{"op": "view.set"}],
+                "accepted_commands": [
+                    {"op": "view.orbit"},
+                    {"op": "component.display"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+        timeout_seconds=60,
+    )
+
+    assert client._command_read_timeout("review", command) == 2640
+
+
+def test_contact_sheet_execution_budgets_every_panel_and_one_recovery(tmp_path: Path) -> None:
+    client = MeshProbeClient(tmp_path)
+    focused = RenderContactSheetCommand(
+        request_id="focused",
+        op="render.contact_sheet",
+        output_path="focused.png",
+        focus_component_ids=("cmp-a",),
+        timeout_seconds=10,
+    )
+    sweep = RenderContactSheetCommand(
+        request_id="sweep",
+        op="render.contact_sheet",
+        output_path="sweep.png",
+        recipe="orbit_sweep",
+        orbit_sweep=OrbitSweep(
+            azimuth_degrees=(0, 90),
+            elevation_degrees=(0, 45, 90),
+        ),
+        timeout_seconds=10,
+    )
+
+    assert client._command_read_timeout("review", focused) == 720
+    assert client._command_read_timeout("review", sweep) == 690
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(

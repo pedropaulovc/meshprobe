@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -27,11 +28,15 @@ def compose_side_by_side_comparison(
     render_path: Path,
     reference_path: Path,
     output_path: Path,
+    *,
+    check_deadline: Callable[[], object] | None = None,
 ) -> tuple[ImageArtifact, ReferenceImage, ImagePlacement, ImagePlacement]:
     """Compose two complete images in bounded cells without cropping or distortion."""
 
-    reference_sha256 = sha256_file(reference_path)
+    _check_deadline(check_deadline)
+    reference_sha256 = sha256_file(reference_path, check_deadline=check_deadline)
     with Image.open(render_path) as render_source, Image.open(reference_path) as reference_source:
+        _check_deadline(check_deadline)
         reference_media_type = Image.MIME.get(
             reference_source.format or "", "application/octet-stream"
         )
@@ -101,14 +106,16 @@ def compose_side_by_side_comparison(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = contact_sheet_staging_path(output_path)
         comparison.save(staging, format="PNG", optimize=True)
+        _check_deadline(check_deadline)
         staging.replace(output_path)
 
-    if sha256_file(reference_path) != reference_sha256:
+    _check_deadline(check_deadline)
+    if sha256_file(reference_path, check_deadline=check_deadline) != reference_sha256:
         raise ValueError("reference image changed during comparison composition")
     artifact = ImageArtifact(
         path=str(output_path),
         media_type="image/png",
-        sha256=sha256_file(output_path),
+        sha256=sha256_file(output_path, check_deadline=check_deadline),
         bytes=output_path.stat().st_size,
     )
     reference_manifest = ReferenceImage(
@@ -244,7 +251,10 @@ def compose_contact_sheet(
     output_path: Path,
     panel_width: int,
     panel_height: int,
+    *,
+    check_deadline: Callable[[], object] | None = None,
 ) -> ImageArtifact:
+    _check_deadline(check_deadline)
     if not 1 <= len(panels) <= 9:
         raise ValueError(
             "focused_3x3 requires exactly nine panels; generic sheets require one through nine"
@@ -261,6 +271,7 @@ def compose_contact_sheet(
     panel_lines: list[tuple[str, ...]] = []
     panel_caption_line_counts: list[int] = []
     for panel_index, (_path, caption, callouts) in enumerate(panels):
+        _check_deadline(check_deadline)
         numbered_caption = f"{panel_index + 1}. {caption}"
         # Cap the caption and the legend separately so a legitimate default-sized
         # caption (e.g. the focused sheet's "Occluders removed:" header plus one
@@ -297,6 +308,7 @@ def compose_contact_sheet(
         "#17191d",
     )
     for panel_index, (path, _caption, callouts) in enumerate(panels):
+        _check_deadline(check_deadline)
         column = panel_index % columns
         row = panel_index // columns
         left = column * panel_width
@@ -306,6 +318,7 @@ def compose_contact_sheet(
         callout_draw = ImageDraw.Draw(fitted)
         radius = max(8, min(panel_width, panel_height) // 35)
         for callout in callouts:
+            _check_deadline(check_deadline)
             x = round(callout.image_xy[0] * (panel_width - 1))
             y = round((1 - callout.image_xy[1]) * (panel_height - 1))
             callout_draw.ellipse(
@@ -338,10 +351,16 @@ def compose_contact_sheet(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     staging = contact_sheet_staging_path(output_path)
     sheet.save(staging, format="PNG", optimize=True)
+    _check_deadline(check_deadline)
     staging.replace(output_path)
     return ImageArtifact(
         path=str(output_path),
         media_type="image/png",
-        sha256=sha256_file(output_path),
+        sha256=sha256_file(output_path, check_deadline=check_deadline),
         bytes=output_path.stat().st_size,
     )
+
+
+def _check_deadline(check_deadline: Callable[[], object] | None) -> None:
+    if check_deadline is not None:
+        check_deadline()

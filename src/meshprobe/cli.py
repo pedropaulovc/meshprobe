@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from typer import _click
 
 from meshprobe.client import MeshProbeClient
+from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
 from meshprobe.evals.curated_build import build_curated_variants
 from meshprobe.evals.curated_tasks import build_curated_corpus
@@ -2209,6 +2210,10 @@ def render_image(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    timeout: Annotated[
+        float,
+        typer.Option("--timeout", min=0.001, max=86_400, help="Maximum render time in seconds."),
+    ] = DEFAULT_WORKER_TIMEOUT_SECONDS,
     reference_image: Annotated[
         Path | None, typer.Option("--reference-image", exists=True, dir_okay=False)
     ] = None,
@@ -2266,27 +2271,32 @@ def render_image(
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
         )
-    _execute(
-        ctx,
-        RenderImageCommand(
-            request_id=_request_id("render-image"),
-            op="render.image",
-            output_path=str(destination.expanduser().resolve()),
-            width=width,
-            height=height,
-            samples=samples,
-            engine=engine,
-            style=style,
-            shaded_edges=ShadedEdgesStyle(
-                line_color=edge_color,
-                line_width=edge_width,
-                crease_angle_degrees=crease_angle,
-                edge_types=selected_edge_types,
-            ),
-            graphics_policy=graphics_policy,
-            comparison=comparison_request,
+    timeout_source = ctx.get_parameter_source("timeout")
+    command_fields: dict[str, object] = {
+        "request_id": _request_id("render-image"),
+        "op": "render.image",
+        "output_path": str(destination.expanduser().resolve()),
+        "width": width,
+        "height": height,
+        "samples": samples,
+        "engine": engine,
+        "style": style,
+        "shaded_edges": ShadedEdgesStyle(
+            line_color=edge_color,
+            line_width=edge_width,
+            crease_angle_degrees=crease_angle,
+            edge_types=selected_edge_types,
         ),
-    )
+        "graphics_policy": graphics_policy,
+        "comparison": comparison_request,
+    }
+    if timeout_source is not None and timeout_source.name == "COMMANDLINE":
+        command_fields["timeout_seconds"] = timeout
+    try:
+        command = RenderImageCommand.model_validate(command_fields)
+    except ValidationError as error:
+        raise typer.BadParameter(str(error), param_hint="--timeout") from error
+    _execute(ctx, command)
 
 
 @app.command("render-sheet")
@@ -2306,6 +2316,15 @@ def render_sheet(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            min=0.001,
+            max=86_400,
+            help="Maximum render time per panel in seconds.",
+        ),
+    ] = DEFAULT_WORKER_TIMEOUT_SECONDS,
     azimuth: Annotated[
         str | None, typer.Option("--azimuth", help="Comma-separated absolute azimuth degrees.")
     ] = None,
@@ -2363,22 +2382,27 @@ def render_sheet(
             )
         except (ValueError, ValidationError) as error:
             raise typer.BadParameter(str(error)) from error
-    _execute(
-        ctx,
-        RenderContactSheetCommand(
-            request_id=_request_id("render-sheet"),
-            op="render.contact_sheet",
-            output_path=str(destination.expanduser().resolve()),
-            focus_component_ids=_component_ids(ctx, focus or []),
-            recipe=recipe,
-            orbit_sweep=sweep,
-            panel_width=panel_width,
-            panel_height=panel_height,
-            samples=samples,
-            engine=engine,
-            graphics_policy=graphics_policy,
-        ),
-    )
+    command_fields: dict[str, object] = {
+        "request_id": _request_id("render-sheet"),
+        "op": "render.contact_sheet",
+        "output_path": str(destination.expanduser().resolve()),
+        "focus_component_ids": _component_ids(ctx, focus or []),
+        "recipe": recipe,
+        "orbit_sweep": sweep,
+        "panel_width": panel_width,
+        "panel_height": panel_height,
+        "samples": samples,
+        "engine": engine,
+        "graphics_policy": graphics_policy,
+    }
+    timeout_source = ctx.get_parameter_source("timeout")
+    if timeout_source is not None and timeout_source.name == "COMMANDLINE":
+        command_fields["timeout_seconds"] = timeout
+    try:
+        command = RenderContactSheetCommand.model_validate(command_fields)
+    except ValidationError as error:
+        raise typer.BadParameter(str(error), param_hint="--timeout") from error
+    _execute(ctx, command)
 
 
 @app.command("occlusion")

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import cast
 from unittest.mock import create_autospec
 
 import pytest
 
-from meshprobe.controller import BlenderController
+from meshprobe.controller import (
+    BlenderController,
+    BlenderWorkerTimeout,
+    WorkerRecoveryPolicy,
+)
 from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -94,7 +99,34 @@ def test_evaluation_execution_routes_private_render_outputs(tmp_path: Path) -> N
     controller.render_image.assert_called_once_with(  # type: ignore[attr-defined]
         command,
         evaluator_output_dir=str(tmp_path / "private"),
+        recovery_policy=WorkerRecoveryPolicy.CLOSE,
+        request_deadline_monotonic=None,
     )
+
+
+def test_evaluation_image_wall_timeout_becomes_an_absolute_controller_deadline(
+    tmp_path: Path,
+) -> None:
+    controller = controller_mock()
+    controller.execute.return_value = {}  # type: ignore[attr-defined]
+    controller.render_image.return_value = {"state_sha256": "a" * 64}  # type: ignore[attr-defined]
+    service = MeshProbeService(controller=controller)
+    service.execute(SceneOpenCommand(request_id="open", op="scene.open", source_path="fixture.glb"))
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(tmp_path / "render.png"),
+    )
+    started = time.monotonic()
+
+    service.execute_for_evaluation(
+        command,
+        evaluator_output_dir=str(tmp_path / "private"),
+        wall_timeout_seconds=5,
+    )
+
+    deadline = controller.render_image.call_args.kwargs["request_deadline_monotonic"]  # type: ignore[attr-defined]
+    assert started < deadline <= time.monotonic() + 5
 
 
 def test_evaluation_execution_routes_private_contact_sheet_outputs(tmp_path: Path) -> None:
@@ -121,4 +153,29 @@ def test_evaluation_execution_routes_private_contact_sheet_outputs(tmp_path: Pat
     controller.render_contact_sheet.assert_called_once_with(  # type: ignore[attr-defined]
         command,
         evaluator_output_dir=str(tmp_path / "private"),
+        recovery_policy=WorkerRecoveryPolicy.CLOSE,
+        request_deadline_monotonic=None,
     )
+
+
+def test_evaluation_render_timeout_closes_the_service_until_scene_is_reopened(
+    tmp_path: Path,
+) -> None:
+    controller = controller_mock()
+    controller.execute.return_value = {}  # type: ignore[attr-defined]
+    controller.render_image.side_effect = BlenderWorkerTimeout("timed out")  # type: ignore[attr-defined]
+    service = MeshProbeService(controller=controller)
+    service.execute(SceneOpenCommand(request_id="open", op="scene.open", source_path="fixture.glb"))
+
+    with pytest.raises(BlenderWorkerTimeout, match="timed out"):
+        service.execute_for_evaluation(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "render.png"),
+            ),
+            evaluator_output_dir=str(tmp_path / "private"),
+        )
+
+    with pytest.raises(ValueError, match=r"scene\.open must be the first"):
+        service.execute(SessionSnapshotCommand(request_id="snapshot", op="session.snapshot"))

@@ -532,16 +532,28 @@ class SessionManager:
             previous_worker_pid = (
                 previous_service.worker_pid if previous_service is not None else None
             )
+            service: SessionService | None = None
+            command_worker_pid: int | None = None
+            service_acquired = False
             try:
                 service = self._service(name, files)
-                response = service.execute(command)
                 command_worker_pid = service.worker_pid
+                service_acquired = True
+                response = service.execute(command)
+                response_worker_pid = service.worker_pid
                 snapshot = self._snapshot(service)
             except Exception as error:
+                if (
+                    service_acquired
+                    and service is not None
+                    and service.worker_pid != command_worker_pid
+                ):
+                    self._settle_recovered_rejection(name, files, service, command)
                 self._event(files, command, "rejected", error=str(error))
                 raise
+            assert service is not None
             renderer_continuity = RendererContinuity.RECREATED_BEFORE_SNAPSHOT
-            if command_worker_pid != service.worker_pid:
+            if response_worker_pid != service.worker_pid:
                 renderer_continuity = RendererContinuity.RECREATED_DURING_SNAPSHOT
             elif service is previous_service and service.worker_pid == previous_worker_pid:
                 renderer_continuity = RendererContinuity.PRESERVED
@@ -591,6 +603,39 @@ class SessionManager:
                 components=components,
                 match_count=match_count,
             )
+
+    def _settle_recovered_rejection(
+        self,
+        name: str,
+        files: SessionFiles,
+        service: SessionService,
+        command: Command,
+    ) -> None:
+        """Persist a replacement worker's clean style without masking the rejection."""
+
+        if command.effect is not CommandEffect.READ_ONLY:
+            self._discard_recovered_service(name, files, service)
+            return
+        try:
+            snapshot = self._snapshot(service)
+            self._write_state(files, snapshot, render_style=RenderStyleState())
+            self._update_metadata(files, status="active", worker_pid=service.worker_pid)
+            return
+        except Exception:
+            self._discard_recovered_service(name, files, service)
+            return
+
+    def _discard_recovered_service(
+        self,
+        name: str,
+        files: SessionFiles,
+        service: SessionService,
+    ) -> None:
+        service.kill()
+        if self._services.get(name) is service:
+            self._services.pop(name)
+        with suppress(Exception):
+            self._update_metadata(files, status="closed", worker_pid=None)
 
     def _undo(
         self,

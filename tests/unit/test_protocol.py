@@ -85,6 +85,11 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     )
 
     assert "comparison" not in command_payload(command)
+    assert "timeout_seconds" not in command_payload(command)
+    assert (
+        command_payload(command.model_copy(update={"timeout_seconds": 600}))["timeout_seconds"]
+        == 600
+    )
     compared = command.model_copy(
         update={
             "comparison": RenderComparisonRequest(
@@ -101,6 +106,17 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     }
 
 
+@pytest.mark.parametrize("timeout", (float("inf"), float("-inf"), float("nan")))
+def test_render_timeout_must_be_finite(timeout: float) -> None:
+    with pytest.raises(ValueError):
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="evidence.png",
+            timeout_seconds=timeout,
+        )
+
+
 def test_contact_sheet_payload_omits_absent_orbit_sweep_for_older_daemons() -> None:
     command = RenderContactSheetCommand(
         request_id="sheet",
@@ -110,6 +126,23 @@ def test_contact_sheet_payload_omits_absent_orbit_sweep_for_older_daemons() -> N
     )
 
     assert "orbit_sweep" not in command_payload(command)
+    assert "timeout_seconds" not in command_payload(command)
+    assert (
+        command_payload(command.model_copy(update={"timeout_seconds": 600}))["timeout_seconds"]
+        == 600
+    )
+
+
+@pytest.mark.parametrize("timeout", (float("inf"), float("-inf"), float("nan")))
+def test_contact_sheet_timeout_must_be_finite(timeout: float) -> None:
+    with pytest.raises(ValueError):
+        RenderContactSheetCommand(
+            request_id="sheet",
+            op="render.contact_sheet",
+            output_path="evidence.png",
+            focus_component_ids=("cmp-a",),
+            timeout_seconds=timeout,
+        )
 
 
 def test_payload_preserves_legacy_nested_none_fields() -> None:
