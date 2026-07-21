@@ -6,7 +6,13 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
-from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
+from meshprobe.controller import (
+    DEFAULT_WORKER_TIMEOUT_SECONDS,
+    BlenderController,
+    BlenderWorkerCrashed,
+    BlenderWorkerTimeout,
+    WorkerRecoveryPolicy,
+)
 from meshprobe.models import GraphicsPlatform
 from meshprobe.protocol import (
     Command,
@@ -60,21 +66,27 @@ class MeshProbeService:
 
         self._ensure_started(command)
         if isinstance(command, RenderImageCommand):
-            return self._response(
-                command,
-                self._controller.render_image(
+            try:
+                image_result = self._controller.render_image(
                     command,
                     evaluator_output_dir=evaluator_output_dir,
-                ),
-            )
+                    recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._started = False
+                raise
+            return self._response(command, image_result)
         if isinstance(command, RenderContactSheetCommand):
-            return self._response(
-                command,
-                self._controller.render_contact_sheet(
+            try:
+                sheet_result = self._controller.render_contact_sheet(
                     command,
                     evaluator_output_dir=evaluator_output_dir,
-                ),
-            )
+                    recovery_policy=WorkerRecoveryPolicy.CLOSE,
+                )
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._started = False
+                raise
+            return self._response(command, sheet_result)
         return self._response(command, self._controller.execute(command))
 
     def _ensure_started(self, command: Command) -> None:

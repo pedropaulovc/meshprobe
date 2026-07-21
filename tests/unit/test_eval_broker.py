@@ -199,10 +199,34 @@ def test_broker_caps_render_timeout_to_the_remaining_episode_wall_budget(
     assert rendered.ok
     translated = service.commands[-1]
     assert isinstance(translated, RenderImageCommand)
-    assert 0 < translated.timeout_seconds <= 30
+    assert 0 < translated.timeout_seconds <= 23
     arguments = active.events[-1].arguments
     assert isinstance(arguments, dict)
     assert arguments["timeout_seconds"] == 86_400
+
+
+def test_broker_rejects_render_when_wall_budget_cannot_cover_cleanup(tmp_path: Path) -> None:
+    service = FakeEvaluationService()
+    active = broker(
+        tmp_path,
+        service=service,
+        budgets=EpisodeBudgets(wall_seconds=1),
+    )
+
+    rendered = active.execute(
+        RenderImageCommand(
+            request_id="no-cleanup-budget",
+            op="render.image",
+            output_path="bounded.png",
+            width=64,
+            height=64,
+            timeout_seconds=86_400,
+        )
+    )
+
+    assert rendered.error is not None
+    assert rendered.error.code == "budget.wall_seconds"
+    assert service.commands == []
 
 
 def test_broker_translates_comparison_paths_and_charges_the_second_artifact(

@@ -249,6 +249,15 @@ class RenderContactSheetCommand(CommandModel):
     samples: Annotated[int, Field(ge=1, le=4_096)] = 32
     engine: RenderEngine = RenderEngine.EEVEE
     graphics_policy: GraphicsPolicy = GraphicsPolicy.SOFTWARE_ALLOWED
+    timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0,
+            le=86_400,
+            allow_inf_nan=False,
+            description="Maximum time to wait for each panel render before recovery.",
+        ),
+    ] = 180
     visibility_threshold: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 0.65
     occluder_budget: Annotated[int, Field(ge=0, le=32)] = 3
 
@@ -328,9 +337,8 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
         payload.pop("isolation_operation")
     if isinstance(command, RenderImageCommand) and command.comparison is None:
         payload.pop("comparison")
-    if (
-        isinstance(command, RenderImageCommand)
-        and "timeout_seconds" not in command.model_fields_set
+    if isinstance(command, (RenderImageCommand, RenderContactSheetCommand)) and (
+        "timeout_seconds" not in command.model_fields_set
     ):
         payload.pop("timeout_seconds")
     if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is None:

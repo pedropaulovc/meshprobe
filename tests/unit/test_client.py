@@ -430,6 +430,18 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
             "orbit_sweep",
             "render.contact_sheet",
         ),
+        (
+            RenderContactSheetCommand(
+                request_id="sweep-timeout",
+                op="render.contact_sheet",
+                output_path="sweep.png",
+                recipe="orbit_sweep",
+                orbit_sweep=OrbitSweep(azimuth_degrees=(0,), elevation_degrees=(0,)),
+                timeout_seconds=600,
+            ),
+            "timeout_seconds",
+            "render.contact_sheet",
+        ),
     ],
 )
 def test_execute_restarts_old_daemon_for_new_render_fields(
@@ -732,6 +744,31 @@ def test_render_execution_budgets_time_for_checkpoint_replay(tmp_path: Path) -> 
     )
 
     assert client._command_read_timeout("review", command) == 2640
+
+
+def test_contact_sheet_execution_budgets_every_panel_and_one_recovery(tmp_path: Path) -> None:
+    client = MeshProbeClient(tmp_path)
+    focused = RenderContactSheetCommand(
+        request_id="focused",
+        op="render.contact_sheet",
+        output_path="focused.png",
+        focus_component_ids=("cmp-a",),
+        timeout_seconds=10,
+    )
+    sweep = RenderContactSheetCommand(
+        request_id="sweep",
+        op="render.contact_sheet",
+        output_path="sweep.png",
+        recipe="orbit_sweep",
+        orbit_sweep=OrbitSweep(
+            azimuth_degrees=(0, 90),
+            elevation_degrees=(0, 45, 90),
+        ),
+        timeout_seconds=10,
+    )
+
+    assert client._command_read_timeout("review", focused) == 720
+    assert client._command_read_timeout("review", sweep) == 690
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(

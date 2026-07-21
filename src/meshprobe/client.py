@@ -90,17 +90,31 @@ class MeshProbeClient:
         return OperationReceipt.model_validate(payload)
 
     def _command_read_timeout(self, session: str, command: Command) -> float:
+        if not isinstance(command, (RenderImageCommand, RenderContactSheetCommand)):
+            return OPERATION_READ_TIMEOUT_SECONDS
+        # Recovery starts a worker, reopens/normalizes the scene, then replays each
+        # accepted state command. Keep one extra fixed window for shutdown and setup.
+        recovery_operations = RECOVERY_FIXED_OPERATION_WINDOWS + self._replay_command_count(session)
         if isinstance(command, RenderImageCommand):
-            # Recovery starts a worker, reopens/normalizes the scene, then replays each
-            # accepted state command. Keep one extra fixed window for shutdown and setup.
-            recovery_operations = RECOVERY_FIXED_OPERATION_WINDOWS + self._replay_command_count(
-                session
-            )
-            return (
-                2 * command.timeout_seconds
-                + MAX_RENDER_RECOVERIES * recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
-            )
-        return OPERATION_READ_TIMEOUT_SECONDS
+            render_attempts = 2
+            recoveries = MAX_RENDER_RECOVERIES
+        else:
+            render_attempts = self._contact_sheet_panel_count(command)
+            recoveries = 1
+        return (
+            render_attempts * command.timeout_seconds
+            + recoveries * recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
+        )
+
+    @staticmethod
+    def _contact_sheet_panel_count(command: RenderContactSheetCommand) -> int:
+        if command.recipe != "orbit_sweep" or command.orbit_sweep is None:
+            return 9
+        return (
+            len(command.orbit_sweep.azimuth_degrees)
+            * len(command.orbit_sweep.elevation_degrees)
+            * len(command.orbit_sweep.roll_degrees)
+        )
 
     def _replay_command_count(self, session: str) -> int:
         checkpoint = SessionFiles(self.root, session).checkpoint
@@ -134,8 +148,10 @@ class MeshProbeClient:
             if command.comparison is not None and "comparison" in message:
                 return True
             return "timeout_seconds" in command.model_fields_set and "timeout_seconds" in message
-        if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is not None:
-            return "orbit_sweep" in message
+        if isinstance(command, RenderContactSheetCommand):
+            if command.orbit_sweep is not None and "orbit_sweep" in message:
+                return True
+            return "timeout_seconds" in command.model_fields_set and "timeout_seconds" in message
         return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set
 
     def resolve_component(self, session: str, value: str) -> str:

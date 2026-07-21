@@ -2316,6 +2316,15 @@ def render_sheet(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            min=0.001,
+            max=86_400,
+            help="Maximum render time per panel in seconds.",
+        ),
+    ] = DEFAULT_WORKER_TIMEOUT_SECONDS,
     azimuth: Annotated[
         str | None, typer.Option("--azimuth", help="Comma-separated absolute azimuth degrees.")
     ] = None,
@@ -2373,22 +2382,27 @@ def render_sheet(
             )
         except (ValueError, ValidationError) as error:
             raise typer.BadParameter(str(error)) from error
-    _execute(
-        ctx,
-        RenderContactSheetCommand(
-            request_id=_request_id("render-sheet"),
-            op="render.contact_sheet",
-            output_path=str(destination.expanduser().resolve()),
-            focus_component_ids=_component_ids(ctx, focus or []),
-            recipe=recipe,
-            orbit_sweep=sweep,
-            panel_width=panel_width,
-            panel_height=panel_height,
-            samples=samples,
-            engine=engine,
-            graphics_policy=graphics_policy,
-        ),
-    )
+    command_fields: dict[str, object] = {
+        "request_id": _request_id("render-sheet"),
+        "op": "render.contact_sheet",
+        "output_path": str(destination.expanduser().resolve()),
+        "focus_component_ids": _component_ids(ctx, focus or []),
+        "recipe": recipe,
+        "orbit_sweep": sweep,
+        "panel_width": panel_width,
+        "panel_height": panel_height,
+        "samples": samples,
+        "engine": engine,
+        "graphics_policy": graphics_policy,
+    }
+    timeout_source = ctx.get_parameter_source("timeout")
+    if timeout_source is not None and timeout_source.name == "COMMANDLINE":
+        command_fields["timeout_seconds"] = timeout
+    try:
+        command = RenderContactSheetCommand.model_validate(command_fields)
+    except ValidationError as error:
+        raise typer.BadParameter(str(error), param_hint="--timeout") from error
+    _execute(ctx, command)
 
 
 @app.command("occlusion")

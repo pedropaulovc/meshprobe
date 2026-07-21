@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
@@ -84,6 +85,7 @@ __all__ = [
     "BlenderWorkerCrashed",
     "BlenderWorkerError",
     "BlenderWorkerTimeout",
+    "WorkerRecoveryPolicy",
     "sha256_file",
 ]
 
@@ -110,6 +112,13 @@ class BlenderWorkerCrashed(BlenderWorkerError):
 
 class BlenderWorkerTimeout(BlenderWorkerError):
     """The Blender process exceeded an operation deadline."""
+
+
+class WorkerRecoveryPolicy(StrEnum):
+    """How a failed render leaves its worker for the caller."""
+
+    RESTORE = "restore"
+    CLOSE = "close"
 
 
 class BlenderController:
@@ -743,6 +752,7 @@ class BlenderController:
         command: RenderImageCommand,
         *,
         evaluator_output_dir: str | Path | None = None,
+        recovery_policy: WorkerRecoveryPolicy = WorkerRecoveryPolicy.RESTORE,
     ) -> RenderManifest:
         if self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
@@ -791,14 +801,17 @@ class BlenderController:
         try:
             result = self._request_with_timeout(command.op, render_timeout, **arguments)
         except BlenderWorkerTimeout:
-            self._recover_session()
+            self._settle_render_failure(recovery_policy)
             raise
         except BlenderWorkerCrashed:
+            if recovery_policy is WorkerRecoveryPolicy.CLOSE:
+                self.close()
+                raise
             self._recover_session()
             try:
                 result = self._request_with_timeout(command.op, render_timeout, **arguments)
-            except BlenderWorkerTimeout:
-                self._recover_session()
+            except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+                self._settle_render_failure(recovery_policy)
                 raise
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
@@ -840,6 +853,12 @@ class BlenderController:
         )
         return manifest
 
+    def _settle_render_failure(self, recovery_policy: WorkerRecoveryPolicy) -> None:
+        if recovery_policy is WorkerRecoveryPolicy.CLOSE:
+            self.close()
+            return
+        self._recover_session()
+
     @staticmethod
     def _verify_render_artifacts(manifest: RenderManifest) -> None:
         artifacts = [manifest.color]
@@ -862,6 +881,22 @@ class BlenderController:
                 raise BlenderWorkerError(f"render artifact digest mismatch: {path}")
 
     def render_contact_sheet(
+        self,
+        command: RenderContactSheetCommand,
+        *,
+        evaluator_output_dir: str | Path | None = None,
+        recovery_policy: WorkerRecoveryPolicy = WorkerRecoveryPolicy.RESTORE,
+    ) -> ContactSheetManifest:
+        try:
+            return self._render_contact_sheet(
+                command,
+                evaluator_output_dir=evaluator_output_dir,
+            )
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            self._settle_render_failure(recovery_policy)
+            raise
+
+    def _render_contact_sheet(
         self,
         command: RenderContactSheetCommand,
         *,
@@ -920,6 +955,7 @@ class BlenderController:
             )
 
         accepted_commands = list(self._accepted_commands)
+        restore_state = True
         mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
         panels: list[ContactSheetPanel] = []
         removed_occluders: tuple[str, ...] = ()
@@ -1038,10 +1074,14 @@ class BlenderController:
                         evaluator_root,
                     )
                 )
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            restore_state = False
+            raise
         finally:
-            self.request("session.reset")
-            for operation, arguments in accepted_commands:
-                self.request(operation, **arguments)
+            if restore_state:
+                self.request("session.reset")
+                for operation, arguments in accepted_commands:
+                    self.request(operation, **arguments)
 
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
@@ -1078,6 +1118,7 @@ class BlenderController:
         target, span = self._bounds_center_span(bounds)
         aspect_ratio = command.panel_width / command.panel_height
         accepted_commands = list(self._accepted_commands)
+        restore_state = True
         panels: list[ContactSheetPanel] = []
         try:
             for index, (azimuth, elevation, roll) in enumerate(
@@ -1117,10 +1158,14 @@ class BlenderController:
                         evaluator_root,
                     )
                 )
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            restore_state = False
+            raise
         finally:
-            self.request("session.reset")
-            for operation, arguments in accepted_commands:
-                self.request(operation, **arguments)
+            if restore_state:
+                self.request("session.reset")
+                for operation, arguments in accepted_commands:
+                    self.request(operation, **arguments)
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during orbit sweep render")
@@ -1151,6 +1196,7 @@ class BlenderController:
         if self._manifest is None or self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         accepted_commands = list(self._accepted_commands)
+        restore_state = True
         mark_colors = self._focus_mark_colors(accepted_commands, focus_ids)
         panels: list[ContactSheetPanel] = []
         aspect_ratio = command.panel_width / command.panel_height
@@ -1195,10 +1241,14 @@ class BlenderController:
                         experiment=spec.experiment,
                     )
                 )
+        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            restore_state = False
+            raise
         finally:
-            self.request("session.reset")
-            for operation, arguments in accepted_commands:
-                self.request(operation, **arguments)
+            if restore_state:
+                self.request("session.reset")
+                for operation, arguments in accepted_commands:
+                    self.request(operation, **arguments)
 
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
@@ -1500,8 +1550,14 @@ class BlenderController:
         evaluator_dir = None
         if evaluator_root is not None:
             evaluator_dir = str(evaluator_root / f"panel-{index}")
-        result = self.request(
+        panel_timeout = (
+            command.timeout_seconds
+            if "timeout_seconds" in command.model_fields_set
+            else self.timeout_seconds
+        )
+        result = self._request_with_timeout(
             "render.image",
+            panel_timeout,
             output_path=str(output_path),
             width=command.panel_width,
             height=command.panel_height,

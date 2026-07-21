@@ -29,6 +29,8 @@ from meshprobe.protocol import (
 )
 from meshprobe.service import CommandResponse
 
+EVALUATION_RENDER_CLEANUP_SECONDS = 7.0
+
 
 class EvaluationService(Protocol):
     def execute_for_evaluation(
@@ -236,6 +238,15 @@ class EvaluationBroker:
             raise _RejectedCommand("budget.wall_seconds", "episode wall-time budget exhausted")
         return remaining
 
+    def _bounded_render_timeout(self, requested: float) -> float:
+        available = self._remaining_wall_seconds() - EVALUATION_RENDER_CLEANUP_SECONDS
+        if available <= 0:
+            raise _RejectedCommand(
+                "budget.wall_seconds",
+                "episode wall-time budget is too low to start and clean up a render",
+            )
+        return min(requested, available)
+
     def _translate_and_reserve(
         self,
         command: Command,
@@ -299,10 +310,7 @@ class EvaluationBroker:
                 update={
                     "output_path": str(staging_output),
                     "comparison": comparison,
-                    "timeout_seconds": min(
-                        command.timeout_seconds,
-                        self._remaining_wall_seconds(),
-                    ),
+                    "timeout_seconds": self._bounded_render_timeout(command.timeout_seconds),
                 }
             )
             minimum_reservation = _render_output_reservation(pixels)
@@ -326,7 +334,12 @@ class EvaluationBroker:
                 sequence,
                 command.request_id,
             )
-            translated_sheet = command.model_copy(update={"output_path": str(staging_output)})
+            translated_sheet = command.model_copy(
+                update={
+                    "output_path": str(staging_output),
+                    "timeout_seconds": self._bounded_render_timeout(command.timeout_seconds),
+                }
+            )
             # Caption rows wrap renderer-owned component names and can grow beyond
             # dimensions derivable from the public command. Reserve the remaining
             # episode allowance; sandbox limits and post-render accounting still
