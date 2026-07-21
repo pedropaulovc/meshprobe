@@ -69,6 +69,7 @@ class MeshProbeClient:
                 session=session,
                 command=wire,
                 blender=self.blender,
+                read_timeout=self._command_read_timeout(command),
             )
         except ValueError as error:
             if not self._old_daemon_rejected_command(command, error):
@@ -82,8 +83,15 @@ class MeshProbeClient:
                 session=session,
                 command=wire,
                 blender=self.blender,
+                read_timeout=self._command_read_timeout(command),
             )
         return OperationReceipt.model_validate(payload)
+
+    @staticmethod
+    def _command_read_timeout(command: Command) -> float:
+        if isinstance(command, RenderImageCommand):
+            return command.timeout_seconds + 30.0
+        return OPERATION_READ_TIMEOUT_SECONDS
 
     @staticmethod
     def _old_daemon_rejected_command(command: Command, error: ValueError) -> bool:

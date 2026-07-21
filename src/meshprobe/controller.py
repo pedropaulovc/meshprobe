@@ -273,6 +273,16 @@ class BlenderController:
             raise BlenderWorkerError("worker returned a non-object result")
         return result
 
+    def _request_with_timeout(
+        self, action: str, timeout_seconds: float, **arguments: object
+    ) -> dict[str, Any]:
+        previous_timeout = self.timeout_seconds
+        self.timeout_seconds = timeout_seconds
+        try:
+            return self.request(action, **arguments)
+        finally:
+            self.timeout_seconds = previous_timeout
+
     def open_scene(
         self, source_path: str | Path, *, aspect_ratio: float = 1.0, unit_scale: float = 1.0
     ) -> SceneManifest:
@@ -765,17 +775,22 @@ class BlenderController:
             output_paths.update({comparison_output, contact_sheet_staging_path(comparison_output)})
         if source_paths.intersection(output_paths):
             raise BlenderWorkerError("render output must not overwrite a source asset")
-        arguments = command.model_dump(mode="json", exclude={"request_id", "op", "comparison"})
+        arguments = command.model_dump(
+            mode="json", exclude={"request_id", "op", "comparison", "timeout_seconds"}
+        )
         arguments["output_path"] = str(output)
         if evaluator_output_dir is not None:
             arguments["evaluator_output_dir"] = str(
                 Path(evaluator_output_dir).expanduser().resolve()
             )
         try:
-            result = self.request(command.op, **arguments)
-        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+            result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
+        except BlenderWorkerTimeout:
             self._recover_session()
-            result = self.request(command.op, **arguments)
+            raise
+        except BlenderWorkerCrashed:
+            self._recover_session()
+            result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during render")

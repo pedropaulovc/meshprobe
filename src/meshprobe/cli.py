@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from typer import _click
 
 from meshprobe.client import MeshProbeClient
+from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
 from meshprobe.evals.curated import ingest_curated_sources, load_catalog
 from meshprobe.evals.curated_build import build_curated_variants
 from meshprobe.evals.curated_tasks import build_curated_corpus
@@ -2209,6 +2210,10 @@ def render_image(
     graphics_policy: Annotated[
         GraphicsPolicy, typer.Option("--graphics-policy")
     ] = GraphicsPolicy.SOFTWARE_ALLOWED,
+    timeout: Annotated[
+        float,
+        typer.Option("--timeout", min=0.001, max=86_400, help="Maximum render time in seconds."),
+    ] = DEFAULT_WORKER_TIMEOUT_SECONDS,
     reference_image: Annotated[
         Path | None, typer.Option("--reference-image", exists=True, dir_okay=False)
     ] = None,
@@ -2284,6 +2289,7 @@ def render_image(
                 edge_types=selected_edge_types,
             ),
             graphics_policy=graphics_policy,
+            timeout_seconds=timeout,
             comparison=comparison_request,
         ),
     )
