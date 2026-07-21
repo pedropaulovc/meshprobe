@@ -485,6 +485,22 @@ def test_render_image_only_marks_an_explicit_timeout_for_the_daemon(
     assert "timeout_seconds" in client.commands[-1].model_fields_set
 
 
+def test_render_image_rejects_a_non_finite_timeout_before_daemon_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["render-image", "--width", "512", "--height", "512", "--timeout", "nan"],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value for --timeout" in result.output
+    assert client.commands == []
+
+
 def test_occlusion_command_expands_glob_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)

@@ -2271,27 +2271,31 @@ def render_image(
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
         )
-    command = RenderImageCommand(
-        request_id=_request_id("render-image"),
-        op="render.image",
-        output_path=str(destination.expanduser().resolve()),
-        width=width,
-        height=height,
-        samples=samples,
-        engine=engine,
-        style=style,
-        shaded_edges=ShadedEdgesStyle(
+    timeout_source = ctx.get_parameter_source("timeout")
+    command_fields: dict[str, object] = {
+        "request_id": _request_id("render-image"),
+        "op": "render.image",
+        "output_path": str(destination.expanduser().resolve()),
+        "width": width,
+        "height": height,
+        "samples": samples,
+        "engine": engine,
+        "style": style,
+        "shaded_edges": ShadedEdgesStyle(
             line_color=edge_color,
             line_width=edge_width,
             crease_angle_degrees=crease_angle,
             edge_types=selected_edge_types,
         ),
-        graphics_policy=graphics_policy,
-        comparison=comparison_request,
-    )
-    timeout_source = ctx.get_parameter_source("timeout")
+        "graphics_policy": graphics_policy,
+        "comparison": comparison_request,
+    }
     if timeout_source is not None and timeout_source.name == "COMMANDLINE":
-        command = command.model_copy(update={"timeout_seconds": timeout})
+        command_fields["timeout_seconds"] = timeout
+    try:
+        command = RenderImageCommand.model_validate(command_fields)
+    except ValidationError as error:
+        raise typer.BadParameter(str(error), param_hint="--timeout") from error
     _execute(ctx, command)
 
 

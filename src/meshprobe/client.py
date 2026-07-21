@@ -95,7 +95,9 @@ class MeshProbeClient:
             recovery_operations = RECOVERY_FIXED_OPERATION_WINDOWS + self._replay_command_count(
                 session
             )
-            return command.timeout_seconds + recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
+            return (
+                2 * command.timeout_seconds + recovery_operations * OPERATION_READ_TIMEOUT_SECONDS
+            )
         return OPERATION_READ_TIMEOUT_SECONDS
 
     def _replay_command_count(self, session: str) -> int:
