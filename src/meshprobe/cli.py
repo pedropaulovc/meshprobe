@@ -2173,12 +2173,8 @@ def mark_components(
 def render_image(
     ctx: typer.Context,
     output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
-    width: Annotated[int, typer.Option("--width", min=64, max=16_384)] = (
-        DEFAULT_RENDER_MAX_DIMENSION
-    ),
-    height: Annotated[int, typer.Option("--height", min=64, max=16_384)] = (
-        DEFAULT_RENDER_MAX_DIMENSION
-    ),
+    width: Annotated[int | None, typer.Option("--width", min=64, max=16_384)] = None,
+    height: Annotated[int | None, typer.Option("--height", min=64, max=16_384)] = None,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     style: Annotated[
@@ -2271,6 +2267,18 @@ def render_image(
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
         )
+    client = _client(ctx)
+    if width is None and height is None:
+        try:
+            width, height = _aspect_preserving_render_dimensions(
+                client.framed_aspect_ratio(options.session)
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            typer.echo(f"Render failed: {error}", err=True)
+            raise typer.Exit(1) from error
+    else:
+        width = width or DEFAULT_RENDER_MAX_DIMENSION
+        height = height or DEFAULT_RENDER_MAX_DIMENSION
     timeout_source = ctx.get_parameter_source("timeout")
     command_fields: dict[str, object] = {
         "request_id": _request_id("render-image"),
@@ -2296,7 +2304,12 @@ def render_image(
         command = RenderImageCommand.model_validate(command_fields)
     except ValidationError as error:
         raise typer.BadParameter(str(error), param_hint="--timeout") from error
-    _execute(ctx, command)
+    try:
+        receipt = client.execute(options.session, command)
+    except (OSError, RuntimeError, ValueError) as error:
+        typer.echo(f"Render failed: {error}", err=True)
+        raise typer.Exit(1) from error
+    _emit_receipt(ctx, client, receipt)
 
 
 @app.command("render-sheet")

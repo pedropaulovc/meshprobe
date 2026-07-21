@@ -528,6 +528,51 @@ def test_render_sheet_only_marks_an_explicit_finite_timeout_for_the_daemon(
     assert "timeout_seconds" in client.commands[-1].model_fields_set
 
 
+def test_render_image_defaults_to_the_session_framing_aspect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    client.framed_aspect_ratio_value = 1.9
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "render-image"])
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, RenderImageCommand)
+    assert (command.width, command.height) == (2576, 1356)
+
+
+def test_render_image_runtime_failures_are_plain_and_non_usage_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+
+    def fail(_session: str, _command: Command) -> OperationReceipt:
+        raise RuntimeError("Blender worker exited with code 3221226505")
+
+    monkeypatch.setattr(client, "execute", fail)
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "render-image",
+            "--width",
+            "512",
+            "--height",
+            "512",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Render failed: Blender worker exited with code 3221226505" in result.stderr
+    assert "Usage:" not in result.output
+    assert "Invalid value:" not in result.output
+
+
 def test_occlusion_command_expands_glob_patterns(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
     monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
@@ -853,7 +898,6 @@ class FakeClient:
         return {"result": {"op": receipt.op}}
 
     def framed_aspect_ratio(self, session: str) -> float:
-        assert session == "review"
         return self.framed_aspect_ratio_value
 
     def close(self, session: str) -> OperationReceipt:
