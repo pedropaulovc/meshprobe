@@ -1249,6 +1249,44 @@ def test_render_timeout_recovers_without_reissuing_the_render(
     assert recovered
 
 
+def test_render_recovers_when_a_crash_retry_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    failures = iter(
+        (
+            BlenderWorkerCrashed("worker crashed"),
+            BlenderWorkerTimeout("Blender worker did not respond within 1 seconds"),
+        )
+    )
+    recoveries = 0
+
+    def fail(_operation: str, **_arguments: object) -> dict[str, object]:
+        raise next(failures)
+
+    def recover() -> None:
+        nonlocal recoveries
+        recoveries += 1
+
+    monkeypatch.setattr(controller, "request", fail)
+    monkeypatch.setattr(controller, "_recover_session", recover)
+
+    with pytest.raises(BlenderWorkerTimeout, match="within 1 seconds"):
+        controller.render_image(
+            RenderImageCommand(
+                request_id="render",
+                op="render.image",
+                output_path=str(tmp_path / "evidence.png"),
+                timeout_seconds=1,
+            )
+        )
+
+    assert recoveries == 2
+
+
 def test_render_rejects_source_asset_as_output(tmp_path: Path) -> None:
     source = tmp_path / "fixture.glb"
     source.write_bytes(b"model")

@@ -85,6 +85,11 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     )
 
     assert "comparison" not in command_payload(command)
+    assert "timeout_seconds" not in command_payload(command)
+    assert (
+        command_payload(command.model_copy(update={"timeout_seconds": 600}))["timeout_seconds"]
+        == 600
+    )
     compared = command.model_copy(
         update={
             "comparison": RenderComparisonRequest(

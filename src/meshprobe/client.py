@@ -90,7 +90,7 @@ class MeshProbeClient:
     @staticmethod
     def _command_read_timeout(command: Command) -> float:
         if isinstance(command, RenderImageCommand):
-            return command.timeout_seconds + 30.0
+            return max(OPERATION_READ_TIMEOUT_SECONDS, command.timeout_seconds + 30.0)
         return OPERATION_READ_TIMEOUT_SECONDS
 
     @staticmethod
@@ -109,6 +109,11 @@ class MeshProbeClient:
             return "isolation_operation" in message
         if isinstance(command, RenderImageCommand) and command.comparison is not None:
             return "comparison" in message
+        if (
+            isinstance(command, RenderImageCommand)
+            and "timeout_seconds" in command.model_fields_set
+        ):
+            return "timeout_seconds" in message
         if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is not None:
             return "orbit_sweep" in message
         return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set

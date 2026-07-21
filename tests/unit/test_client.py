@@ -4,7 +4,7 @@ import json
 import os
 import socket
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -674,6 +674,17 @@ def test_render_execution_extends_the_daemon_read_timeout(
     )
 
     assert captured["read_timeout"] == 630
+
+    client.execute(
+        "review",
+        RenderImageCommand(
+            request_id="render-short",
+            op="render.image",
+            output_path="/tmp/render-short.png",
+            timeout_seconds=1,
+        ),
+    )
+    assert cast(float, captured["read_timeout"]) == 210
 
 
 def test_execute_keeps_nested_discriminator_fields_at_their_default_value(
