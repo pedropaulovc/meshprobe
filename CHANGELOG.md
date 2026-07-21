@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-21
+
+### Fixed
+
+- CLI help no longer wraps descriptions at Click's 80-column formatter limit, including the
+  agent-facing `meshprobe help <command> --format text` surface.
+
 ## [1.2.1] - 2026-07-20
 
 ### Fixed
