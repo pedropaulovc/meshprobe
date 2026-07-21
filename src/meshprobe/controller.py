@@ -785,9 +785,12 @@ class BlenderController:
             )
         try:
             result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
-        except (BlenderWorkerCrashed, BlenderWorkerTimeout):
+        except BlenderWorkerTimeout:
             self._recover_session()
             raise
+        except BlenderWorkerCrashed:
+            self._recover_session()
+            result = self._request_with_timeout(command.op, command.timeout_seconds, **arguments)
         after = snapshot_source(self._source_snapshot.assets[0].path)
         if after != self._source_snapshot:
             raise BlenderWorkerError("source asset bundle changed during render")
