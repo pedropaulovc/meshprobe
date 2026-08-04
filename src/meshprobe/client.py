@@ -201,9 +201,7 @@ class MeshProbeClient:
         sessions = self._persisted_sessions()
         if len(sessions) > 1:
             names = sorted(
-                str(item["name"])
-                for item in sessions
-                if isinstance(item.get("name"), str)
+                str(item["name"]) for item in sessions if isinstance(item.get("name"), str)
             )
             available = ", ".join(names) if names else "names unavailable"
             raise ValueError(

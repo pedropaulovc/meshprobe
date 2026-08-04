@@ -94,10 +94,7 @@ def test_implicit_session_resolution_prefers_exact_name_then_sole_durable_sessio
 
     with pytest.raises(
         ValueError,
-        match=(
-            "multiple durable sessions exist: review, secondary; "
-            "select one with --session"
-        ),
+        match=("multiple durable sessions exist: review, secondary; select one with --session"),
     ):
         client.resolve_implicit_session("default")
 
