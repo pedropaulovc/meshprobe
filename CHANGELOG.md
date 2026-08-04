@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop adjustment when a preset is otherwise too dark or bright.
 - `view-frame --all` frames the complete scene without requiring a root component or a long list
   of stable IDs.
+- `meshprobe help --format markdown` is now the canonical spelling for explicit Markdown help;
+  the existing `md` and `llm` aliases remain available.
 
 ### Changed
 
