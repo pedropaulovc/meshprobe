@@ -53,6 +53,7 @@ from meshprobe.models import (
     SensorFit,
     SessionSnapshot,
     ShadedEdgesStyle,
+    ViewFrameResult,
     VisibleBackgroundMode,
 )
 from meshprobe.protocol import (
@@ -65,6 +66,8 @@ from meshprobe.protocol import (
     SessionResetCommand,
     SessionSnapshotCommand,
     SessionUndoCommand,
+    ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -1330,6 +1333,30 @@ def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
     assert manifest.schema_version == 2
     assert result["schema_version"] == 2
     assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def test_view_frame_scene_reports_measured_fill_for_every_component(tmp_path: Path) -> None:
+    source = build_glb(tmp_path)
+    with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
+        manifest = controller.open_scene(source)
+        raw_result = controller.execute(
+            ViewFrameCommand(
+                request_id="frame-scene",
+                op="view.frame",
+                target=ViewFrameTarget.SCENE,
+                margin=1.0,
+                aspect_ratio=0.5,
+            )
+        )
+
+    result = ViewFrameResult.model_validate(raw_result)
+    assert result.framing.component_count == len(manifest.components)
+    assert result.framing.requested_margin == 1.0
+    assert 0 < result.framing.width_fraction <= 1.0
+    assert 0 < result.framing.height_fraction <= 1.0
+    assert set(result.camera_diagnostics.projected_bounds) == {
+        component.id for component in manifest.components
+    }
 
 
 def test_exact_focus_distance_is_applied_and_changes_render(tmp_path: Path) -> None:
