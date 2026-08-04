@@ -10,6 +10,7 @@ from PIL import Image, ImageStat
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS, BlenderController
 from meshprobe.models import (
+    IlluminationFrame,
     IlluminationPreset,
     OrthographicProjection,
     PresetIllumination,
@@ -128,3 +129,90 @@ def test_default_preset_is_legible_from_every_orbit(tmp_path: Path) -> None:
 
     dark = {azimuth: luma for azimuth, luma in luma_by_azimuth.items() if luma < MINIMUM_MEAN_LUMA}
     assert not dark, f"neutral_studio renders too dark at {dark}; all luma={luma_by_azimuth}"
+
+
+def test_camera_relative_preset_tracks_orbits_and_render_exposure_is_adjustable(
+    tmp_path: Path,
+) -> None:
+    source = build_lightless_scene(tmp_path)
+    with BlenderController(
+        timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS,
+        artifact_cache_root=tmp_path / "cache",
+    ) as controller:
+        manifest = controller.open_scene(source)
+        minimum = manifest.root_bounds.minimum_mm
+        maximum = manifest.root_bounds.maximum_mm
+        center = tuple((low + high) / 2 for low, high in zip(minimum, maximum, strict=True))
+        span = max(
+            max(high - low for low, high in zip(minimum, maximum, strict=True)),
+            100.0,
+        )
+        key_positions: list[tuple[float, float, float]] = []
+        for azimuth in (45, 100):
+            controller.execute(
+                ViewOrbitCommand(
+                    request_id=f"view-{azimuth}",
+                    op="view.orbit",
+                    target_mm=center,
+                    azimuth_degrees=azimuth,
+                    elevation_degrees=25,
+                    distance_mm=span * 3,
+                    projection=OrthographicProjection(scale_mm=span * 1.6),
+                )
+            )
+            if not key_positions:
+                controller.execute(
+                    IlluminationSetCommand(
+                        request_id="light",
+                        op="illumination.set",
+                        illumination=PresetIllumination(
+                            preset=IlluminationPreset.HIGH_KEY,
+                            frame=IlluminationFrame.CAMERA,
+                        ),
+                    )
+                )
+            session = controller.request("session.snapshot")["session"]
+            diagnostics = session["camera_diagnostics"]
+            expected = tuple(
+                center[axis]
+                + diagnostics["right"][axis] * span
+                - diagnostics["forward"][axis] * span
+                + diagnostics["up"][axis] * span
+                for axis in range(3)
+            )
+            runtime = controller.request("session.runtime")
+            observed = tuple(runtime["light_details"]["MeshProbe-key"]["position_mm"])
+            assert observed == pytest.approx(expected, abs=1e-4)
+            key_positions.append(observed)
+
+        assert key_positions[0] != pytest.approx(key_positions[1], abs=1e-4)
+
+        baseline = controller.render_image(
+            RenderImageCommand(
+                request_id="render-default",
+                op="render.image",
+                output_path=str(tmp_path / "default-exposure.png"),
+                width=192,
+                height=192,
+                samples=8,
+                engine=RenderEngine.EEVEE,
+                style=RenderStyle.SHADED,
+            )
+        )
+        bright = controller.render_image(
+            RenderImageCommand(
+                request_id="render-bright",
+                op="render.image",
+                output_path=str(tmp_path / "bright-exposure.png"),
+                width=192,
+                height=192,
+                samples=8,
+                engine=RenderEngine.EEVEE,
+                style=RenderStyle.SHADED,
+                exposure_stops=2,
+            )
+        )
+
+    assert baseline.exposure_stops == 0
+    assert bright.exposure_stops == 2
+    assert bright.luminance.median > baseline.luminance.median

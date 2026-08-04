@@ -462,6 +462,11 @@ class IlluminationPreset(StrEnum):
     FLAT_DIAGNOSTIC = "flat_diagnostic"
 
 
+class IlluminationFrame(StrEnum):
+    WORLD = "world"
+    CAMERA = "camera"
+
+
 class VisibleBackgroundMode(StrEnum):
     ENVIRONMENT = "environment"
     COLOR = "color"
@@ -469,6 +474,13 @@ class VisibleBackgroundMode(StrEnum):
 
 class PresetIllumination(ContractModel):
     preset: IlluminationPreset
+    frame: IlluminationFrame = Field(
+        default=IlluminationFrame.WORLD,
+        description=(
+            "Coordinate frame for the preset light rig. Camera-relative rigs follow the "
+            "active view so orbiting does not also rotate the lighting across the model."
+        ),
+    )
     background_rgb: (
         tuple[NonNegativeFiniteFloat, NonNegativeFiniteFloat, NonNegativeFiniteFloat] | None
     ) = None
@@ -955,6 +967,10 @@ class RenderManifest(ContractModel):
     width: Annotated[int, Field(ge=64, le=16_384)]
     height: Annotated[int, Field(ge=64, le=16_384)]
     samples: Annotated[int, Field(ge=1, le=4_096)]
+    exposure_stops: Annotated[float, Field(ge=-32, le=32, allow_inf_nan=False)] = Field(
+        default=0.0,
+        description="Display exposure applied to this render, in photographic stops.",
+    )
     engine: RenderEngine
     style: RenderStyle = RenderStyle.SCREEN_EDGES
     shaded_edges: ShadedEdgesStyle = ShadedEdgesStyle()

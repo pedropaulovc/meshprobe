@@ -85,6 +85,24 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     )
 
     assert "comparison" not in command_payload(command)
+
+
+def test_render_image_accepts_bounded_exposure_adjustments() -> None:
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+        exposure_stops=2.5,
+    )
+
+    assert command.exposure_stops == 2.5
+    with pytest.raises(ValidationError, match="less than or equal to 32"):
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="evidence.png",
+            exposure_stops=33,
+        )
     assert "timeout_seconds" not in command_payload(command)
     assert (
         command_payload(command.model_copy(update={"timeout_seconds": 600}))["timeout_seconds"]

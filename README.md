@@ -38,6 +38,11 @@ uv run meshprobe --session gearbox view-frame c7
 uv run meshprobe --session gearbox render-image --output idler.png
 ```
 
+Named illumination rigs are world-fixed by default. Use `illumination-set high_key --frame camera`
+when the lighting should follow the active view while orbiting, such as when matching a reference
+photograph. If the chosen rig still lands too dark or bright, `render-image --exposure 1.5` adjusts
+the output by photographic stops and records the adjustment in the render manifest.
+
 `view-frame` computes the camera that tightly fits a component's bounds and persists it like
 `view-orbit`, so a following `render-image` fills the frame with an isolated part instead of
 inheriting a camera framed for the whole assembly. The `--focus` option on the `view-*`

@@ -212,6 +212,15 @@ class RenderImageCommand(CommandModel):
     width: Annotated[int, Field(ge=64, le=16_384)] = 2576
     height: Annotated[int, Field(ge=64, le=16_384)] = 2576
     samples: Annotated[int, Field(ge=1, le=4_096)] = 64
+    exposure_stops: Annotated[
+        float,
+        Field(
+            ge=-32,
+            le=32,
+            allow_inf_nan=False,
+            description="Display exposure adjustment in photographic stops.",
+        ),
+    ] = 0.0
     engine: RenderEngine = RenderEngine.EEVEE
     style: Annotated[
         RenderStyle,
