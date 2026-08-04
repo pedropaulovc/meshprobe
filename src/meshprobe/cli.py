@@ -6,12 +6,14 @@ import json
 import re
 import subprocess
 import uuid
+from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import typer
 import yaml
+from click import HelpFormatter
 from pydantic import ValidationError
 from typer.core import TyperGroup
 
@@ -112,7 +114,53 @@ def _consumes_separate_value(token: str, value_names: set[str]) -> bool:
     return "=" not in token and token in value_names
 
 
-class GlobalOptionGroup(TyperGroup):
+class AgentHelpFormatter(HelpFormatter):
+    """Render stable line-oriented help without display-oriented layout."""
+
+    @staticmethod
+    def _one_line(text: str) -> str:
+        return " ".join(text.replace("\b", "").split())
+
+    def write_paragraph(self) -> None:
+        """Keep sections compact instead of separating them with blank lines."""
+
+    def write_text(self, text: str) -> None:
+        for paragraph in re.split(r"\n\s*\n", text.strip()):
+            line = self._one_line(paragraph)
+            if line:
+                self.write(f"{line}\n")
+
+    def write_dl(
+        self,
+        rows: Iterable[tuple[str, str]],
+        col_max: int = 30,
+        col_spacing: int = 2,
+    ) -> None:
+        """Write one definition per line without measuring or padding columns."""
+
+        del col_max, col_spacing
+        for raw_term, raw_description in rows:
+            term = self._one_line(raw_term)
+            description = self._one_line(raw_description)
+            suffix = f": {description}" if description else ""
+            self.write(f"{term}{suffix}\n")
+
+
+class AgentHelpContext(typer.Context):
+    formatter_class = AgentHelpFormatter
+
+
+class AgentHelpGroup(TyperGroup):
+    context_class = AgentHelpContext
+
+    def get_command(self, ctx: _click.Context, cmd_name: str) -> _click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            command.context_class = AgentHelpContext
+        return command
+
+
+class GlobalOptionGroup(AgentHelpGroup):
     """Root group that also accepts its global options after the subcommand.
 
     Click only parses group-level options that precede the subcommand token, so
@@ -218,7 +266,11 @@ app = typer.Typer(
     # with standard shell tools; Rich's box tables wrap long descriptions.
     rich_markup_mode=None,
 )
-eval_app = typer.Typer(help="Build and validate qualification corpora.", no_args_is_help=True)
+eval_app = typer.Typer(
+    help="Build and validate qualification corpora.",
+    no_args_is_help=True,
+    cls=AgentHelpGroup,
+)
 app.add_typer(eval_app, name="eval")
 DEFAULT_WORKSPACE = Path.cwd()
 
@@ -804,7 +856,8 @@ def cmdhelp(
     ctx: typer.Context,
     command: Annotated[list[str] | None, typer.Argument(metavar="[COMMAND]...")] = None,
     format: Annotated[
-        Literal["text", "md", "json", "llm"], typer.Option("--format", help="Output format.")
+        Literal["text", "markdown", "md", "json", "llm"],
+        typer.Option("--format", help="Output format."),
     ] = "text",
     depth: Annotated[
         int | None, typer.Option("--depth", min=0, help="Expand the command tree to N levels.")
@@ -840,7 +893,7 @@ def cmdhelp(
         )
         typer.echo(command_object.get_help(help_context), nl=False)
         return
-    if format == "llm":
+    if format in {"markdown", "llm"}:
         format = "md"
     if format == "json":
         typer.echo(json.dumps(_cmdhelp_json(root, selected_path, depth, all_commands), indent=2))
