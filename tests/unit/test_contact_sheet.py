@@ -1,19 +1,81 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from PIL import Image, ImageDraw, ImageFont
 
 from meshprobe.contact_sheet import (
     _CAPTION_TRUNCATION_NOTE,
     _caption_line_caps,
     _prepare_caption_lines,
+    _wrap_text,
     compose_contact_sheet,
     compose_side_by_side_comparison,
 )
 from meshprobe.models import ContactSheetCallout
 from meshprobe.protocol import RenderContactSheetCommand
+
+
+def _linear_wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    width: int,
+) -> tuple[str, ...]:
+    """Reference implementation used before the optimized prefix search."""
+    lines: list[str] = []
+    for paragraph in text.splitlines() or ("",):
+        remaining = paragraph
+        if not remaining:
+            lines.append("")
+            continue
+        while remaining:
+            end = len(remaining)
+            while end > 1 and draw.textlength(remaining[:end], font=font) > width:
+                end -= 1
+            if end < len(remaining):
+                word_end = remaining.rfind(" ", 0, end + 1)
+                if word_end > 0:
+                    end = word_end
+            lines.append(remaining[:end].rstrip())
+            remaining = remaining[end:].lstrip()
+    return tuple(lines)
+
+
+@given(
+    text=st.text(alphabet="AVWiml /_-x\n", max_size=80),
+    width=st.integers(min_value=1, max_value=400),
+    font_size=st.integers(min_value=8, max_value=40),
+)
+def test_wrap_text_matches_linear_reference_for_proportional_font(
+    text: str,
+    width: int,
+    font_size: int,
+) -> None:
+    font = ImageFont.load_default(size=font_size)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+    assert draw.textlength("iiii", font=font) < draw.textlength("WWWW", font=font)
+    assert _wrap_text(draw, text, font, width) == _linear_wrap_text(draw, text, font, width)
+
+
+def test_wrap_text_uses_logarithmic_text_measurements_for_long_identifiers() -> None:
+    font = ImageFont.load_default(size=30)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    text = "Assembly_Main/" + "Component_" * 100
+    width = 400
+
+    with patch.object(draw, "textlength", wraps=draw.textlength) as measured_textlength:
+        lines = _wrap_text(draw, text, font, width)
+
+    # Each output line needs one full-width check and at most log2(len(text))
+    # prefix probes. Keep this assertion about work performed, not machine time.
+    max_calls_per_line = len(text).bit_length() + 1
+    assert measured_textlength.call_count <= len(lines) * max_calls_per_line
 
 
 def test_compose_contact_sheet_builds_captioned_grid(tmp_path: Path) -> None:
