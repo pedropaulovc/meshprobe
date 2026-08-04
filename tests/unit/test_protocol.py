@@ -6,7 +6,14 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from meshprobe.models import CoordinateFrame, DisplayMode, IsolationOperation
+from meshprobe.models import (
+    CoordinateFrame,
+    DisplayMode,
+    IlluminationFrame,
+    IlluminationPreset,
+    IsolationOperation,
+    PresetIllumination,
+)
 from meshprobe.protocol import (
     COMMAND_ADAPTER,
     COMMAND_MODELS,
@@ -14,6 +21,7 @@ from meshprobe.protocol import (
     ComponentDisplayCommand,
     ComponentFindCommand,
     ComponentOcclusionCommand,
+    IlluminationSetCommand,
     RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -85,6 +93,30 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
     )
 
     assert "comparison" not in command_payload(command)
+
+
+def test_render_image_accepts_bounded_exposure_adjustments() -> None:
+    default = RenderImageCommand(
+        request_id="default-render",
+        op="render.image",
+        output_path="default.png",
+    )
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+        exposure_stops=2.5,
+    )
+
+    assert "exposure_stops" not in command_payload(default)
+    assert command_payload(command)["exposure_stops"] == 2.5
+    with pytest.raises(ValidationError, match="less than or equal to 32"):
+        RenderImageCommand(
+            request_id="render",
+            op="render.image",
+            output_path="evidence.png",
+            exposure_stops=33,
+        )
     assert "timeout_seconds" not in command_payload(command)
     assert (
         command_payload(command.model_copy(update={"timeout_seconds": 600}))["timeout_seconds"]
@@ -104,6 +136,25 @@ def test_render_payload_omits_absent_comparison_for_older_daemons() -> None:
         "mode": "side_by_side",
         "output_path": "comparison.png",
     }
+
+
+def test_preset_illumination_payload_omits_world_frame_for_older_daemons() -> None:
+    world = IlluminationSetCommand(
+        request_id="world-light",
+        op="illumination.set",
+        illumination=PresetIllumination(preset=IlluminationPreset.HIGH_KEY),
+    )
+    camera = IlluminationSetCommand(
+        request_id="camera-light",
+        op="illumination.set",
+        illumination=PresetIllumination(
+            preset=IlluminationPreset.HIGH_KEY,
+            frame=IlluminationFrame.CAMERA,
+        ),
+    )
+
+    assert "frame" not in command_payload(world)["illumination"]
+    assert command_payload(camera)["illumination"]["frame"] == "camera"
 
 
 @pytest.mark.parametrize("timeout", (float("inf"), float("-inf"), float("nan")))

@@ -1946,8 +1946,13 @@ def test_preset_background_srgb_absent_and_null_have_one_canonical_hash(tmp_path
                 "background_srgb": None,
             },
         )
+        explicit_world = controller.request(
+            "illumination.set",
+            illumination={"preset": "neutral_studio", "frame": "world"},
+        )
 
     assert absent["state_sha256"] == explicit_null["state_sha256"]
+    assert absent["state_sha256"] == explicit_world["state_sha256"]
 
 
 def test_source_frame_rotation_survives_checkpoint_replay_and_reset(

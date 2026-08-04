@@ -48,6 +48,7 @@ from meshprobe.models import (
     DisplayMode,
     EdgeType,
     GraphicsPolicy,
+    IlluminationFrame,
     IlluminationPreset,
     IsolationOperation,
     MarkMode,
@@ -2110,6 +2111,16 @@ def illumination_set(
             ),
         ),
     ] = None,
+    frame: Annotated[
+        IlluminationFrame,
+        typer.Option(
+            "--frame",
+            help=(
+                "Place preset lights in world coordinates or relative to the active camera. "
+                "Camera-relative rigs follow later view changes."
+            ),
+        ),
+    ] = IlluminationFrame.WORLD,
     render: Annotated[bool, typer.Option("--render", help=_RENDER_AFTER_HELP)] = False,
 ) -> None:
     """Apply a named preset or a complete custom illumination JSON object."""
@@ -2125,6 +2136,8 @@ def illumination_set(
 
     illumination: Illumination
     if preset == "custom":
+        if frame is not IlluminationFrame.WORLD:
+            raise typer.BadParameter("--frame camera is available only for named presets")
         if illumination_json is None:
             raise typer.BadParameter("custom requires --illumination-json")
         try:
@@ -2175,6 +2188,7 @@ def illumination_set(
         try:
             illumination = PresetIllumination(
                 preset=named_preset,
+                frame=frame,
                 background_rgb=background_rgb,
                 background_strength=background_strength,
                 background_srgb=background_srgb,
@@ -2265,6 +2279,15 @@ def render_image(
     width: Annotated[int | None, typer.Option("--width", min=64, max=16_384)] = None,
     height: Annotated[int | None, typer.Option("--height", min=64, max=16_384)] = None,
     samples: Annotated[int, typer.Option("--samples", min=1, max=4_096)] = 64,
+    exposure: Annotated[
+        float,
+        typer.Option(
+            "--exposure",
+            min=-32,
+            max=32,
+            help="Display exposure adjustment in photographic stops.",
+        ),
+    ] = 0.0,
     engine: Annotated[RenderEngine, typer.Option("--engine")] = RenderEngine.EEVEE,
     style: Annotated[
         RenderStyle,
@@ -2374,6 +2397,7 @@ def render_image(
         "width": width,
         "height": height,
         "samples": samples,
+        "exposure_stops": exposure,
         "engine": engine,
         "style": style,
         "shaded_edges": ShadedEdgesStyle(
@@ -2390,7 +2414,9 @@ def render_image(
     try:
         command = RenderImageCommand.model_validate(command_fields)
     except ValidationError as error:
-        raise typer.BadParameter(str(error), param_hint="--timeout") from error
+        fields = {item["loc"][0] for item in error.errors() if item["loc"]}
+        param_hint = "--exposure" if "exposure_stops" in fields else "--timeout"
+        raise typer.BadParameter(str(error), param_hint=param_hint) from error
     try:
         receipt = client.execute(options.session, command)
     except (OSError, RuntimeError, ValueError) as error:

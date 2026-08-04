@@ -9,9 +9,18 @@ from typing import Any, cast
 import pytest
 
 from meshprobe.client import MeshProbeClient
-from meshprobe.models import DisplayMode, IsolationOperation, OrbitSweep, PerspectiveProjection
+from meshprobe.models import (
+    DisplayMode,
+    IlluminationFrame,
+    IlluminationPreset,
+    IsolationOperation,
+    OrbitSweep,
+    PerspectiveProjection,
+    PresetIllumination,
+)
 from meshprobe.protocol import (
     ComponentDisplayCommand,
+    IlluminationSetCommand,
     RenderComparisonRequest,
     RenderContactSheetCommand,
     RenderImageCommand,
@@ -406,6 +415,16 @@ def test_execute_restarts_old_daemon_for_additive_isolation(
         ),
         (
             RenderImageCommand(
+                request_id="exposure",
+                op="render.image",
+                output_path="evidence.png",
+                exposure_stops=2,
+            ),
+            "exposure_stops",
+            "render.image",
+        ),
+        (
+            RenderImageCommand(
                 request_id="comparison-timeout",
                 op="render.image",
                 output_path="evidence.png",
@@ -474,6 +493,44 @@ def test_execute_restarts_old_daemon_for_new_render_fields(
     receipt = client.execute("review", command)
 
     assert receipt.op == response_op
+    assert attempts == 2
+    assert close_all_calls == 1
+
+
+def test_execute_restarts_old_daemon_for_camera_relative_illumination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    attempts = 0
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        nonlocal attempts
+        if action == "execute":
+            attempts += 1
+            if attempts == 1:
+                raise ValueError("illumination.frame: Extra inputs are not permitted")
+        return {"session": "review", "op": "illumination.set"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    command = IlluminationSetCommand(
+        request_id="camera-light",
+        op="illumination.set",
+        illumination=PresetIllumination(
+            preset=IlluminationPreset.HIGH_KEY,
+            frame=IlluminationFrame.CAMERA,
+        ),
+    )
+    receipt = client.execute("review", command)
+
+    assert receipt.op == "illumination.set"
     assert attempts == 2
     assert close_all_calls == 1
 

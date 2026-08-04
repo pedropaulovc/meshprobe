@@ -28,6 +28,7 @@ from meshprobe.models import (
     OrthonormalBasis,
     PerspectiveProjection,
     PositiveFiniteFloat,
+    PresetIllumination,
     Projection,
     RenderEngine,
     RenderManifest,
@@ -212,6 +213,15 @@ class RenderImageCommand(CommandModel):
     width: Annotated[int, Field(ge=64, le=16_384)] = 2576
     height: Annotated[int, Field(ge=64, le=16_384)] = 2576
     samples: Annotated[int, Field(ge=1, le=4_096)] = 64
+    exposure_stops: Annotated[
+        float,
+        Field(
+            ge=-32,
+            le=32,
+            allow_inf_nan=False,
+            description="Display exposure adjustment in photographic stops.",
+        ),
+    ] = 0.0
     engine: RenderEngine = RenderEngine.EEVEE
     style: Annotated[
         RenderStyle,
@@ -337,6 +347,14 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
         payload.pop("isolation_operation")
     if isinstance(command, RenderImageCommand) and command.comparison is None:
         payload.pop("comparison")
+    if isinstance(command, RenderImageCommand) and command.exposure_stops == 0:
+        payload.pop("exposure_stops")
+    if (
+        isinstance(command, IlluminationSetCommand)
+        and isinstance(command.illumination, PresetIllumination)
+        and command.illumination.frame.value == "world"
+    ):
+        payload["illumination"].pop("frame")
     if isinstance(command, (RenderImageCommand, RenderContactSheetCommand)) and (
         "timeout_seconds" not in command.model_fields_set
     ):

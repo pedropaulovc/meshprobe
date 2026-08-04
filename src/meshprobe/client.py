@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from meshprobe.controller import DEFAULT_WORKER_TIMEOUT_SECONDS
+from meshprobe.models import IlluminationFrame, PresetIllumination
 from meshprobe.protocol import (
     Command,
     ComponentDisplayCommand,
+    IlluminationSetCommand,
     RenderContactSheetCommand,
     RenderImageCommand,
     SceneOpenCommand,
@@ -147,7 +149,13 @@ class MeshProbeClient:
         if isinstance(command, RenderImageCommand):
             if command.comparison is not None and "comparison" in message:
                 return True
+            if command.exposure_stops != 0 and "exposure_stops" in message:
+                return True
             return "timeout_seconds" in command.model_fields_set and "timeout_seconds" in message
+        if isinstance(command, IlluminationSetCommand) and isinstance(
+            command.illumination, PresetIllumination
+        ):
+            return command.illumination.frame is IlluminationFrame.CAMERA and "frame" in message
         if isinstance(command, RenderContactSheetCommand):
             if command.orbit_sweep is not None and "orbit_sweep" in message:
                 return True
