@@ -228,6 +228,22 @@ def test_view_frame_target_requires_exactly_its_component_shape() -> None:
         )
 
 
+def test_view_frame_payload_preserves_component_wire_shape() -> None:
+    component = ViewFrameCommand(
+        request_id="frame-component",
+        op="view.frame",
+        focus_component_ids=("cmp-a",),
+    )
+    scene = ViewFrameCommand(
+        request_id="frame-scene",
+        op="view.frame",
+        target=ViewFrameTarget.SCENE,
+    )
+
+    assert "target" not in command_payload(component)
+    assert command_payload(scene)["target"] == "scene"
+
+
 def test_schema_contains_all_public_operations() -> None:
     schema = command_json_schema()
     encoded = json.dumps(schema)

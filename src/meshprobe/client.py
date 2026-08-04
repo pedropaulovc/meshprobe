@@ -24,6 +24,8 @@ from meshprobe.protocol import (
     RenderImageCommand,
     SceneOpenCommand,
     SessionUndoCommand,
+    ViewFrameCommand,
+    ViewFrameTarget,
     command_payload,
 )
 from meshprobe.workspace import (
@@ -160,6 +162,8 @@ class MeshProbeClient:
             if command.orbit_sweep is not None and "orbit_sweep" in message:
                 return True
             return "timeout_seconds" in command.model_fields_set and "timeout_seconds" in message
+        if isinstance(command, ViewFrameCommand):
+            return command.target is ViewFrameTarget.SCENE and "target" in message
         return "aspect_ratio" in message and "aspect_ratio" in command.model_fields_set
 
     def resolve_component(self, session: str, value: str) -> str:
