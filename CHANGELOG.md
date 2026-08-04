@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-04
+
 ### Added
 
 - Named illumination presets accept `--frame camera`, keeping the light rig fixed to the active
@@ -14,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop adjustment when a preset is otherwise too dark or bright.
 - `view-frame --all` frames the complete scene without requiring a root component or a long list
   of stable IDs.
+- `meshprobe help --format markdown` is now the canonical spelling for explicit Markdown help;
+  the existing `md` and `llm` aliases remain available.
+
+### Changed
+
+- Public qualification-v8 and held-out private-v8 manifests now pin the MeshProbe 1.3.0 runtime.
 
 ### Fixed
 
@@ -249,7 +257,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.0.0...v1.1.0
