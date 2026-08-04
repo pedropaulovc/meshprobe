@@ -2449,6 +2449,11 @@ def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_liter
     miss = runner.invoke(app, ["find", "--name", "*platen*"])
     client.match_count = 1
     literal_hit = runner.invoke(app, ["find", "--name", "gear?"])
+    client.match_count = 0
+    positional_exact_miss = runner.invoke(
+        app,
+        ["find", "*literal*", "--kind", "exact_name"],
+    )
 
     assert miss.exit_code == 0, miss.output
     assert "warning: no components matched" in miss.stderr
@@ -2456,6 +2461,8 @@ def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_liter
     assert "pass wildcard patterns positionally" in miss.stderr
     assert literal_hit.exit_code == 0, literal_hit.output
     assert "--name matches exact display names only" not in literal_hit.stderr
+    assert positional_exact_miss.exit_code == 0, positional_exact_miss.output
+    assert "--name matches exact display names only" not in positional_exact_miss.stderr
 
 
 def test_find_derives_match_count_from_result_when_daemon_omits_it(

@@ -1331,7 +1331,7 @@ def _emit_receipt(
     client: MeshProbeClient,
     receipt: OperationReceipt,
     *,
-    command: Command | None = None,
+    zero_match_warning: str | None = None,
 ) -> None:
     output = _options(ctx).output
     if output == "json":
@@ -1378,16 +1378,8 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     if match_count == 0:
         typer.echo("warning: no components matched", err=True)
-        if (
-            isinstance(command, ComponentFindCommand)
-            and command.selector.kind is SelectorKind.EXACT_NAME
-            and is_glob_pattern(command.selector.pattern)
-        ):
-            typer.echo(
-                "warning: --name matches exact display names only; pass wildcard patterns "
-                "positionally (or use PATTERN --kind glob)",
-                err=True,
-            )
+        if zero_match_warning is not None:
+            typer.echo(f"warning: {zero_match_warning}", err=True)
     _emit_warnings(receipt)
     for component in receipt.components:
         typer.echo(
@@ -1420,13 +1412,19 @@ def _emit_receipts(
         _emit_receipt(ctx, client, receipt)
 
 
-def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None) -> None:
+def _execute(
+    ctx: typer.Context,
+    command: Command,
+    *,
+    blender: str | None = None,
+    zero_match_warning: str | None = None,
+) -> None:
     client = _client(ctx, blender=blender)
     try:
         receipt = client.execute(_options(ctx).session, command)
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         raise typer.BadParameter(str(error)) from error
-    _emit_receipt(ctx, client, receipt, command=command)
+    _emit_receipt(ctx, client, receipt, zero_match_warning=zero_match_warning)
 
 
 DEFAULT_RENDER_MAX_DIMENSION = 2576
@@ -1627,6 +1625,12 @@ def find_components(
     """Find components in the selected session."""
 
     selector = _find_selector_options(pattern=pattern, name=name, kind=kind)
+    zero_match_warning = None
+    if name is not None and is_glob_pattern(name):
+        zero_match_warning = (
+            "--name matches exact display names only; pass wildcard patterns positionally "
+            "(or use PATTERN --kind glob)"
+        )
     _execute(
         ctx,
         ComponentFindCommand(
@@ -1634,6 +1638,7 @@ def find_components(
             op="component.find",
             selector=selector,
         ),
+        zero_match_warning=zero_match_warning,
     )
 
 
