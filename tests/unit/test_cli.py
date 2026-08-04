@@ -152,7 +152,10 @@ def test_subcommand_help_uses_one_unpadded_line_per_option() -> None:
         in lines
     )
     edge_types_line = next(line for line in lines if line.startswith("--edge-types"))
-    assert "Comma-separated silhouette, border, crease, and material boundary types." in edge_types_line
+    assert (
+        "Comma-separated silhouette, border, crease, and material boundary types."
+        in edge_types_line
+    )
     assert len(edge_types_line) > 80
 
 

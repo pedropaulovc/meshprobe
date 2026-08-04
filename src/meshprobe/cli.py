@@ -147,7 +147,11 @@ class AgentHelpFormatter(HelpFormatter):
 
 
 class AgentHelpContext(typer.Context):
-    formatter_class = AgentHelpFormatter
+    def make_formatter(self) -> Any:
+        return AgentHelpFormatter(
+            width=self.terminal_width,
+            max_width=self.max_content_width,
+        )
 
 
 class AgentHelpGroup(TyperGroup):
