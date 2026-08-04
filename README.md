@@ -123,7 +123,10 @@ uv run pytest
 ## Sessions and lifecycle commands
 
 MeshProbe stores session data in the current project's `.meshprobe` directory by default.
-Use `--workspace` to choose another project root and `-s/--session` to switch sessions.
+Use `--workspace` to choose another project root and `-s/--session` to switch sessions. When
+`--session` is omitted and the workspace contains exactly one durable session, commands select it
+automatically. `open` still uses the `default` session name, and an explicit session name is never
+rewritten.
 
 The lifecycle commands have deliberately different failure and persistence semantics:
 

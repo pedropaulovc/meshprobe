@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-component camera framing now projects each selected component's world-bound corners
   instead of the empty corners of their aggregate AABB, avoiding excessive padding on sparse,
   high-aspect assemblies. Results also report achieved width and height fill.
+- Commands with no explicit `--session` now select the sole durable session when `default` does not
+  exist; `open` and explicit session names retain their exact behavior.
 
 ## [1.2.2] - 2026-07-21
 
