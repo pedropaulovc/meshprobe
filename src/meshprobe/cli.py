@@ -294,6 +294,7 @@ class CliOptions:
         self.workspace = workspace
         self.output = output
         self.session_explicit = session_explicit
+        self.resolved_session: str | None = None
 
 
 def _print_version(value: bool) -> None:
@@ -656,6 +657,11 @@ def _cmdhelp_command_document(
             "Session data is stored under .meshprobe in --workspace (default: current directory)."
         ),
     }
+    if name == "open":
+        context["session"] = (
+            "Open uses the session named default when --session is omitted; it does not "
+            "reuse another existing session."
+        )
     if name in {"find", "inspect", "display", "mark", "occlusion", "render-sheet", "view-frame"}:
         context["components"] = (
             "Component refs, IDs, names, paths, and globs resolve against the selected session."
@@ -1287,7 +1293,13 @@ def _session(ctx: typer.Context, client: MeshProbeClient) -> str:
     options = _options(ctx)
     if options.session_explicit:
         return options.session
-    return client.resolve_implicit_session(options.session)
+    if options.resolved_session is not None:
+        return options.resolved_session
+    try:
+        options.resolved_session = client.resolve_implicit_session(options.session)
+    except (OSError, ValueError) as error:
+        raise typer.BadParameter(str(error), param_hint="--session") from error
+    return options.resolved_session
 
 
 def _request_id(operation: str) -> str:

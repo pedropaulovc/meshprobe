@@ -119,6 +119,15 @@ def test_cmdhelp_scopes_to_nested_commands_and_shares_examples_between_formats()
     assert "family" in nested_payload["commands"]["eval generate"]["flags"]
 
 
+def test_cmdhelp_open_describes_its_non_inferred_default_session() -> None:
+    result = runner.invoke(app, ["help", "open", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    session_context = json.loads(result.stdout)["commands"]["open"]["context"]["session"]
+    assert "session named default" in session_context
+    assert "sole existing session" not in session_context
+
+
 def test_cmdhelp_text_preserves_the_existing_click_help_surface() -> None:
     result = runner.invoke(app, ["help", "open", "--format", "text"])
 
@@ -1040,6 +1049,45 @@ def test_implicit_default_uses_the_sole_session_without_changing_open_or_explici
     assert "session=default" in explicit.stdout
     assert opened.exit_code == 0, opened.output
     assert "session=default" in opened.stdout
+
+
+def test_implicit_session_is_resolved_once_per_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ChangingSessionClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resolutions = 0
+
+        def resolve_implicit_session(self, session: str) -> str:
+            assert session == "default"
+            self.resolutions += 1
+            return "review" if self.resolutions == 1 else "secondary"
+
+    client = ChangingSessionClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["display", "c2", "--mode", "hidden"])
+
+    assert result.exit_code == 0, result.output
+    assert "session=review" in result.stdout
+    assert client.resolutions == 1
+
+
+def test_implicit_session_discovery_errors_are_cli_usage_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingSessionClient(FakeClient):
+        def resolve_implicit_session(self, session: str) -> str:
+            raise ValueError("invalid session metadata")
+
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: FailingSessionClient())
+
+    result = runner.invoke(app, ["snapshot"])
+
+    assert result.exit_code == 2
+    assert "Invalid value for --session" in result.output
+    assert "invalid session metadata" in result.output
 
 
 def test_open_omits_aspect_ratio_unless_explicitly_provided(
