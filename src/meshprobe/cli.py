@@ -1330,6 +1330,8 @@ def _emit_receipt(
     ctx: typer.Context,
     client: MeshProbeClient,
     receipt: OperationReceipt,
+    *,
+    command: Command | None = None,
 ) -> None:
     output = _options(ctx).output
     if output == "json":
@@ -1376,6 +1378,16 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     if match_count == 0:
         typer.echo("warning: no components matched", err=True)
+        if (
+            isinstance(command, ComponentFindCommand)
+            and command.selector.kind is SelectorKind.EXACT_NAME
+            and is_glob_pattern(command.selector.pattern)
+        ):
+            typer.echo(
+                "warning: --name matches exact display names only; pass wildcard patterns "
+                "positionally (or use PATTERN --kind glob)",
+                err=True,
+            )
     _emit_warnings(receipt)
     for component in receipt.components:
         typer.echo(
@@ -1414,7 +1426,7 @@ def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None
         receipt = client.execute(_options(ctx).session, command)
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         raise typer.BadParameter(str(error)) from error
-    _emit_receipt(ctx, client, receipt)
+    _emit_receipt(ctx, client, receipt, command=command)
 
 
 DEFAULT_RENDER_MAX_DIMENSION = 2576

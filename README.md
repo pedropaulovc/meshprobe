@@ -80,7 +80,9 @@ depth expands one more level.
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
 `--name NAME` for an exact display name and `--kind regex` only when regular-expression
-matching is intentional. The same auto-detection resolves the component arguments of
+matching is intentional. A wildcard-looking `--name` that finds nothing points back to the
+positional glob form without rejecting exact names that legitimately contain wildcard characters.
+The same auto-detection resolves the component arguments of
 `display`, `mark`, `render-sheet`, and `occlusion`, so a glob there fans out to every
 match just as `find` does (`occlusion '**/*'` measures the whole scene). Component paths remain
 authoritative when `scene.json` reports `hierarchy: flattened`; intermediate non-mesh source

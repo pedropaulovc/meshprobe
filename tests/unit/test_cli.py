@@ -2439,6 +2439,25 @@ def test_find_receipt_distinguishes_zero_matches_from_hits(
     assert unstyle(miss.stdout) != unstyle(hit.stdout)
 
 
+def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_literal_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    client.match_count = 0
+    miss = runner.invoke(app, ["find", "--name", "*platen*"])
+    client.match_count = 1
+    literal_hit = runner.invoke(app, ["find", "--name", "gear?"])
+
+    assert miss.exit_code == 0, miss.output
+    assert "warning: no components matched" in miss.stderr
+    assert "--name matches exact display names only" in miss.stderr
+    assert "pass wildcard patterns positionally" in miss.stderr
+    assert literal_hit.exit_code == 0, literal_hit.output
+    assert "--name matches exact display names only" not in literal_hit.stderr
+
+
 def test_find_derives_match_count_from_result_when_daemon_omits_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
