@@ -128,6 +128,26 @@ class ViewOrbitCommand(CommandModel):
 
 
 class ViewFrameCommand(CommandModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "target": {"const": "components"},
+                        "focus_component_ids": {"minItems": 1},
+                    },
+                    "required": ["focus_component_ids"],
+                },
+                {
+                    "properties": {
+                        "target": {"const": "scene"},
+                        "focus_component_ids": {"maxItems": 0},
+                    },
+                    "required": ["target"],
+                },
+            ]
+        }
+    )
     effect = CommandEffect.STATE_MUTATION
     op: Literal["view.frame"]
     target: ViewFrameTarget = ViewFrameTarget.COMPONENTS

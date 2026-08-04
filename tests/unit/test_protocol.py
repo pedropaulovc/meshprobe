@@ -4,6 +4,7 @@ import json
 import math
 
 import pytest
+from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from meshprobe.models import (
@@ -30,6 +31,7 @@ from meshprobe.protocol import (
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
+    command_json_schema_for,
     command_payload,
     command_result_json_schema,
     parse_command_json,
@@ -226,6 +228,28 @@ def test_view_frame_target_requires_exactly_its_component_shape() -> None:
             target=ViewFrameTarget.SCENE,
             focus_component_ids=("cmp-a",),
         )
+
+
+def test_view_frame_schema_requires_exactly_one_target_shape() -> None:
+    validator = Draft202012Validator(command_json_schema_for("view.frame"))
+    components = {
+        "request_id": "frame-components",
+        "op": "view.frame",
+        "focus_component_ids": ["cmp-a"],
+    }
+    scene = {"request_id": "frame-scene", "op": "view.frame", "target": "scene"}
+    bare = {"request_id": "frame-bare", "op": "view.frame"}
+    mixed = {
+        "request_id": "frame-mixed",
+        "op": "view.frame",
+        "target": "scene",
+        "focus_component_ids": ["cmp-a"],
+    }
+
+    assert list(validator.iter_errors(components)) == []
+    assert list(validator.iter_errors(scene)) == []
+    assert list(validator.iter_errors(bare))
+    assert list(validator.iter_errors(mixed))
 
 
 def test_view_frame_payload_preserves_component_wire_shape() -> None:

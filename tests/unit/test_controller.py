@@ -65,6 +65,7 @@ from meshprobe.protocol import (
     SessionResetCommand,
     SessionSnapshotCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewRotateCommand,
     ViewSetCommand,
@@ -732,6 +733,48 @@ def test_framing_receipt_does_not_reject_an_accepted_camera_mutation() -> None:
         "height_fraction": None,
     }
     assert CameraFramingReceipt.model_validate(receipt).measurement_status == "unavailable"
+
+
+def test_frame_view_scene_uses_manifest_root_bounds(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    controller = BlenderController()
+    controller._manifest = scene_manifest
+    captured: dict[str, object] = {}
+
+    def reject_focus_bounds(focus_ids: object) -> Bounds:
+        pytest.fail(f"scene framing must not scan focus bounds: {focus_ids}")
+
+    def frame_camera(projection: object, bounds: Bounds, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        captured["bounds"] = bounds
+        return projection, 100.0
+
+    projected_bounds = {
+        component.id: {
+            "projection_status": "in_front",
+            "minimum_image_xy": [0.1, 0.2],
+            "maximum_image_xy": [0.9, 0.8],
+        }
+        for component in scene_manifest.components
+    }
+
+    monkeypatch.setattr(controller, "_focus_bounds", reject_focus_bounds)
+    monkeypatch.setattr(controller, "_frame_camera", frame_camera)
+    monkeypatch.setattr(
+        controller,
+        "execute",
+        lambda command: {"camera_diagnostics": {"projected_bounds": projected_bounds}},
+    )
+
+    result = controller.frame_view(
+        ViewFrameCommand(
+            request_id="frame-scene",
+            op="view.frame",
+            target=ViewFrameTarget.SCENE,
+        )
+    )
+
+    assert captured["bounds"] == scene_manifest.root_bounds
+    assert isinstance(result, dict)
+    assert result["framing"]["component_count"] == len(scene_manifest.components)
 
 
 def test_frame_view_rejects_unknown_focus_component(scene_manifest) -> None:  # type: ignore[no-untyped-def]
