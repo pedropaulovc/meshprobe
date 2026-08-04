@@ -2456,6 +2456,7 @@ def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_liter
     )
     client.find_results = []
     raw_miss = runner.invoke(app, ["--raw", "find", "--name", "*platen*"])
+    client.match_count = None
     json_miss = runner.invoke(app, ["--json", "find", "--name", "*platen*"])
     yaml_miss = runner.invoke(app, ["--yaml", "find", "--name", "*platen*"])
 
@@ -2474,10 +2475,12 @@ def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_liter
         "--name matches exact display names only" in warning
         for warning in json.loads(json_miss.stdout)["warnings"]
     )
+    assert json.loads(json_miss.stdout)["match_count"] == 0
     assert any(
         "--name matches exact display names only" in warning
         for warning in yaml.safe_load(yaml_miss.stdout)["warnings"]
     )
+    assert yaml.safe_load(yaml_miss.stdout)["match_count"] == 0
 
 
 def test_find_derives_match_count_from_result_when_daemon_omits_it(

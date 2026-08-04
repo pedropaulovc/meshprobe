@@ -1333,7 +1333,20 @@ def _emit_receipt(
     *,
     zero_match_warning: str | None = None,
 ) -> None:
-    if zero_match_warning is not None and receipt.match_count == 0:
+    match_count = receipt.match_count
+    result: object = None
+    result_loaded = False
+    if match_count is None and receipt.op == "component.find" and receipt.result_path:
+        # A daemon still running the pre-upgrade protocol omits match_count entirely. Read
+        # the persisted result once before selecting an output format so structured receipts
+        # get the same derived count and contextual warnings as text and raw output.
+        envelope = client.read_result(receipt)
+        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        result_loaded = True
+        if isinstance(result, list):
+            match_count = len(result)
+            receipt = receipt.model_copy(update={"match_count": match_count})
+    if zero_match_warning is not None and match_count == 0:
         receipt = receipt.model_copy(update={"warnings": (*receipt.warnings, zero_match_warning)})
     output = _options(ctx).output
     if output == "json":
@@ -1343,8 +1356,9 @@ def _emit_receipt(
         _emit_yaml(receipt)
         return
     if output == "raw":
-        envelope = client.read_result(receipt)
-        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        if not result_loaded:
+            envelope = client.read_result(receipt)
+            result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
         if (
             result == []
@@ -1356,14 +1370,6 @@ def _emit_receipt(
         # stdout — a raw render-image must not silently drop its aspect-ratio warning.
         _emit_warnings(receipt)
         return
-    match_count = receipt.match_count
-    if match_count is None and receipt.op == "component.find" and receipt.result_path:
-        # A daemon still running the pre-upgrade protocol omits match_count entirely; derive
-        # it from the persisted result so the zero-match warning survives without a restart.
-        envelope = client.read_result(receipt)
-        result = envelope.get("result") if isinstance(envelope, dict) else envelope
-        if isinstance(result, list):
-            match_count = len(result)
     fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
     if receipt.op == "session.undo" and receipt.result_path:
         envelope = client.read_result(receipt)
