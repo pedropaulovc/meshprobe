@@ -320,15 +320,12 @@ def isolated_process_command(
         public,
         artifacts,
         environment or {},
+        limits=limits or IsolationLimits(),
         network=network,
         read_only_mounts=read_only_mounts,
         path_entries=path_entries,
     )
-    return _limit_command(
-        sandbox_command,
-        limits or IsolationLimits(),
-        existing_user_tasks=_user_task_count(),
-    )
+    return sandbox_command
 
 
 def _bubblewrap_path(configured: str | Path | None) -> Path:
@@ -347,11 +344,13 @@ def _sandbox_command(
     artifact_root: Path,
     environment: Mapping[str, str],
     *,
+    limits: IsolationLimits,
     network: NetworkAccess = NetworkAccess.BLOCKED,
     read_only_mounts: tuple[tuple[Path, PurePosixPath], ...] = (),
     path_entries: tuple[PurePosixPath, ...] = (),
 ) -> tuple[str, ...]:
     mounts, translated_command = _sandbox_agent_command(command)
+    limited_command = _limit_command(translated_command, limits)
     args = [
         str(bubblewrap),
         "--unshare-all",
@@ -437,7 +436,7 @@ def _sandbox_command(
         if not name or "=" in name or "\x00" in name or "\x00" in value:
             raise ValueError(f"invalid sandbox environment entry: {name!r}")
         args.extend(("--setenv", name, value))
-    args.extend(("--", *translated_command))
+    args.extend(("--", *limited_command))
     return tuple(args)
 
 
@@ -569,43 +568,19 @@ def _node_runtime_root(executable: Path) -> Path | None:
 def _limit_command(
     command: tuple[str, ...],
     limits: IsolationLimits,
-    *,
-    existing_user_tasks: int,
 ) -> tuple[str, ...]:
     executable = shutil.which("prlimit")
     if executable is None:
         raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
-    process_ceiling = existing_user_tasks + limits.processes
     return (
         str(Path(executable).resolve(strict=True)),
         f"--cpu={limits.cpu_seconds}:{limits.cpu_seconds}",
         f"--as={limits.memory_bytes}:{limits.memory_bytes}",
         f"--fsize={limits.output_bytes}:{limits.output_bytes}",
-        f"--nproc={process_ceiling}:{process_ceiling}",
+        f"--nproc={limits.processes}:{limits.processes}",
         "--",
         *command,
     )
-
-
-def _user_task_count() -> int:
-    """Count UID-owned kernel tasks because RLIMIT_NPROC includes threads."""
-
-    user_id = os.getuid()
-    count = 0
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            owned_by_user = entry.stat().st_uid == user_id
-        except FileNotFoundError:
-            continue
-        if not owned_by_user:
-            continue
-        try:
-            count += sum(child.name.isdigit() for child in (entry / "task").iterdir())
-        except FileNotFoundError:
-            continue
-    return count
 
 
 def _artifact_tree_bytes(root: Path) -> int:

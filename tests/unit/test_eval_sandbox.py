@@ -16,7 +16,7 @@ from meshprobe.evals.harness.sandbox import (
     IsolationLimits,
     SandboxUnavailable,
     _sandbox_agent_command,
-    _user_task_count,
+    isolated_process_command,
     run_isolated,
     visible_input_path,
 )
@@ -372,16 +372,44 @@ def test_sandbox_rejects_missing_bubblewrap_and_overlapping_roots(tmp_path: Path
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows process limits use a Job Object")
-def test_posix_process_limit_baseline_counts_threads_not_only_processes() -> None:
-    own_processes = 0
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            own_processes += entry.stat().st_uid == os.getuid()
-        except FileNotFoundError:
-            continue
-    assert _user_task_count() >= own_processes
+def test_posix_resource_limits_run_inside_the_sandbox_user_namespace(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+
+    command = isolated_process_command(
+        ("/usr/bin/true",),
+        input_root=public,
+        artifact_root=artifacts,
+        limits=IsolationLimits(processes=8),
+    )
+
+    assert Path(command[0]).name == "bwrap"
+    agent_separator = command.index("--")
+    limited_agent = command[agent_separator + 1 :]
+    assert Path(limited_agent[0]).name == "prlimit"
+    assert "--nproc=8:8" in limited_agent
+    assert limited_agent[-2:] == ("--", "/usr/bin/true")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows process limits use a Job Object")
+def test_posix_process_limit_allows_sandbox_local_worker_threads(tmp_path: Path) -> None:
+    public, artifacts = roots(tmp_path)
+    program = (
+        "import threading\n"
+        "gate=threading.Event()\n"
+        "threads=[threading.Thread(target=gate.wait) for _ in range(4)]\n"
+        "[thread.start() for thread in threads]\n"
+        "gate.set()\n"
+        "[thread.join() for thread in threads]\n"
+    )
+
+    result = run_isolated(
+        (sandbox_python(), "-c", program),
+        input_root=public,
+        artifact_root=artifacts,
+        limits=IsolationLimits(processes=8),
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_windows_poll_releases_process_resources(monkeypatch: pytest.MonkeyPatch) -> None:
