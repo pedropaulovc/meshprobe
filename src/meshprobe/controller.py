@@ -595,18 +595,23 @@ class BlenderController:
     def _framing_receipt(
         result: dict[str, object], component_count: int, margin: float
     ) -> dict[str, object]:
+        unavailable: dict[str, object] = {
+            "component_count": component_count,
+            "requested_margin": margin,
+            "measurement_status": "unavailable",
+            "width_fraction": None,
+            "height_fraction": None,
+        }
         raw_diagnostics = result.get("camera_diagnostics")
         if not isinstance(raw_diagnostics, dict):
-            raise BlenderWorkerError("view.frame result omitted camera diagnostics")
+            return unavailable
         raw_bounds = raw_diagnostics.get("projected_bounds")
         if not isinstance(raw_bounds, dict) or len(raw_bounds) != component_count:
-            raise BlenderWorkerError("view.frame result omitted projected component bounds")
+            return unavailable
         image_bounds: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        for component_id, raw in raw_bounds.items():
+        for raw in raw_bounds.values():
             if not isinstance(raw, dict) or raw.get("projection_status") != "in_front":
-                raise BlenderWorkerError(
-                    f"view.frame component {component_id!r} is not fully in front of the camera"
-                )
+                return unavailable
             minimum = raw.get("minimum_image_xy")
             maximum = raw.get("maximum_image_xy")
             if (
@@ -615,9 +620,7 @@ class BlenderController:
                 or len(minimum) != 2
                 or len(maximum) != 2
             ):
-                raise BlenderWorkerError(
-                    f"view.frame component {component_id!r} omitted projected image bounds"
-                )
+                return unavailable
             image_bounds.append(
                 (
                     (float(minimum[0]), float(minimum[1])),
@@ -627,6 +630,7 @@ class BlenderController:
         return {
             "component_count": component_count,
             "requested_margin": margin,
+            "measurement_status": "measured",
             "width_fraction": max(maximum[0] for _, maximum in image_bounds)
             - min(minimum[0] for minimum, _ in image_bounds),
             "height_fraction": max(maximum[1] for _, maximum in image_bounds)

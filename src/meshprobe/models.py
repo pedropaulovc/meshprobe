@@ -1362,17 +1362,38 @@ class CameraViewResult(ContractModel):
     )
 
 
+class CameraFramingMeasurementStatus(StrEnum):
+    MEASURED = "measured"
+    UNAVAILABLE = "unavailable"
+
+
 class CameraFramingReceipt(ContractModel):
     """Measured image-space coverage after a view.frame operation."""
 
     component_count: Annotated[int, Field(ge=1)]
     requested_margin: PositiveFiniteFloat
-    width_fraction: NonNegativeFiniteFloat = Field(
-        description="Width of the selected component bounds in normalized frame coordinates."
+    measurement_status: CameraFramingMeasurementStatus
+    width_fraction: NonNegativeFiniteFloat | None = Field(
+        default=None,
+        description="Width of the selected component bounds in normalized frame coordinates, "
+        "or null when measurement is unavailable.",
     )
-    height_fraction: NonNegativeFiniteFloat = Field(
-        description="Height of the selected component bounds in normalized frame coordinates."
+    height_fraction: NonNegativeFiniteFloat | None = Field(
+        default=None,
+        description="Height of the selected component bounds in normalized frame coordinates, "
+        "or null when measurement is unavailable.",
     )
+
+    @model_validator(mode="after")
+    def require_measurement_shape(self) -> Self:
+        has_fractions = self.width_fraction is not None and self.height_fraction is not None
+        if self.measurement_status is CameraFramingMeasurementStatus.MEASURED and not has_fractions:
+            raise ValueError("measured framing requires width and height fractions")
+        if self.measurement_status is CameraFramingMeasurementStatus.UNAVAILABLE and (
+            self.width_fraction is not None or self.height_fraction is not None
+        ):
+            raise ValueError("unavailable framing does not accept width and height fractions")
+        return self
 
 
 class ViewFrameResult(CameraViewResult):

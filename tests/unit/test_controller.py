@@ -26,6 +26,7 @@ from meshprobe.controller import (
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
     Bounds,
+    CameraFramingReceipt,
     CameraMotionResult,
     CameraRotationReceipt,
     CameraTranslationReceipt,
@@ -702,11 +703,35 @@ def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypat
         "framing": {
             "component_count": 1,
             "requested_margin": 1.25,
+            "measurement_status": "measured",
             "width_fraction": pytest.approx(0.8),
             "height_fraction": pytest.approx(0.6),
         },
     }
     assert [operation for operation, _ in controller._accepted_commands] == ["view.orbit"]
+
+
+def test_framing_receipt_does_not_reject_an_accepted_camera_mutation() -> None:
+    receipt = BlenderController._framing_receipt(
+        {
+            "camera_diagnostics": {
+                "projected_bounds": {
+                    "cmp-a": {"projection_status": "behind_camera"},
+                }
+            }
+        },
+        component_count=1,
+        margin=1.25,
+    )
+
+    assert receipt == {
+        "component_count": 1,
+        "requested_margin": 1.25,
+        "measurement_status": "unavailable",
+        "width_fraction": None,
+        "height_fraction": None,
+    }
+    assert CameraFramingReceipt.model_validate(receipt).measurement_status == "unavailable"
 
 
 def test_frame_view_rejects_unknown_focus_component(scene_manifest) -> None:  # type: ignore[no-untyped-def]

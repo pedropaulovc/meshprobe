@@ -1352,6 +1352,9 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
     result = ViewFrameResult.model_validate(raw_result)
     assert result.framing.component_count == len(manifest.components)
     assert result.framing.requested_margin == 1.0
+    assert result.framing.measurement_status == "measured"
+    assert result.framing.width_fraction is not None
+    assert result.framing.height_fraction is not None
     assert result.framing.width_fraction == pytest.approx(1.0, abs=1e-5)
     assert 0 < result.framing.height_fraction <= 1.0
     assert set(result.camera_diagnostics.projected_bounds) == {
