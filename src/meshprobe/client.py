@@ -199,7 +199,17 @@ class MeshProbeClient:
         if SessionFiles(self.root, session).metadata.is_file():
             return session
         sessions = self._persisted_sessions()
-        if len(sessions) != 1:
+        if len(sessions) > 1:
+            names = sorted(
+                str(item["name"])
+                for item in sessions
+                if isinstance(item.get("name"), str)
+            )
+            available = ", ".join(names) if names else "names unavailable"
+            raise ValueError(
+                f"multiple durable sessions exist: {available}; select one with --session"
+            )
+        if not sessions:
             return session
         name = sessions[0].get("name")
         return name if isinstance(name, str) else session

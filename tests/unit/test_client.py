@@ -92,7 +92,14 @@ def test_implicit_session_resolution_prefers_exact_name_then_sole_durable_sessio
         secondary.model_dump(mode="json"),
     )
 
-    assert client.resolve_implicit_session("default") == "default"
+    with pytest.raises(
+        ValueError,
+        match=(
+            "multiple durable sessions exist: review, secondary; "
+            "select one with --session"
+        ),
+    ):
+        client.resolve_implicit_session("default")
 
 
 def test_list_sessions_falls_back_when_live_pid_has_no_daemon(
