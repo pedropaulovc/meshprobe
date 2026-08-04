@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Named illumination presets accept `--frame camera`, keeping the light rig fixed to the active
   view through later camera changes, and `render-image --exposure` applies a recorded photographic
   stop adjustment when a preset is otherwise too dark or bright.
+- `view-frame --all` frames the complete scene without requiring a root component or a long list
+  of stable IDs.
 
 ### Fixed
 

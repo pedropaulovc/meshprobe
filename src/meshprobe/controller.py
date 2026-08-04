@@ -70,6 +70,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -538,6 +539,8 @@ class BlenderController:
         if self._manifest is None:
             raise BlenderWorkerError("cannot frame the camera before a scene is open")
         focus_ids = tuple(dict.fromkeys(command.focus_component_ids))
+        if command.target is ViewFrameTarget.SCENE:
+            focus_ids = tuple(component.id for component in self._manifest.components)
         known_ids = {component.id for component in self._manifest.components}
         unknown = set(focus_ids) - known_ids
         if unknown:
