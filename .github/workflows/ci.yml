@@ -101,7 +101,21 @@ jobs:
             --python "$RUNNER_TEMP/meshprobe-clean/bin/python" \
             "$RUNNER_TEMP"/meshprobe-wheel/meshprobe-*.whl
           "$RUNNER_TEMP/meshprobe-clean/bin/meshprobe" --help
-      - run: uv run pytest -n auto --cov --cov-report=term-missing
+      - name: Run tests with timing profile
+        run: |
+          uv run pytest \
+            -n auto \
+            --cov \
+            --cov-report=term-missing \
+            --durations=100 \
+            --junitxml="$RUNNER_TEMP/linux-junit.xml"
+      - name: Upload Linux test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-timings-linux
+          path: ${{ runner.temp }}/linux-junit.xml
+          if-no-files-found: warn
 
   blender-4-2:
     runs-on: ubuntu-latest
@@ -234,4 +248,16 @@ jobs:
           $wheel = (Get-ChildItem $wheelRoot -Filter "meshprobe-*.whl").FullName
           uv pip install --python $python $wheel
           & $meshprobe --help
-      - run: uv run pytest -n auto
+      - name: Run tests with timing profile
+        run: |
+          uv run pytest `
+            -n auto `
+            --durations=100 `
+            --junitxml="$env:RUNNER_TEMP\windows-junit.xml"
+      - name: Upload Windows test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-timings-windows
+          path: ${{ runner.temp }}/windows-junit.xml
+          if-no-files-found: warn
