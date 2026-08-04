@@ -351,22 +351,10 @@ def _sandbox_command(
 ) -> tuple[str, ...]:
     mounts, translated_command = _sandbox_agent_command(command)
     limit_executable = _prlimit_path()
-    guest_limit_executable = PurePosixPath(str(limit_executable))
-    if not limit_executable.is_relative_to("/usr"):
-        limit_runtime = (
-            limit_executable.parent.parent
-            if limit_executable.parent.name == "bin"
-            else limit_executable.parent
-        )
-        guest_limit_runtime = PurePosixPath("/opt/meshprobe-prlimit")
-        guest_limit_executable = guest_limit_runtime / PurePosixPath(
-            limit_executable.relative_to(limit_runtime).as_posix()
-        )
-        mounts = (*mounts, (limit_runtime, guest_limit_runtime))
     limited_command = _limit_command(
         translated_command,
         limits,
-        executable=guest_limit_executable,
+        executable=PurePosixPath(str(limit_executable)),
     )
     args = [
         str(bubblewrap),
@@ -601,10 +589,16 @@ def _limit_command(
 
 
 def _prlimit_path() -> Path:
-    executable = shutil.which("prlimit")
-    if executable is None:
-        raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
-    return Path(executable).resolve(strict=True)
+    system_executable = Path("/usr/bin/prlimit")
+    candidates = (system_executable, Path(shutil.which("prlimit") or ""))
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+        if resolved.is_relative_to("/usr"):
+            return resolved
+    raise SandboxUnavailable("util-linux prlimit must be installed under /usr")
 
 
 def _artifact_tree_bytes(root: Path) -> int:
