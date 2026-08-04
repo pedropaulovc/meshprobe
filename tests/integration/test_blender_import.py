@@ -67,6 +67,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     SessionUndoCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -1334,7 +1335,7 @@ def test_worker_accepts_public_scene_open_shape(tmp_path: Path) -> None:
     assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
-def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) -> None:
+def test_view_frame_scene_reports_measured_fill_for_every_component(tmp_path: Path) -> None:
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
@@ -1355,7 +1356,7 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
             ViewFrameCommand(
                 request_id="frame-scene",
                 op="view.frame",
-                focus_component_ids=tuple(component.id for component in manifest.components),
+                target=ViewFrameTarget.SCENE,
                 margin=1.0,
                 aspect_ratio=0.0104,
                 projection=OrthographicProjection(scale_mm=1.0),

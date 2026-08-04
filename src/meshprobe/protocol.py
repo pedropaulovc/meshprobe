@@ -56,6 +56,11 @@ class CommandEffect(StrEnum):
     HISTORY = "history"
 
 
+class ViewFrameTarget(StrEnum):
+    COMPONENTS = "components"
+    SCENE = "scene"
+
+
 class CommandModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -123,15 +128,44 @@ class ViewOrbitCommand(CommandModel):
 
 
 class ViewFrameCommand(CommandModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "target": {"const": "components"},
+                        "focus_component_ids": {"minItems": 1},
+                    },
+                    "required": ["focus_component_ids"],
+                },
+                {
+                    "properties": {
+                        "target": {"const": "scene"},
+                        "focus_component_ids": {"maxItems": 0},
+                    },
+                    "required": ["target"],
+                },
+            ]
+        }
+    )
     effect = CommandEffect.STATE_MUTATION
     op: Literal["view.frame"]
-    focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    target: ViewFrameTarget = ViewFrameTarget.COMPONENTS
+    focus_component_ids: tuple[str, ...] = ()
     azimuth_degrees: FiniteFloat = 45.0
     elevation_degrees: FiniteFloat = 30.0
     roll_degrees: FiniteFloat = 0.0
     margin: Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)] = 1.25
     projection: Projection = PerspectiveProjection()
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+
+    @model_validator(mode="after")
+    def require_target_components(self) -> Self:
+        if self.target is ViewFrameTarget.COMPONENTS and not self.focus_component_ids:
+            raise ValueError("component framing requires at least one focus component")
+        if self.target is ViewFrameTarget.SCENE and self.focus_component_ids:
+            raise ValueError("scene framing does not accept focus components")
+        return self
 
 
 class ViewMoveCommand(CommandModel):
@@ -362,6 +396,8 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
         payload.pop("timeout_seconds")
     if isinstance(command, RenderContactSheetCommand) and command.orbit_sweep is None:
         payload.pop("orbit_sweep")
+    if isinstance(command, ViewFrameCommand) and command.target is ViewFrameTarget.COMPONENTS:
+        payload.pop("target")
     if isinstance(command, (SceneOpenCommand, SessionResetCommand, ViewOrbitCommand)) and (
         "aspect_ratio" not in command.model_fields_set
     ):

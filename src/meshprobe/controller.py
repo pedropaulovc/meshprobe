@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
@@ -70,6 +70,7 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -538,13 +539,19 @@ class BlenderController:
         if self._manifest is None:
             raise BlenderWorkerError("cannot frame the camera before a scene is open")
         focus_ids = tuple(dict.fromkeys(command.focus_component_ids))
+        if command.target is ViewFrameTarget.SCENE:
+            focus_ids = tuple(component.id for component in self._manifest.components)
         known_ids = {component.id for component in self._manifest.components}
-        unknown = set(focus_ids) - known_ids
+        focus_id_set = set(focus_ids)
+        unknown = focus_id_set - known_ids
         if unknown:
             raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
-        bounds = self._focus_bounds(focus_ids)
+        bounds = (
+            self._manifest.root_bounds
+            if command.target is ViewFrameTarget.SCENE
+            else self._focus_bounds(focus_id_set)
+        )
         center, _ = self._bounds_center_span(bounds)
-        focus_id_set = set(focus_ids)
         framing_points = tuple(
             corner
             for component in self._manifest.components
@@ -1913,13 +1920,14 @@ class BlenderController:
             focus_component_ids=list(focus_component_ids),
         )
 
-    def _focus_bounds(self, focus_ids: tuple[str, ...]) -> Bounds:
+    def _focus_bounds(self, focus_ids: Collection[str]) -> Bounds:
         if self._manifest is None:
             raise BlenderWorkerError("cannot inspect bounds before a scene is open")
+        focus_id_set = set(focus_ids)
         selected = [
             component.world_bounds
             for component in self._manifest.components
-            if component.id in focus_ids
+            if component.id in focus_id_set
         ]
         minimum = (
             min(bounds.minimum_mm[0] for bounds in selected),

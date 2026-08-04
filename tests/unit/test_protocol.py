@@ -4,6 +4,7 @@ import json
 import math
 
 import pytest
+from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from meshprobe.models import (
@@ -26,9 +27,11 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
+    command_json_schema_for,
     command_payload,
     command_result_json_schema,
     parse_command_json,
@@ -206,6 +209,63 @@ def test_payload_preserves_legacy_nested_none_fields() -> None:
     depth_of_field = command_payload(command)["projection"]["depth_of_field"]
     assert depth_of_field["focus_distance_mm"] is None
     assert depth_of_field["focus"] is None
+
+
+def test_view_frame_target_requires_exactly_its_component_shape() -> None:
+    scene = ViewFrameCommand(
+        request_id="frame-scene",
+        op="view.frame",
+        target=ViewFrameTarget.SCENE,
+    )
+    assert scene.focus_component_ids == ()
+
+    with pytest.raises(ValidationError, match="at least one focus component"):
+        ViewFrameCommand(request_id="frame-empty", op="view.frame")
+    with pytest.raises(ValidationError, match="does not accept focus components"):
+        ViewFrameCommand(
+            request_id="frame-mixed",
+            op="view.frame",
+            target=ViewFrameTarget.SCENE,
+            focus_component_ids=("cmp-a",),
+        )
+
+
+def test_view_frame_schema_requires_exactly_one_target_shape() -> None:
+    validator = Draft202012Validator(command_json_schema_for("view.frame"))
+    components = {
+        "request_id": "frame-components",
+        "op": "view.frame",
+        "focus_component_ids": ["cmp-a"],
+    }
+    scene = {"request_id": "frame-scene", "op": "view.frame", "target": "scene"}
+    bare = {"request_id": "frame-bare", "op": "view.frame"}
+    mixed = {
+        "request_id": "frame-mixed",
+        "op": "view.frame",
+        "target": "scene",
+        "focus_component_ids": ["cmp-a"],
+    }
+
+    assert list(validator.iter_errors(components)) == []
+    assert list(validator.iter_errors(scene)) == []
+    assert list(validator.iter_errors(bare))
+    assert list(validator.iter_errors(mixed))
+
+
+def test_view_frame_payload_preserves_component_wire_shape() -> None:
+    component = ViewFrameCommand(
+        request_id="frame-component",
+        op="view.frame",
+        focus_component_ids=("cmp-a",),
+    )
+    scene = ViewFrameCommand(
+        request_id="frame-scene",
+        op="view.frame",
+        target=ViewFrameTarget.SCENE,
+    )
+
+    assert "target" not in command_payload(component)
+    assert command_payload(scene)["target"] == "scene"
 
 
 def test_schema_contains_all_public_operations() -> None:

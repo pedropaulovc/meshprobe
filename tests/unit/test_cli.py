@@ -38,6 +38,7 @@ from meshprobe.protocol import (
     SessionResetCommand,
     SessionSnapshotCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -1701,6 +1702,21 @@ def test_view_frame_defaults_to_isometric_perspective(monkeypatch: pytest.Monkey
     assert command.elevation_degrees == 30
     assert command.margin == 1.25
     assert command.projection.mode == "perspective"
+
+
+def test_view_frame_all_targets_scene_without_resolving_component_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["--session", "review", "view-frame", "--all"])
+
+    assert result.exit_code == 0, result.output
+    command = client.commands[-1]
+    assert isinstance(command, ViewFrameCommand)
+    assert command.target is ViewFrameTarget.SCENE
+    assert command.focus_component_ids == ()
 
 
 def test_view_focus_help_disclaims_reframing(monkeypatch: pytest.MonkeyPatch) -> None:

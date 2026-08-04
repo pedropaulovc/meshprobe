@@ -44,10 +44,11 @@ photograph. If the chosen rig still lands too dark or bright, `render-image --ex
 the output by photographic stops and records the adjustment in the render manifest.
 
 `view-frame` computes the camera that tightly fits the selected components' individual world
-bounds and persists it like `view-orbit`. Pass component refs or globs. Its structured result
-reports the achieved width and height fill, so a caller can tune `--margin` without measuring a
-render. The `--focus` option on the `view-*` commands is a projection diagnostic (it reports where
-components land in the image); it never moves the camera.
+bounds and persists it like `view-orbit`. Pass component refs or globs, or use `view-frame --all`
+to frame the complete scene without enumerating IDs. Its structured result reports the achieved
+width and height fill, so a caller can tune `--margin` without measuring a render. The `--focus`
+option on the `view-*` commands is a projection diagnostic (it reports where components land in
+the image); it never moves the camera.
 
 Normal output is a short receipt containing the result and state paths. Add `--json` or
 `--yaml` for a machine-readable receipt, or `--raw` when the full operation result is actually

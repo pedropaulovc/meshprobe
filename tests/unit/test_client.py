@@ -27,7 +27,10 @@ from meshprobe.protocol import (
     SceneOpenCommand,
     SessionResetCommand,
     SessionUndoCommand,
+    ViewFrameCommand,
+    ViewFrameTarget,
     ViewOrbitCommand,
+    command_payload,
 )
 from meshprobe.workspace import (
     OperationReceipt,
@@ -339,6 +342,42 @@ def test_execute_restarts_old_daemon_for_explicit_aspect_ratio(
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
         {"request_id": "reset", "op": "session.reset", "aspect_ratio": 2.5},
     ]
+
+
+def test_execute_restarts_old_daemon_for_scene_frame_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    captured: list[dict[str, Any]] = []
+    close_all_calls = 0
+
+    def request(action: str, **arguments: Any) -> dict[str, Any]:
+        captured.append({"action": action, **arguments})
+        if (
+            action == "execute"
+            and len([call for call in captured if call["action"] == "execute"]) == 1
+        ):
+            raise ValueError("target: Extra inputs are not permitted")
+        return {"session": "review", "op": "view.frame"}
+
+    def close_all() -> list[OperationReceipt]:
+        nonlocal close_all_calls
+        close_all_calls += 1
+        return []
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "close_all", close_all)
+
+    command = ViewFrameCommand(
+        request_id="frame-scene",
+        op="view.frame",
+        target=ViewFrameTarget.SCENE,
+    )
+    client.execute("review", command)
+
+    assert close_all_calls == 1
+    execute_commands = [call["command"] for call in captured if call["action"] == "execute"]
+    assert execute_commands == [command_payload(command), command_payload(command)]
 
 
 def test_execute_restarts_old_daemon_for_additive_isolation(
