@@ -193,6 +193,17 @@ class MeshProbeClient:
         sessions = payload.get("sessions", [])
         return sessions if isinstance(sessions, list) else []
 
+    def resolve_implicit_session(self, session: str) -> str:
+        """Use the sole durable session when the CLI's default name does not exist."""
+
+        if SessionFiles(self.root, session).metadata.is_file():
+            return session
+        sessions = self._persisted_sessions()
+        if len(sessions) != 1:
+            return session
+        name = sessions[0].get("name")
+        return name if isinstance(name, str) else session
+
     def close(self, session: str) -> OperationReceipt:
         return OperationReceipt.model_validate(self.request("close", session=session, start=False))
 

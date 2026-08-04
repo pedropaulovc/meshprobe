@@ -282,10 +282,18 @@ DEFAULT_WORKSPACE = Path.cwd()
 
 
 class CliOptions:
-    def __init__(self, session: str, workspace: Path, output: str) -> None:
+    def __init__(
+        self,
+        session: str,
+        workspace: Path,
+        output: str,
+        *,
+        session_explicit: bool,
+    ) -> None:
         self.session = session
         self.workspace = workspace
         self.output = output
+        self.session_explicit = session_explicit
 
 
 def _print_version(value: bool) -> None:
@@ -300,7 +308,14 @@ def _print_version(value: bool) -> None:
 @app.callback()
 def global_options(
     ctx: typer.Context,
-    session: Annotated[str, typer.Option("--session", "-s")] = "default",
+    session: Annotated[
+        str,
+        typer.Option(
+            "--session",
+            "-s",
+            help="Select a durable session; when omitted, use the sole existing session.",
+        ),
+    ] = "default",
     workspace: Annotated[Path, typer.Option("--workspace", file_okay=False)] = DEFAULT_WORKSPACE,
     json_output: Annotated[
         bool, typer.Option("--json", help="Emit a machine-readable JSON receipt.")
@@ -326,7 +341,14 @@ def global_options(
     if sum((json_output, yaml_output, raw)) > 1:
         raise typer.BadParameter("--json, --yaml, and --raw are mutually exclusive")
     output = "raw" if raw else "json" if json_output else "yaml" if yaml_output else "receipt"
-    ctx.obj = CliOptions(session, workspace, output)
+    session_source = ctx.get_parameter_source("session")
+    session_explicit = session_source is not None and session_source.name == "COMMANDLINE"
+    ctx.obj = CliOptions(
+        session,
+        workspace,
+        output,
+        session_explicit=session_explicit,
+    )
 
 
 class AgentAdapterKind(StrEnum):
@@ -626,7 +648,10 @@ def _cmdhelp_command_document(
     if see_also:
         document["see_also"] = ["meshprobe " + item for item in see_also]
     context: dict[str, str] = {
-        "session": "The durable session is selected with --session (default: default).",
+        "session": (
+            "The durable session is selected with --session. When omitted, the sole existing "
+            "session is selected; otherwise the name defaults to default."
+        ),
         "workspace": (
             "Session data is stored under .meshprobe in --workspace (default: current directory)."
         ),
@@ -748,7 +773,10 @@ def _cmdhelp_json(
         "schemas": schemas,
         "context": {
             "workspace": "selected with --workspace; defaults to the current directory",
-            "session": "selected with --session; defaults to default",
+            "session": (
+                "selected with --session; when omitted, uses the sole existing session or "
+                "defaults to default"
+            ),
         },
     }
 
@@ -1255,6 +1283,13 @@ def _client(ctx: typer.Context, *, blender: str | None = None) -> MeshProbeClien
     return MeshProbeClient(_options(ctx).workspace, blender=blender)
 
 
+def _session(ctx: typer.Context, client: MeshProbeClient) -> str:
+    options = _options(ctx)
+    if options.session_explicit:
+        return options.session
+    return client.resolve_implicit_session(options.session)
+
+
 def _request_id(operation: str) -> str:
     return f"{operation}-{uuid.uuid4().hex[:12]}"
 
@@ -1436,10 +1471,12 @@ def _execute(
     *,
     blender: str | None = None,
     zero_match_warning: str | None = None,
+    resolve_session: bool = True,
 ) -> None:
     client = _client(ctx, blender=blender)
+    session = _session(ctx, client) if resolve_session else _options(ctx).session
     try:
-        receipt = client.execute(_options(ctx).session, command)
+        receipt = client.execute(session, command)
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         raise typer.BadParameter(str(error)) from error
     _emit_receipt(ctx, client, receipt, zero_match_warning=zero_match_warning)
@@ -1501,6 +1538,7 @@ def _execute_visual(
     *,
     render: bool,
     blender: str | None = None,
+    resolve_session: bool = True,
 ) -> None:
     """Execute a visual mutation and optionally capture its resulting frame.
 
@@ -1510,22 +1548,23 @@ def _execute_visual(
     """
 
     if not render:
-        _execute(ctx, command, blender=blender)
+        _execute(ctx, command, blender=blender, resolve_session=resolve_session)
         return
 
     options = _options(ctx)
+    client = _client(ctx, blender=blender)
+    session = _session(ctx, client) if resolve_session else options.session
     destination = (
         workspace_root(options.workspace)
         / "sessions"
-        / options.session
+        / session
         / "artifacts"
         / f"render-{uuid.uuid4().hex[:12]}.png"
     )
-    client = _client(ctx, blender=blender)
     receipts: list[OperationReceipt] = []
     try:
-        receipts.append(client.execute(options.session, command))
-        aspect_ratio = client.framed_aspect_ratio(options.session)
+        receipts.append(client.execute(session, command))
+        aspect_ratio = client.framed_aspect_ratio(session)
         width, height = _aspect_preserving_render_dimensions(aspect_ratio)
         render_command = RenderImageCommand(
             request_id=_request_id("render-image"),
@@ -1534,7 +1573,7 @@ def _execute_visual(
             width=width,
             height=height,
         )
-        receipts.append(client.execute(options.session, render_command))
+        receipts.append(client.execute(session, render_command))
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         if not receipts:
             raise typer.BadParameter(str(error)) from error
@@ -1558,7 +1597,7 @@ def _component_ids(ctx: typer.Context, components: list[str]) -> tuple[str, ...]
     """
 
     client = _client(ctx)
-    session = _options(ctx).session
+    session = _session(ctx, client)
     resolved: dict[str, None] = {}
     try:
         for component in components:
@@ -1572,7 +1611,7 @@ def _component_ids(ctx: typer.Context, components: list[str]) -> tuple[str, ...]
 def _component_id(ctx: typer.Context, value: str) -> str:
     client = _client(ctx)
     try:
-        return client.resolve_component(_options(ctx).session, value)
+        return client.resolve_component(_session(ctx, client), value)
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
 
@@ -1611,6 +1650,7 @@ def open_scene(
         ),
         render=render,
         blender=blender,
+        resolve_session=False,
     )
 
 
@@ -2401,10 +2441,12 @@ def render_image(
     """
 
     options = _options(ctx)
+    client = _client(ctx)
+    session = _session(ctx, client)
     destination = output or (
         workspace_root(options.workspace)
         / "sessions"
-        / options.session
+        / session
         / "artifacts"
         / f"render-{uuid.uuid4().hex[:12]}.png"
     )
@@ -2429,11 +2471,10 @@ def render_image(
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
         )
-    client = _client(ctx)
     if width is None or height is None:
         try:
             width, height = _resolve_render_dimensions(
-                client.framed_aspect_ratio(options.session), width, height
+                client.framed_aspect_ratio(session), width, height
             )
         except (OSError, RuntimeError, ValueError) as error:
             typer.echo(f"Render failed: {error}", err=True)
@@ -2468,7 +2509,7 @@ def render_image(
         param_hint = "--exposure" if "exposure_stops" in fields else "--timeout"
         raise typer.BadParameter(str(error), param_hint=param_hint) from error
     try:
-        receipt = client.execute(options.session, command)
+        receipt = client.execute(session, command)
     except (OSError, RuntimeError, ValueError) as error:
         typer.echo(f"Render failed: {error}", err=True)
         raise typer.Exit(1) from error
@@ -2529,10 +2570,12 @@ def render_sheet(
     """
 
     options = _options(ctx)
+    client = _client(ctx)
+    session = _session(ctx, client)
     destination = output or (
         workspace_root(options.workspace)
         / "sessions"
-        / options.session
+        / session
         / "artifacts"
         / f"sheet-{uuid.uuid4().hex[:12]}.png"
     )
@@ -2578,7 +2621,11 @@ def render_sheet(
         command = RenderContactSheetCommand.model_validate(command_fields)
     except ValidationError as error:
         raise typer.BadParameter(str(error), param_hint="--timeout") from error
-    _execute(ctx, command)
+    try:
+        receipt = client.execute(session, command)
+    except (OSError, RuntimeError, ValueError, ValidationError) as error:
+        raise typer.BadParameter(str(error)) from error
+    _emit_receipt(ctx, client, receipt)
 
 
 @app.command("occlusion")
@@ -2679,7 +2726,7 @@ def close_session(
 
     client = _client(ctx)
     try:
-        receipts = client.close_all() if all_sessions else [client.close(_options(ctx).session)]
+        receipts = client.close_all() if all_sessions else [client.close(_session(ctx, client))]
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
     if all_sessions:
@@ -2697,7 +2744,7 @@ def kill_session(
 
     client = _client(ctx)
     try:
-        receipts = client.kill_all() if all_sessions else [client.kill(_options(ctx).session)]
+        receipts = client.kill_all() if all_sessions else [client.kill(_session(ctx, client))]
     except (OSError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
     if all_sessions:

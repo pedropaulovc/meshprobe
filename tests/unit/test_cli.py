@@ -991,6 +991,9 @@ class FakeClient:
     def list_sessions(self) -> list[dict[str, object]]:
         return [{"name": "review", "status": "active", "source_path": "assembly.glb"}]
 
+    def resolve_implicit_session(self, session: str) -> str:
+        return session
+
     def delete_data(self) -> Path:
         return Path(".meshprobe")
 
@@ -1011,6 +1014,32 @@ def test_flat_cli_uses_named_session_and_compact_receipts(
     assert snapshotted.exit_code == 0
     assert isinstance(client.commands[0], SceneOpenCommand)
     assert isinstance(client.commands[1], SessionSnapshotCommand)
+
+
+def test_implicit_default_uses_the_sole_session_without_changing_open_or_explicit_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+
+    class SoleSessionClient(FakeClient):
+        def resolve_implicit_session(self, session: str) -> str:
+            assert session == "default"
+            return "review"
+
+    client = SoleSessionClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    implicit = runner.invoke(app, ["snapshot"])
+    explicit = runner.invoke(app, ["--session", "default", "snapshot"])
+    opened = runner.invoke(app, ["open", str(source)])
+
+    assert implicit.exit_code == 0, implicit.output
+    assert "session=review" in implicit.stdout
+    assert explicit.exit_code == 0, explicit.output
+    assert "session=default" in explicit.stdout
+    assert opened.exit_code == 0, opened.output
+    assert "session=default" in opened.stdout
 
 
 def test_open_omits_aspect_ratio_unless_explicitly_provided(
