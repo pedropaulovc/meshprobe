@@ -1333,6 +1333,8 @@ def _emit_receipt(
     *,
     zero_match_warning: str | None = None,
 ) -> None:
+    if zero_match_warning is not None and receipt.match_count == 0:
+        receipt = receipt.model_copy(update={"warnings": (*receipt.warnings, zero_match_warning)})
     output = _options(ctx).output
     if output == "json":
         typer.echo(receipt.model_dump_json(indent=2))
@@ -1344,7 +1346,11 @@ def _emit_receipt(
         envelope = client.read_result(receipt)
         result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
-        if result == [] and zero_match_warning is not None:
+        if (
+            result == []
+            and zero_match_warning is not None
+            and zero_match_warning not in receipt.warnings
+        ):
             typer.echo(f"warning: {zero_match_warning}", err=True)
         # Warnings go to stderr, so they still surface without corrupting the raw JSON on
         # stdout — a raw render-image must not silently drop its aspect-ratio warning.
@@ -1380,7 +1386,7 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     if match_count == 0:
         typer.echo("warning: no components matched", err=True)
-        if zero_match_warning is not None:
+        if zero_match_warning is not None and zero_match_warning not in receipt.warnings:
             typer.echo(f"warning: {zero_match_warning}", err=True)
     _emit_warnings(receipt)
     for component in receipt.components:
