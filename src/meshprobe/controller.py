@@ -91,6 +91,7 @@ __all__ = [
 ]
 
 DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
+MIN_FRAME_HALF_EXTENT_MM = 1e-9
 
 
 def _default_cache_root() -> Path:
@@ -676,9 +677,9 @@ class BlenderController:
                 abs(BlenderController._dot(offset, diagnostics.up)) for offset in offsets
             )
             required_half = (
-                max(half_width, half_height * aspect_ratio, 0.5)
+                max(half_width, half_height * aspect_ratio, MIN_FRAME_HALF_EXTENT_MM)
                 if aspect_ratio >= 1
-                else max(half_height, half_width / aspect_ratio, 0.5)
+                else max(half_height, half_width / aspect_ratio, MIN_FRAME_HALF_EXTENT_MM)
             )
             projection = projection.model_copy(update={"scale_mm": 2 * required_half * margin})
             bounding_radius = max(

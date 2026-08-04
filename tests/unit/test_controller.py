@@ -779,6 +779,27 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
     assert portrait.scale_mm * 0.5 == pytest.approx(2 * 20 * 1.2)
 
 
+def test_frame_camera_orthographic_scale_preserves_submillimeter_fill() -> None:
+    bounds = Bounds(
+        minimum_mm=(-0.1, -0.1, -0.1),
+        maximum_mm=(0.1, 0.1, 0.1),
+    )
+
+    projection, _ = BlenderController._frame_camera(
+        OrthographicProjection(scale_mm=1.0),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+    )
+
+    assert isinstance(projection, OrthographicProjection)
+    assert projection.scale_mm == pytest.approx(0.2)
+
+
 @pytest.mark.parametrize(
     "projection",
     [OrthographicProjection(scale_mm=1.0), PerspectiveProjection()],
