@@ -1338,6 +1338,19 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
     source = build_glb(tmp_path)
     with BlenderController(timeout_seconds=DEFAULT_WORKER_TIMEOUT_SECONDS) as controller:
         manifest = controller.open_scene(source)
+        controller.execute(
+            ViewSetCommand(
+                request_id="perspective-vertical",
+                op="view.set",
+                camera=Camera(
+                    pose=Pose(
+                        position_mm=(-4_000, 2_000, 1_000),
+                        orientation_xyzw=(0, 0, 1, 0),
+                    ),
+                    projection=PerspectiveProjection(sensor_fit=SensorFit.VERTICAL),
+                ),
+            )
+        )
         raw_result = controller.execute(
             ViewFrameCommand(
                 request_id="frame-scene",
@@ -1348,6 +1361,7 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
                 projection=OrthographicProjection(scale_mm=1.0),
             )
         )
+        camera_runtime = controller.request("session.runtime")["camera"]
 
     result = ViewFrameResult.model_validate(raw_result)
     assert result.framing.component_count == len(manifest.components)
@@ -1357,6 +1371,7 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
     assert result.framing.height_fraction is not None
     assert result.framing.width_fraction == pytest.approx(1.0, abs=1e-5)
     assert 0 < result.framing.height_fraction <= 1.0
+    assert camera_runtime["sensor_fit"] == "AUTO"
     assert set(result.camera_diagnostics.projected_bounds) == {
         component.id for component in manifest.components
     }

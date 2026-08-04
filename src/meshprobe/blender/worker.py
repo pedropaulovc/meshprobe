@@ -714,6 +714,7 @@ def apply_camera(
     if mode == "orthographic":
         data.type = "ORTHO"
         data.ortho_scale = projection["scale_mm"] / MILLIMETERS_PER_METER
+        data.sensor_fit = "AUTO"
         data.dof.use_dof = False
     else:
         data.type = "PERSP"
