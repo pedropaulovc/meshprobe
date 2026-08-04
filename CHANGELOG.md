@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host processes cannot prevent agents from starting worker threads.
 - Windows evaluation timeouts now allow job termination to settle under load instead of leaking a
   cleanup timeout.
+- Daemon-wide close and kill commands now flush their final receipt before shutting down, avoiding
+  intermittent empty-response errors.
 - Contact-sheet captions now find fitting line breaks without measuring every shorter prefix,
   cutting the default 3x3 worst case from more than 30 seconds to about one second while preserving
   the rendered output.

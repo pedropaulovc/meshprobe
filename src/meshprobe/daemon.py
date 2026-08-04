@@ -8,13 +8,14 @@ import os
 import secrets
 import socketserver
 import sys
-import threading
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from meshprobe.protocol import COMMAND_ADAPTER
 from meshprobe.workspace import SessionManager, atomic_json
+
+SHUTDOWN_CLIENT_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 def _remove_matching_metadata(root: Path, expected: dict[str, Any]) -> None:
@@ -48,6 +49,7 @@ class RequestHandler(socketserver.StreamRequestHandler):
         if not isinstance(server, DaemonServer):
             return
         line = self.rfile.readline(16 * 1024 * 1024)
+        shutdown_after_response = False
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
@@ -55,13 +57,27 @@ class RequestHandler(socketserver.StreamRequestHandler):
             if not secrets.compare_digest(str(request.get("token", "")), server.token):
                 raise PermissionError("invalid daemon token")
             result = dispatch(server, request)
+            shutdown_after_response = request.get("action") in {"close_all", "kill_all"}
             response = {"ok": True, "result": result}
         except Exception as error:
             response = {
                 "ok": False,
                 "error": {"type": type(error).__name__, "message": str(error)},
             }
-        self.wfile.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
+        try:
+            self.wfile.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
+            self.wfile.flush()
+        finally:
+            if shutdown_after_response:
+                try:
+                    self._wait_for_client_close()
+                finally:
+                    server.shutdown()
+
+    def _wait_for_client_close(self) -> None:
+        with suppress(OSError):
+            self.connection.settimeout(SHUTDOWN_CLIENT_CLOSE_TIMEOUT_SECONDS)
+            self.rfile.read(1)
 
 
 def dispatch(server: DaemonServer, request: dict[str, Any]) -> object:
@@ -93,7 +109,6 @@ def dispatch(server: DaemonServer, request: dict[str, Any]) -> object:
         force = action == "kill_all"
         receipts = server.manager.kill_all() if force else server.manager.close_all()
         server.manager.shutdown(force=force)
-        threading.Thread(target=server.shutdown, daemon=True).start()
         return {"sessions": [item.model_dump(mode="json") for item in receipts]}
     raise ValueError(f"unsupported daemon action: {action}")
 
