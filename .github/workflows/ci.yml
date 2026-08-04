@@ -46,8 +46,13 @@ jobs:
           "$RUNNER_TEMP/meshprobe-clean/bin/meshprobe" --help
       - run: uv run pytest
 
-  linux:
+  linux-shard:
+    name: linux shard ${{ matrix.group }}/2
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     env:
       GALLIUM_DRIVER: llvmpipe
       LIBGL_ALWAYS_SOFTWARE: "1"
@@ -99,6 +104,9 @@ jobs:
           echo "$RUNNER_TEMP/blender-5.2.0-linux-x64" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/blender-5.2.0-linux-x64/blender" --version
       - run: uv sync --locked --all-groups
+      - name: Validate Linux shard partition
+        if: ${{ matrix.group == 1 }}
+        run: uv run python tools/validate_test_shards.py ci/test-durations/linux.json
       - name: Verify clean wheel install
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/meshprobe-wheel"
@@ -107,21 +115,63 @@ jobs:
             --python "$RUNNER_TEMP/meshprobe-clean/bin/python" \
             "$RUNNER_TEMP"/meshprobe-wheel/meshprobe-*.whl
           "$RUNNER_TEMP/meshprobe-clean/bin/meshprobe" --help
-      - name: Run tests with timing profile
+      - name: Run test shard with timing profile
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage.linux-${{ matrix.group }}
         run: |
           uv run pytest \
             -n auto \
+            --splits 2 \
+            --group "${{ matrix.group }}" \
+            --splitting-algorithm least_duration \
+            --durations-path ci/test-durations/linux.json \
             --cov \
-            --cov-report=term-missing \
+            --cov-report= \
+            --cov-fail-under=0 \
             --durations=100 \
-            --junitxml="$RUNNER_TEMP/linux-junit.xml"
-      - name: Upload Linux test timings
+            --junitxml="$RUNNER_TEMP/linux-junit-${{ matrix.group }}.xml"
+      - name: Upload Linux shard timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: pytest-timings-linux
-          path: ${{ runner.temp }}/linux-junit.xml
+          name: pytest-timings-linux-${{ matrix.group }}
+          path: ${{ runner.temp }}/linux-junit-${{ matrix.group }}.xml
           if-no-files-found: warn
+      - name: Upload Linux shard coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-linux-${{ matrix.group }}
+          path: ${{ runner.temp }}/.coverage.linux-${{ matrix.group }}
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  linux:
+    needs: linux-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful Linux shards
+        if: ${{ needs.linux-shard.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --all-groups
+      - name: Download Linux shard coverage
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-linux-*
+          path: ${{ runner.temp }}/linux-coverage
+          merge-multiple: true
+      - name: Combine coverage and enforce threshold
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: |
+          uv run coverage combine "$RUNNER_TEMP/linux-coverage"
+          uv run coverage report
 
   blender-4-2:
     runs-on: ubuntu-latest
@@ -188,8 +238,13 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src tests
 
-  windows:
+  windows-shard:
+    name: windows shard ${{ matrix.group }}/2
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
     env:
       GALLIUM_DRIVER: llvmpipe
       LIBGL_ALWAYS_SOFTWARE: "1"
@@ -242,6 +297,9 @@ jobs:
           $blender.DirectoryName | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
           & $blender.FullName --version
       - run: uv sync --locked --all-groups
+      - name: Validate Windows shard partition
+        if: ${{ matrix.group == 1 }}
+        run: uv run python tools/validate_test_shards.py ci/test-durations/windows.json
       - name: Verify clean wheel install
         shell: pwsh
         run: |
@@ -254,16 +312,29 @@ jobs:
           $wheel = (Get-ChildItem $wheelRoot -Filter "meshprobe-*.whl").FullName
           uv pip install --python $python $wheel
           & $meshprobe --help
-      - name: Run tests with timing profile
+      - name: Run test shard with timing profile
         run: |
           uv run pytest `
             -n auto `
+            --splits 2 `
+            --group "${{ matrix.group }}" `
+            --splitting-algorithm least_duration `
+            --durations-path ci/test-durations/windows.json `
             --durations=100 `
-            --junitxml="$env:RUNNER_TEMP\windows-junit.xml"
-      - name: Upload Windows test timings
+            --junitxml="$env:RUNNER_TEMP\windows-junit-${{ matrix.group }}.xml"
+      - name: Upload Windows shard timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: pytest-timings-windows
-          path: ${{ runner.temp }}/windows-junit.xml
+          name: pytest-timings-windows-${{ matrix.group }}
+          path: ${{ runner.temp }}/windows-junit-${{ matrix.group }}.xml
           if-no-files-found: warn
+
+  windows:
+    needs: windows-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful Windows shards
+        if: ${{ needs.windows-shard.result != 'success' }}
+        run: exit 1
