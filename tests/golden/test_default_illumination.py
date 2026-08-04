@@ -142,7 +142,11 @@ def test_camera_relative_preset_tracks_orbits_and_render_exposure_is_adjustable(
         manifest = controller.open_scene(source)
         minimum = manifest.root_bounds.minimum_mm
         maximum = manifest.root_bounds.maximum_mm
-        center = tuple((low + high) / 2 for low, high in zip(minimum, maximum, strict=True))
+        center = (
+            (minimum[0] + maximum[0]) / 2,
+            (minimum[1] + maximum[1]) / 2,
+            (minimum[2] + maximum[2]) / 2,
+        )
         span = max(
             max(high - low for low, high in zip(minimum, maximum, strict=True)),
             100.0,
