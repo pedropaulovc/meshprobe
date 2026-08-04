@@ -779,6 +779,50 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
     assert portrait.scale_mm * 0.5 == pytest.approx(2 * 20 * 1.2)
 
 
+def test_frame_target_centers_sparse_orthographic_points() -> None:
+    target = (10.0, 20.0, 30.0)
+    projection = OrthographicProjection(scale_mm=1.0)
+    camera = orbit_camera(
+        target_mm=target,
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=10.0,
+        distance_mm=1.0,
+        projection=projection,
+    )
+    diagnostics = camera_diagnostics(camera, target_mm=target, aspect_ratio=1.0)
+    points = tuple(
+        cast(
+            tuple[float, float, float],
+            tuple(
+                target[axis]
+                + right_coordinate * diagnostics.right[axis]
+                + up_coordinate * diagnostics.up[axis]
+                for axis in range(3)
+            ),
+        )
+        for right_coordinate, up_coordinate in ((-0.7, -2.0), (1.4, 0.5))
+    )
+
+    centered = BlenderController._frame_target(
+        projection,
+        target,
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=10.0,
+        aspect_ratio=1.0,
+        framing_points=points,
+    )
+
+    shift = cast(
+        tuple[float, float, float],
+        tuple(centered[axis] - target[axis] for axis in range(3)),
+    )
+    assert BlenderController._dot(shift, diagnostics.right) == pytest.approx(0.35)
+    assert BlenderController._dot(shift, diagnostics.up) == pytest.approx(-0.75)
+    assert BlenderController._dot(shift, diagnostics.forward) == pytest.approx(0.0)
+
+
 def test_frame_camera_fits_component_corners_instead_of_phantom_union_corners() -> None:
     bounds = Bounds(
         minimum_mm=(-510.0, -510.0, -10.0),

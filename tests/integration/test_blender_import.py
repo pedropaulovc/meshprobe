@@ -1344,14 +1344,15 @@ def test_view_frame_reports_measured_fill_for_every_component(tmp_path: Path) ->
                 op="view.frame",
                 focus_component_ids=tuple(component.id for component in manifest.components),
                 margin=1.0,
-                aspect_ratio=0.5,
+                aspect_ratio=0.0104,
+                projection=OrthographicProjection(scale_mm=1.0),
             )
         )
 
     result = ViewFrameResult.model_validate(raw_result)
     assert result.framing.component_count == len(manifest.components)
     assert result.framing.requested_margin == 1.0
-    assert 0 < result.framing.width_fraction <= 1.0
+    assert result.framing.width_fraction == pytest.approx(1.0, abs=1e-5)
     assert 0 < result.framing.height_fraction <= 1.0
     assert set(result.camera_diagnostics.projected_bounds) == {
         component.id for component in manifest.components

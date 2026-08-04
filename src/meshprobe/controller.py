@@ -550,6 +550,15 @@ class BlenderController:
             if component.id in focus_id_set
             for corner in self._bounds_corners(component.world_bounds)
         )
+        center = self._frame_target(
+            command.projection,
+            center,
+            command.azimuth_degrees,
+            command.elevation_degrees,
+            command.roll_degrees,
+            command.aspect_ratio,
+            framing_points,
+        )
         projection, distance = self._frame_camera(
             command.projection,
             bounds,
@@ -704,6 +713,50 @@ class BlenderController:
         if projection.far_clip_mm <= required_far_clip_mm:
             projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
         return projection, distance
+
+    @staticmethod
+    def _frame_target(
+        projection: Projection,
+        target_mm: tuple[float, float, float],
+        azimuth_degrees: float,
+        elevation_degrees: float,
+        roll_degrees: float,
+        aspect_ratio: float,
+        framing_points: tuple[tuple[float, float, float], ...],
+    ) -> tuple[float, float, float]:
+        if not isinstance(projection, OrthographicProjection):
+            return target_mm
+        camera = orbit_camera(
+            target_mm=target_mm,
+            azimuth_degrees=azimuth_degrees,
+            elevation_degrees=elevation_degrees,
+            roll_degrees=roll_degrees,
+            distance_mm=1.0,
+            projection=projection,
+        )
+        diagnostics = camera_diagnostics(camera, target_mm=target_mm, aspect_ratio=aspect_ratio)
+        offsets = [
+            cast(
+                tuple[float, float, float],
+                tuple(point[axis] - target_mm[axis] for axis in range(3)),
+            )
+            for point in framing_points
+        ]
+        right_coordinates = [
+            BlenderController._dot(offset, diagnostics.right) for offset in offsets
+        ]
+        up_coordinates = [BlenderController._dot(offset, diagnostics.up) for offset in offsets]
+        right_shift = (min(right_coordinates) + max(right_coordinates)) / 2
+        up_shift = (min(up_coordinates) + max(up_coordinates)) / 2
+        return cast(
+            tuple[float, float, float],
+            tuple(
+                target_mm[axis]
+                + right_shift * diagnostics.right[axis]
+                + up_shift * diagnostics.up[axis]
+                for axis in range(3)
+            ),
+        )
 
     @staticmethod
     def _bounds_corners(bounds: Bounds) -> tuple[tuple[float, float, float], ...]:
