@@ -590,7 +590,10 @@ def _limit_command(
 
 def _prlimit_path() -> Path:
     system_executable = Path("/usr/bin/prlimit")
-    candidates = (system_executable, Path(shutil.which("prlimit") or ""))
+    candidates = [system_executable]
+    discovered = shutil.which("prlimit")
+    if discovered is not None:
+        candidates.append(Path(discovered))
     for candidate in candidates:
         try:
             resolved = candidate.resolve(strict=True)
