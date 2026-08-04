@@ -26,6 +26,7 @@ from meshprobe.controller import (
 from meshprobe.identity import stable_component_id
 from meshprobe.models import (
     Bounds,
+    CameraFramingReceipt,
     CameraMotionResult,
     CameraRotationReceipt,
     CameraTranslationReceipt,
@@ -45,6 +46,7 @@ from meshprobe.models import (
     OrthonormalBasis,
     PerspectiveProjection,
     PresetIllumination,
+    ProjectedComponentBounds,
     RenderManifest,
     SceneManifest,
     SessionSnapshot,
@@ -648,7 +650,25 @@ def test_focused_context_camera_stays_outside_scene_and_preserves_framing() -> N
 def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     controller = BlenderController()
     controller._manifest = scene_manifest
+    target = scene_manifest.components[-1]
     snapshot = InspectionSession(scene_manifest).snapshot()
+    snapshot = snapshot.model_copy(
+        update={
+            "camera_diagnostics": snapshot.camera_diagnostics.model_copy(
+                update={
+                    "projected_bounds": {
+                        target.id: ProjectedComponentBounds(
+                            projection_status="in_front",
+                            minimum_image_xy=(0.1, 0.2),
+                            maximum_image_xy=(0.9, 0.8),
+                            minimum_depth_mm=10,
+                            maximum_depth_mm=20,
+                        )
+                    }
+                }
+            )
+        }
+    )
     captured: dict[str, Any] = {}
 
     def request(operation: str, **arguments: object) -> dict[str, object]:
@@ -657,23 +677,61 @@ def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypat
         return snapshot.model_dump(mode="json")
 
     monkeypatch.setattr(controller, "request", request)
-    target = scene_manifest.components[-1]
-
     result = controller.execute(
         ViewFrameCommand(request_id="frame", op="view.frame", focus_component_ids=(target.id,))
     )
 
     assert captured["operation"] == "view.orbit"
     arguments = captured["arguments"]
-    assert arguments["target_mm"] == [0.0, 0.0, 0.0]
+    target_mm = cast(list[float], arguments["target_mm"])
+    assert target_mm != [0.0, 0.0, 0.0]
+    assert all(
+        minimum <= coordinate <= maximum
+        for coordinate, minimum, maximum in zip(
+            target_mm,
+            target.world_bounds.minimum_mm,
+            target.world_bounds.maximum_mm,
+            strict=True,
+        )
+    )
     assert arguments["focus_component_ids"] == [target.id]
     assert cast(float, arguments["distance_mm"]) > 0.0
     assert result == {
         "camera": snapshot.camera.model_dump(mode="json"),
         "camera_diagnostics": snapshot.camera_diagnostics.model_dump(mode="json"),
         "state_sha256": snapshot.state_sha256,
+        "framing": {
+            "component_count": 1,
+            "requested_margin": 1.25,
+            "measurement_status": "measured",
+            "width_fraction": pytest.approx(0.8),
+            "height_fraction": pytest.approx(0.6),
+        },
     }
     assert [operation for operation, _ in controller._accepted_commands] == ["view.orbit"]
+
+
+def test_framing_receipt_does_not_reject_an_accepted_camera_mutation() -> None:
+    receipt = BlenderController._framing_receipt(
+        {
+            "camera_diagnostics": {
+                "projected_bounds": {
+                    "cmp-a": {"projection_status": "behind_camera"},
+                }
+            }
+        },
+        component_count=1,
+        margin=1.25,
+    )
+
+    assert receipt == {
+        "component_count": 1,
+        "requested_margin": 1.25,
+        "measurement_status": "unavailable",
+        "width_fraction": None,
+        "height_fraction": None,
+    }
+    assert CameraFramingReceipt.model_validate(receipt).measurement_status == "unavailable"
 
 
 def test_frame_view_rejects_unknown_focus_component(scene_manifest) -> None:  # type: ignore[no-untyped-def]
@@ -720,15 +778,14 @@ def test_frame_camera_fits_perspective_and_orthographic_projections() -> None:
         margin=1.5,
     )
     assert isinstance(orthographic, OrthographicProjection)
-    span = math.sqrt(3 * 40.0**2)
-    assert orthographic.scale_mm == pytest.approx(span * 1.5)
-    assert ortho_distance == pytest.approx(span)
+    bounding_radius = math.sqrt(3 * 20.0**2)
+    assert orthographic.scale_mm == pytest.approx(40 * 1.5)
+    assert ortho_distance == pytest.approx(bounding_radius + 1)
 
 
 def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> None:
     bounds = Bounds(minimum_mm=(-20.0, -20.0, -20.0), maximum_mm=(20.0, 20.0, 20.0))
     target = (0.0, 0.0, 0.0)
-    span = math.sqrt(3 * 40.0**2)
     landscape, _ = BlenderController._frame_camera(
         OrthographicProjection(scale_mm=1.0),
         bounds,
@@ -751,11 +808,141 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
     )
     assert isinstance(landscape, OrthographicProjection)
     assert isinstance(portrait, OrthographicProjection)
-    # Landscape/square frames the vertical extent directly; portrait must enlarge scale_mm so
-    # the horizontal extent (scale_mm * aspect_ratio) still covers the bounds.
-    assert landscape.scale_mm == pytest.approx(span * 1.2)
-    assert portrait.scale_mm == pytest.approx(span * 1.2 / 0.5)
-    assert portrait.scale_mm * 0.5 == pytest.approx(span * 1.2)
+    # Blender AUTO sensor fitting shrinks the non-fitted axis at non-square aspects.
+    assert landscape.scale_mm == pytest.approx(2 * 20 * 1.6 * 1.2)
+    assert portrait.scale_mm == pytest.approx(2 * 20 / 0.5 * 1.2)
+    assert portrait.scale_mm * 0.5 == pytest.approx(2 * 20 * 1.2)
+
+
+def test_frame_camera_orthographic_scale_preserves_submillimeter_fill() -> None:
+    bounds = Bounds(
+        minimum_mm=(-0.1, -0.1, -0.1),
+        maximum_mm=(0.1, 0.1, 0.1),
+    )
+
+    projection, _ = BlenderController._frame_camera(
+        OrthographicProjection(scale_mm=1.0),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+    )
+
+    assert isinstance(projection, OrthographicProjection)
+    assert projection.scale_mm == pytest.approx(0.2)
+
+
+def test_frame_camera_perspective_distance_preserves_submillimeter_fill() -> None:
+    bounds = Bounds(
+        minimum_mm=(-0.1, -0.1, -0.1),
+        maximum_mm=(0.1, 0.1, 0.1),
+    )
+
+    projection, distance = BlenderController._frame_camera(
+        PerspectiveProjection(near_clip_mm=1e-6),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+    )
+
+    assert isinstance(projection, PerspectiveProjection)
+    assert distance == pytest.approx(0.3777777778)
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [OrthographicProjection(scale_mm=1.0), PerspectiveProjection()],
+)
+def test_frame_target_centers_sparse_points(
+    projection: OrthographicProjection | PerspectiveProjection,
+) -> None:
+    target = (10.0, 20.0, 30.0)
+    camera = orbit_camera(
+        target_mm=target,
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=10.0,
+        distance_mm=1.0,
+        projection=projection,
+    )
+    diagnostics = camera_diagnostics(camera, target_mm=target, aspect_ratio=1.0)
+    points = tuple(
+        cast(
+            tuple[float, float, float],
+            tuple(
+                target[axis]
+                + right_coordinate * diagnostics.right[axis]
+                + up_coordinate * diagnostics.up[axis]
+                for axis in range(3)
+            ),
+        )
+        for right_coordinate, up_coordinate in ((-0.7, -2.0), (1.4, 0.5))
+    )
+
+    centered = BlenderController._frame_target(
+        projection,
+        target,
+        azimuth_degrees=35.0,
+        elevation_degrees=20.0,
+        roll_degrees=10.0,
+        aspect_ratio=1.0,
+        margin=1.25,
+        framing_points=points,
+    )
+
+    shift = cast(
+        tuple[float, float, float],
+        tuple(centered[axis] - target[axis] for axis in range(3)),
+    )
+    assert BlenderController._dot(shift, diagnostics.right) == pytest.approx(0.35)
+    assert BlenderController._dot(shift, diagnostics.up) == pytest.approx(-0.75)
+    assert BlenderController._dot(shift, diagnostics.forward) == pytest.approx(0.0)
+
+
+def test_frame_camera_fits_component_corners_instead_of_phantom_union_corners() -> None:
+    bounds = Bounds(
+        minimum_mm=(-510.0, -510.0, -10.0),
+        maximum_mm=(510.0, 510.0, 10.0),
+    )
+    component_bounds = (
+        Bounds(minimum_mm=(490.0, -10.0, -10.0), maximum_mm=(510.0, 10.0, 10.0)),
+        Bounds(minimum_mm=(-510.0, -510.0, -10.0), maximum_mm=(-490.0, -490.0, 10.0)),
+        Bounds(minimum_mm=(-510.0, 490.0, -10.0), maximum_mm=(-490.0, 510.0, 10.0)),
+    )
+    component_corners = tuple(
+        corner for item in component_bounds for corner in BlenderController._bounds_corners(item)
+    )
+    _, aggregate_distance = BlenderController._frame_camera(
+        PerspectiveProjection(),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+    )
+    _, component_distance = BlenderController._frame_camera(
+        PerspectiveProjection(),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+        framing_points=component_corners,
+    )
+
+    assert aggregate_distance == pytest.approx(1_926.6666667)
+    assert component_distance == pytest.approx(926.6666667)
 
 
 def test_frame_camera_keeps_wide_fov_camera_outside_bounds() -> None:

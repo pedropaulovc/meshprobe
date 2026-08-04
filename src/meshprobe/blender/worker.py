@@ -714,6 +714,7 @@ def apply_camera(
     if mode == "orthographic":
         data.type = "ORTHO"
         data.ortho_scale = projection["scale_mm"] / MILLIMETERS_PER_METER
+        data.sensor_fit = "AUTO"
         data.dof.use_dof = False
     else:
         data.type = "PERSP"
@@ -1197,13 +1198,11 @@ def camera_diagnostics(
     right = matrix.to_3x3().col[0].normalized()
     up = matrix.to_3x3().col[1].normalized()
     forward = -matrix.to_3x3().col[2].normalized()
-    y_resolution = 1_000
-    x_resolution = max(1, round(y_resolution * aspect_ratio))
     projection = camera.calc_matrix_camera(
         bpy.context.evaluated_depsgraph_get(),
-        x=x_resolution,
-        y=y_resolution,
-        scale_x=1.0,
+        x=1_000,
+        y=1_000,
+        scale_x=aspect_ratio,
         scale_y=1.0,
     )
     inverse_projection = projection.inverted()

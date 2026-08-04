@@ -1888,7 +1888,7 @@ def view_frame(
     components: Annotated[
         list[str],
         typer.Argument(
-            help="Component refs, stable IDs, exact names, or exact paths to frame tightly."
+            help="Component refs, stable IDs, exact names, paths, or globs to frame tightly."
         ),
     ],
     azimuth: Annotated[
@@ -1908,7 +1908,8 @@ def view_frame(
         typer.Option(
             "--margin",
             min=0.01,
-            help="Padding factor around the bounds; 1.0 is a tight fit, higher zooms out.",
+            help="Padding around selected component world bounds; 1.0 fits tightly, higher "
+            "zooms out.",
         ),
     ] = 1.25,
     projection_json: Annotated[

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   available for callers that need structured documentation.
 - A wildcard-looking `find --name` that returns no matches now explains that `--name` is exact and
   points to the positional glob form.
+- Multi-component camera framing now projects each selected component's world-bound corners
+  instead of the empty corners of their aggregate AABB, avoiding excessive padding on sparse,
+  high-aspect assemblies. Results also report achieved width and height fill.
 
 ## [1.2.2] - 2026-07-21
 

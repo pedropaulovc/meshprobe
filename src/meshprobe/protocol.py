@@ -40,6 +40,7 @@ from meshprobe.models import (
     ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
+    ViewFrameResult,
 )
 from meshprobe.selectors import ComponentSelector
 
@@ -415,7 +416,7 @@ _RESULT_MODELS: dict[str, object] = {
     "component.occlusion": OcclusionQueryResult,
     "view.set": CameraViewResult,
     "view.orbit": CameraViewResult,
-    "view.frame": CameraViewResult,
+    "view.frame": ViewFrameResult,
     "view.move": CameraMotionResult,
     "view.rotate": CameraMotionResult,
     "illumination.set": IlluminationResult,
