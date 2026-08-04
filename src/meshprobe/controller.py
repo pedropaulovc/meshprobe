@@ -550,15 +550,17 @@ class BlenderController:
             if component.id in focus_id_set
             for corner in self._bounds_corners(component.world_bounds)
         )
-        center = self._frame_target(
-            command.projection,
-            center,
-            command.azimuth_degrees,
-            command.elevation_degrees,
-            command.roll_degrees,
-            command.aspect_ratio,
-            framing_points,
-        )
+        if len(focus_ids) > 1:
+            center = self._frame_target(
+                command.projection,
+                center,
+                command.azimuth_degrees,
+                command.elevation_degrees,
+                command.roll_degrees,
+                command.aspect_ratio,
+                command.margin,
+                framing_points,
+            )
         projection, distance = self._frame_camera(
             command.projection,
             bounds,
@@ -722,10 +724,9 @@ class BlenderController:
         elevation_degrees: float,
         roll_degrees: float,
         aspect_ratio: float,
+        margin: float,
         framing_points: tuple[tuple[float, float, float], ...],
     ) -> tuple[float, float, float]:
-        if not isinstance(projection, OrthographicProjection):
-            return target_mm
         camera = orbit_camera(
             target_mm=target_mm,
             azimuth_degrees=azimuth_degrees,
@@ -746,8 +747,37 @@ class BlenderController:
             BlenderController._dot(offset, diagnostics.right) for offset in offsets
         ]
         up_coordinates = [BlenderController._dot(offset, diagnostics.up) for offset in offsets]
-        right_shift = (min(right_coordinates) + max(right_coordinates)) / 2
-        up_shift = (min(up_coordinates) + max(up_coordinates)) / 2
+        if isinstance(projection, OrthographicProjection):
+            right_shift = (min(right_coordinates) + max(right_coordinates)) / 2
+            up_shift = (min(up_coordinates) + max(up_coordinates)) / 2
+        else:
+            horizontal_fov = diagnostics.horizontal_fov_degrees
+            vertical_fov = diagnostics.vertical_fov_degrees
+            if horizontal_fov is None or vertical_fov is None:
+                raise BlenderWorkerError("perspective camera did not report a field of view")
+            depths = [BlenderController._dot(offset, diagnostics.forward) for offset in offsets]
+            right_scale = margin / math.tan(math.radians(horizontal_fov / 2))
+            up_scale = margin / math.tan(math.radians(vertical_fov / 2))
+            right_shift = (
+                max(
+                    right_scale * coordinate - depth
+                    for coordinate, depth in zip(right_coordinates, depths, strict=True)
+                )
+                - max(
+                    -right_scale * coordinate - depth
+                    for coordinate, depth in zip(right_coordinates, depths, strict=True)
+                )
+            ) / (2 * right_scale)
+            up_shift = (
+                max(
+                    up_scale * coordinate - depth
+                    for coordinate, depth in zip(up_coordinates, depths, strict=True)
+                )
+                - max(
+                    -up_scale * coordinate - depth
+                    for coordinate, depth in zip(up_coordinates, depths, strict=True)
+                )
+            ) / (2 * up_scale)
         return cast(
             tuple[float, float, float],
             tuple(

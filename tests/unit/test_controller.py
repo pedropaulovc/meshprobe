@@ -779,9 +779,14 @@ def test_frame_camera_orthographic_scale_compensates_for_portrait_aspect() -> No
     assert portrait.scale_mm * 0.5 == pytest.approx(2 * 20 * 1.2)
 
 
-def test_frame_target_centers_sparse_orthographic_points() -> None:
+@pytest.mark.parametrize(
+    "projection",
+    [OrthographicProjection(scale_mm=1.0), PerspectiveProjection()],
+)
+def test_frame_target_centers_sparse_points(
+    projection: OrthographicProjection | PerspectiveProjection,
+) -> None:
     target = (10.0, 20.0, 30.0)
-    projection = OrthographicProjection(scale_mm=1.0)
     camera = orbit_camera(
         target_mm=target,
         azimuth_degrees=35.0,
@@ -811,6 +816,7 @@ def test_frame_target_centers_sparse_orthographic_points() -> None:
         elevation_degrees=20.0,
         roll_degrees=10.0,
         aspect_ratio=1.0,
+        margin=1.25,
         framing_points=points,
     )
 
