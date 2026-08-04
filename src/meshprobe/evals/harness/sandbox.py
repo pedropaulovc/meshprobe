@@ -320,15 +320,12 @@ def isolated_process_command(
         public,
         artifacts,
         environment or {},
+        limits=limits or IsolationLimits(),
         network=network,
         read_only_mounts=read_only_mounts,
         path_entries=path_entries,
     )
-    return _limit_command(
-        sandbox_command,
-        limits or IsolationLimits(),
-        existing_user_tasks=_user_task_count(),
-    )
+    return sandbox_command
 
 
 def _bubblewrap_path(configured: str | Path | None) -> Path:
@@ -347,14 +344,22 @@ def _sandbox_command(
     artifact_root: Path,
     environment: Mapping[str, str],
     *,
+    limits: IsolationLimits,
     network: NetworkAccess = NetworkAccess.BLOCKED,
     read_only_mounts: tuple[tuple[Path, PurePosixPath], ...] = (),
     path_entries: tuple[PurePosixPath, ...] = (),
 ) -> tuple[str, ...]:
     mounts, translated_command = _sandbox_agent_command(command)
+    limit_executable = _prlimit_path()
+    limited_command = _limit_command(
+        translated_command,
+        limits,
+        executable=PurePosixPath(str(limit_executable)),
+    )
     args = [
         str(bubblewrap),
         "--unshare-all",
+        "--unshare-user",
         "--new-session",
         "--die-with-parent",
         "--cap-drop",
@@ -437,7 +442,7 @@ def _sandbox_command(
         if not name or "=" in name or "\x00" in name or "\x00" in value:
             raise ValueError(f"invalid sandbox environment entry: {name!r}")
         args.extend(("--setenv", name, value))
-    args.extend(("--", *translated_command))
+    args.extend(("--", *limited_command))
     return tuple(args)
 
 
@@ -570,42 +575,33 @@ def _limit_command(
     command: tuple[str, ...],
     limits: IsolationLimits,
     *,
-    existing_user_tasks: int,
+    executable: PurePosixPath,
 ) -> tuple[str, ...]:
-    executable = shutil.which("prlimit")
-    if executable is None:
-        raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
-    process_ceiling = existing_user_tasks + limits.processes
     return (
-        str(Path(executable).resolve(strict=True)),
+        str(executable),
         f"--cpu={limits.cpu_seconds}:{limits.cpu_seconds}",
         f"--as={limits.memory_bytes}:{limits.memory_bytes}",
         f"--fsize={limits.output_bytes}:{limits.output_bytes}",
-        f"--nproc={process_ceiling}:{process_ceiling}",
+        f"--nproc={limits.processes}:{limits.processes}",
         "--",
         *command,
     )
 
 
-def _user_task_count() -> int:
-    """Count UID-owned kernel tasks because RLIMIT_NPROC includes threads."""
-
-    user_id = os.getuid()
-    count = 0
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
+def _prlimit_path() -> Path:
+    system_executable = Path("/usr/bin/prlimit")
+    candidates = [system_executable]
+    discovered = shutil.which("prlimit")
+    if discovered is not None:
+        candidates.append(Path(discovered))
+    for candidate in candidates:
         try:
-            owned_by_user = entry.stat().st_uid == user_id
-        except FileNotFoundError:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, OSError):
             continue
-        if not owned_by_user:
-            continue
-        try:
-            count += sum(child.name.isdigit() for child in (entry / "task").iterdir())
-        except FileNotFoundError:
-            continue
-    return count
+        if resolved.is_relative_to("/usr"):
+            return resolved
+    raise SandboxUnavailable("util-linux prlimit must be installed under /usr")
 
 
 def _artifact_tree_bytes(root: Path) -> int:
