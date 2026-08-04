@@ -16,6 +16,7 @@ from meshprobe.models import (
     DepthOfFieldMode,
     EdgeType,
     EnvironmentMap,
+    IlluminationFrame,
     IlluminationPreset,
     MarkMode,
     OccluderRemovalStep,
@@ -396,6 +397,17 @@ def test_preset_illumination_accepts_display_referred_background() -> None:
     assert illumination.background_srgb == (1, 1, 1)
     assert illumination.background_rgb is None
     assert illumination.background_strength is None
+
+
+def test_preset_illumination_supports_explicit_camera_relative_rigs() -> None:
+    world = PresetIllumination(preset=IlluminationPreset.HIGH_KEY)
+    camera = PresetIllumination(
+        preset=IlluminationPreset.HIGH_KEY,
+        frame=IlluminationFrame.CAMERA,
+    )
+
+    assert world.frame is IlluminationFrame.WORLD
+    assert camera.model_dump(mode="json")["frame"] == "camera"
 
 
 def test_preset_illumination_rejects_display_and_linear_background_together() -> None:

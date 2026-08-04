@@ -18,6 +18,7 @@ from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.models import (
     CoordinateFrame,
+    IlluminationFrame,
     OrthographicProjection,
     PerspectiveProjection,
     PresetIllumination,
@@ -1087,6 +1088,21 @@ def test_cli_resolves_source_and_render_paths_before_daemon_handoff(
     assert render_command.style is RenderStyle.SCREEN_EDGES
 
 
+def test_render_image_cli_forwards_exposure_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["--session", "review", "render-image", "--samples", "1", "--exposure", "1.5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    (command,) = client.commands
+    assert isinstance(command, RenderImageCommand)
+    assert command.exposure_stops == 1.5
+
+
 @pytest.mark.parametrize("terminal_width", [80, 120])
 def test_render_help_explains_style_policy_at_common_widths(terminal_width: int) -> None:
     result = runner.invoke(
@@ -2086,6 +2102,59 @@ def test_illumination_cli_accepts_display_referred_background(
     assert isinstance(command.illumination, PresetIllumination)
     assert command.illumination.background_srgb == (1, 1, 1)
     assert command.illumination.background_rgb is None
+
+
+def test_illumination_cli_accepts_camera_relative_named_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(
+        app,
+        ["illumination-set", "high_key", "--frame", "camera"],
+    )
+
+    assert result.exit_code == 0, result.output
+    (command,) = client.commands
+    assert isinstance(command, IlluminationSetCommand)
+    assert isinstance(command.illumination, PresetIllumination)
+    assert command.illumination.frame is IlluminationFrame.CAMERA
+
+
+def test_illumination_cli_rejects_camera_frame_for_custom_specification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    illumination_path = tmp_path / "illumination.json"
+    illumination_path.write_text(
+        json.dumps(
+            {
+                "preset": "custom",
+                "background_rgb": [0.1, 0.1, 0.1],
+                "ambient_strength": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "illumination-set",
+            "custom",
+            "--illumination-json",
+            str(illumination_path),
+            "--frame",
+            "camera",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "available only for named presets" in result.output
+    assert client.commands == []
 
 
 def test_illumination_cli_rejects_display_and_linear_background_together(

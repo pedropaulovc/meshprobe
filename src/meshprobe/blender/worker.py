@@ -747,6 +747,7 @@ def apply_camera(
         aspect_ratio,
         target_mm,
     )
+    refresh_camera_relative_illumination()
     orient_component_labels()
     return session_snapshot()
 
@@ -1406,9 +1407,21 @@ def look_orientation(position_mm: Vector, target_mm: Vector) -> list[float]:
     return [rotation.x, rotation.y, rotation.z, rotation.w]
 
 
-def preset_lights(preset: str) -> dict[str, Any]:
+def preset_axes(frame: str) -> tuple[Vector, Vector, Vector]:
+    if frame == "world":
+        return scene_frame()
+    if frame != "camera":
+        raise ValueError(f"unknown illumination frame: {frame}")
+    rotation = camera_object().matrix_world.to_quaternion()
+    right = rotation @ Vector((1, 0, 0))
+    forward = rotation @ Vector((0, 0, -1))
+    up = rotation @ Vector((0, 1, 0))
+    return right.normalized(), forward.normalized(), up.normalized()
+
+
+def preset_lights(preset: str, frame: str = "world") -> dict[str, Any]:
     center, span = scene_center_and_span()
-    frame = scene_frame()
+    axes = preset_axes(frame)
     power_scale = (span / PRESET_REFERENCE_SPAN_MM) ** 2
     background = [0.03, 0.03, 0.03]
     ambient = 0.15
@@ -1422,14 +1435,14 @@ def preset_lights(preset: str) -> dict[str, Any]:
         background = [0.10, 0.10, 0.10]
         ambient = 0.5
         definitions = [
-            ("key", center + frame_offset(frame, (span, -span, span)), 1_400.0, span),
+            ("key", center + frame_offset(axes, (span, -span, span)), 1_400.0, span),
             (
                 "fill",
-                center + frame_offset(frame, (-span, -span / 2, span / 2)),
+                center + frame_offset(axes, (-span, -span / 2, span / 2)),
                 800.0,
                 span,
             ),
-            ("rim", center + frame_offset(frame, (0, span, span)), 900.0, span / 2),
+            ("rim", center + frame_offset(axes, (0, span, span)), 900.0, span / 2),
         ]
     elif preset == "high_key":
         background = [0.25, 0.25, 0.25]
@@ -1437,19 +1450,19 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [
             (
                 "key",
-                center + frame_offset(frame, (span, -span, span)),
+                center + frame_offset(axes, (span, -span, span)),
                 1_200.0,
                 span * 1.5,
             ),
             (
                 "fill",
-                center + frame_offset(frame, (-span, -span, span)),
+                center + frame_offset(axes, (-span, -span, span)),
                 1_000.0,
                 span * 1.5,
             ),
             (
                 "under",
-                center + frame_offset(frame, (0, 0, -span)),
+                center + frame_offset(axes, (0, 0, -span)),
                 700.0,
                 span * 1.5,
             ),
@@ -1459,20 +1472,20 @@ def preset_lights(preset: str) -> dict[str, Any]:
         definitions = [
             (
                 "rake",
-                center + frame_offset(frame, (side * span * 2, -span / 4, span / 8)),
+                center + frame_offset(axes, (side * span * 2, -span / 4, span / 8)),
                 1_000.0,
                 span / 3,
             )
         ]
     elif preset == "backlit":
-        definitions = [("back", center + frame_offset(frame, (0, span * 2, 0)), 1_200.0, span)]
+        definitions = [("back", center + frame_offset(axes, (0, span * 2, 0)), 1_200.0, span)]
     elif preset == "flat_diagnostic":
         background = [0.18, 0.18, 0.18]
         ambient = 0.25
         definitions = [
             (
                 f"axis-{index}",
-                center + frame_offset(frame, tuple(direction * span)),
+                center + frame_offset(axes, tuple(direction * span)),
                 500.0,
                 span * 2,
             )
@@ -1643,7 +1656,7 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("custom illumination must have non-zero light output")
         runtime = resolved
     else:
-        runtime = preset_lights(illumination["preset"])
+        runtime = preset_lights(illumination["preset"], illumination.get("frame", "world"))
         srgb_override = illumination.get("background_srgb")
         background_override = illumination.get("background_rgb")
         strength_override = illumination.get("background_strength")
@@ -1685,6 +1698,15 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
     global CURRENT_ILLUMINATION
     CURRENT_ILLUMINATION = resolved
     return session_snapshot()
+
+
+def refresh_camera_relative_illumination() -> None:
+    illumination = CURRENT_ILLUMINATION
+    if illumination is None or illumination.get("preset") == "custom":
+        return
+    if illumination.get("frame", "world") != "camera":
+        return
+    apply_illumination(deepcopy(illumination))
 
 
 def restore_mesh(component_id: str) -> None:
@@ -2035,6 +2057,26 @@ def runtime_diagnostics() -> dict[str, Any]:
             "depth_of_field": resolved_depth_of_field(),
         },
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
+        "light_details": {
+            obj.name: {
+                "position_mm": [
+                    float(value * MILLIMETERS_PER_METER) for value in obj.matrix_world.translation
+                ],
+                "orientation_xyzw": [
+                    float(value)
+                    for value in (
+                        obj.matrix_world.to_quaternion().x,
+                        obj.matrix_world.to_quaternion().y,
+                        obj.matrix_world.to_quaternion().z,
+                        obj.matrix_world.to_quaternion().w,
+                    )
+                ],
+            }
+            for obj in sorted(
+                (candidate for candidate in bpy.context.scene.objects if candidate.type == "LIGHT"),
+                key=lambda candidate: candidate.name,
+            )
+        },
         "environment_map": (
             {
                 "path": environment.image.filepath,
@@ -2131,6 +2173,17 @@ def temporary_render_style() -> Iterator[None]:
         if original_line_style is not None:
             original_line_style.color = original_color
             original_line_style.thickness = original_thickness
+
+
+@contextmanager
+def temporary_exposure(exposure_stops: float) -> Iterator[None]:
+    view_settings = bpy.context.scene.view_settings
+    original_exposure = view_settings.exposure
+    view_settings.exposure = exposure_stops
+    try:
+        yield
+    finally:
+        view_settings.exposure = original_exposure
 
 
 def configure_render_style(command: dict[str, Any]) -> None:
@@ -3174,7 +3227,8 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
             "evaluator passes require Blender 5.2 or newer; Blender 4.2 software "
             "compatibility mode supports shaded and shaded_edges renders only"
         )
-    with temporary_render_style():
+    exposure_stops = command.get("exposure_stops", 0.0)
+    with temporary_render_style(), temporary_exposure(exposure_stops):
         device = configure_render(command)
         configure_render_style(command)
         backdrop = display_referred_background()
@@ -3211,6 +3265,7 @@ def render_image(command: dict[str, Any]) -> dict[str, Any]:
         "width": command["width"],
         "height": command["height"],
         "samples": command["samples"],
+        "exposure_stops": exposure_stops,
         "engine": command["engine"],
         "style": style,
         "shaded_edges": shaded_edges,
