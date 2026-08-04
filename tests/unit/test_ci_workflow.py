@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "ci.yml"
 PR_GROUP_EXPRESSION = (
     "ci-${{ github.event_name == 'pull_request' && "
