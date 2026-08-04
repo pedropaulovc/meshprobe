@@ -2060,15 +2060,15 @@ def runtime_diagnostics() -> dict[str, Any]:
         "light_details": {
             obj.name: {
                 "position_mm": [
-                    float(value * MILLIMETERS_PER_METER) for value in obj.matrix_world.translation
+                    float(value * MILLIMETERS_PER_METER) for value in obj.location
                 ],
                 "orientation_xyzw": [
                     float(value)
                     for value in (
-                        obj.matrix_world.to_quaternion().x,
-                        obj.matrix_world.to_quaternion().y,
-                        obj.matrix_world.to_quaternion().z,
-                        obj.matrix_world.to_quaternion().w,
+                        obj.rotation_quaternion.x,
+                        obj.rotation_quaternion.y,
+                        obj.rotation_quaternion.z,
+                        obj.rotation_quaternion.w,
                     )
                 ],
             }
