@@ -14,6 +14,8 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import IO, Protocol
 
+_PROCESS_TERMINATION_GRACE_SECONDS = 10
+
 
 class SandboxUnavailable(RuntimeError):
     """The host cannot provide the required network and filesystem isolation."""
@@ -84,7 +86,7 @@ class IsolatedProcess:
         if self.process.poll() is not None:
             return
         self.process.kill()
-        self.process.wait(timeout=2)
+        self.process.wait(timeout=_PROCESS_TERMINATION_GRACE_SECONDS)
 
 
 class ArtifactBudgetProcess:

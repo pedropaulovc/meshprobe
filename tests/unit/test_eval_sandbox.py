@@ -9,10 +9,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path, PurePosixPath
+from unittest.mock import Mock
 
 import pytest
 
 from meshprobe.evals.harness.sandbox import (
+    IsolatedProcess,
     IsolationLimits,
     SandboxUnavailable,
     _sandbox_agent_command,
@@ -159,6 +161,29 @@ def test_sandbox_timeout_terminates_agent(tmp_path: Path) -> None:
 
     assert result.timed_out
     assert result.returncode != 0
+
+
+def test_terminate_allows_a_delayed_process_exit_after_kill() -> None:
+    process = Mock(returncode=None)
+    process.poll.return_value = None
+
+    def wait(timeout: float | None = None) -> int:
+        assert timeout == 10
+        process.returncode = 1
+        return 1
+
+    process.wait.side_effect = wait
+    isolated = IsolatedProcess(
+        command=("agent",),
+        process=process,
+        started_monotonic=0,
+        wall_seconds=1,
+    )
+
+    isolated.terminate()
+
+    process.kill.assert_called_once_with()
+    assert process.returncode == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="AppContainer ACL serialization is Windows-specific")
