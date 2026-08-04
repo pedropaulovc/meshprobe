@@ -682,7 +682,17 @@ def test_frame_view_orbits_onto_focus_component_bounds(scene_manifest, monkeypat
 
     assert captured["operation"] == "view.orbit"
     arguments = captured["arguments"]
-    assert arguments["target_mm"] == [0.0, 0.0, 0.0]
+    target_mm = cast(list[float], arguments["target_mm"])
+    assert target_mm != [0.0, 0.0, 0.0]
+    assert all(
+        minimum <= coordinate <= maximum
+        for coordinate, minimum, maximum in zip(
+            target_mm,
+            target.world_bounds.minimum_mm,
+            target.world_bounds.maximum_mm,
+            strict=True,
+        )
+    )
     assert arguments["focus_component_ids"] == [target.id]
     assert cast(float, arguments["distance_mm"]) > 0.0
     assert result == {
@@ -798,6 +808,27 @@ def test_frame_camera_orthographic_scale_preserves_submillimeter_fill() -> None:
 
     assert isinstance(projection, OrthographicProjection)
     assert projection.scale_mm == pytest.approx(0.2)
+
+
+def test_frame_camera_perspective_distance_preserves_submillimeter_fill() -> None:
+    bounds = Bounds(
+        minimum_mm=(-0.1, -0.1, -0.1),
+        maximum_mm=(0.1, 0.1, 0.1),
+    )
+
+    projection, distance = BlenderController._frame_camera(
+        PerspectiveProjection(near_clip_mm=1e-6),
+        bounds,
+        (0.0, 0.0, 0.0),
+        azimuth_degrees=0.0,
+        elevation_degrees=0.0,
+        roll_degrees=0.0,
+        aspect_ratio=1.0,
+        margin=1.0,
+    )
+
+    assert isinstance(projection, PerspectiveProjection)
+    assert distance == pytest.approx(0.3777777778)
 
 
 @pytest.mark.parametrize(

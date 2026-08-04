@@ -91,7 +91,7 @@ __all__ = [
 ]
 
 DEFAULT_WORKER_TIMEOUT_SECONDS = 180.0
-MIN_FRAME_HALF_EXTENT_MM = 1e-9
+MIN_FRAME_POSITIVE_MM = 1e-9
 
 
 def _default_cache_root() -> Path:
@@ -551,17 +551,16 @@ class BlenderController:
             if component.id in focus_id_set
             for corner in self._bounds_corners(component.world_bounds)
         )
-        if len(focus_ids) > 1:
-            center = self._frame_target(
-                command.projection,
-                center,
-                command.azimuth_degrees,
-                command.elevation_degrees,
-                command.roll_degrees,
-                command.aspect_ratio,
-                command.margin,
-                framing_points,
-            )
+        center = self._frame_target(
+            command.projection,
+            center,
+            command.azimuth_degrees,
+            command.elevation_degrees,
+            command.roll_degrees,
+            command.aspect_ratio,
+            command.margin,
+            framing_points,
+        )
         projection, distance = self._frame_camera(
             command.projection,
             bounds,
@@ -677,9 +676,9 @@ class BlenderController:
                 abs(BlenderController._dot(offset, diagnostics.up)) for offset in offsets
             )
             required_half = (
-                max(half_width, half_height * aspect_ratio, MIN_FRAME_HALF_EXTENT_MM)
+                max(half_width, half_height * aspect_ratio, MIN_FRAME_POSITIVE_MM)
                 if aspect_ratio >= 1
-                else max(half_height, half_width / aspect_ratio, MIN_FRAME_HALF_EXTENT_MM)
+                else max(half_height, half_width / aspect_ratio, MIN_FRAME_POSITIVE_MM)
             )
             projection = projection.model_copy(update={"scale_mm": 2 * required_half * margin})
             bounding_radius = max(
@@ -711,7 +710,11 @@ class BlenderController:
             # Keep the near face in front of the camera and behind any caller-supplied near
             # clip. Unlike the old bounding-sphere floor, this only accounts for the actual
             # closest corner, so depth behind the target no longer adds needless padding.
-            distance = max(framing_distance, projection.near_clip_mm - min(depths), 1.0)
+            distance = max(
+                framing_distance,
+                projection.near_clip_mm - min(depths),
+                MIN_FRAME_POSITIVE_MM,
+            )
         required_far_clip_mm = distance + max(depths)
         if projection.far_clip_mm <= required_far_clip_mm:
             projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
