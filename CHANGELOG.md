@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanup timeout.
 - Daemon-wide close and kill commands now flush their final receipt before shutting down, avoiding
   intermittent empty-response errors.
+- Daemon shutdown no longer reports a missing metadata file while the client waits for the process
+  to exit.
 - Contact-sheet captions now find fitting line breaks without measuring every shorter prefix,
   cutting the default 3x3 worst case from more than 30 seconds to about one second while preserving
   the rendered output.

@@ -118,6 +118,42 @@ def test_list_sessions_falls_back_when_live_pid_has_no_daemon(
     assert client.list_sessions() == [metadata.model_dump(mode="json")]
 
 
+def test_optional_metadata_tolerates_removal_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    path = client.root / "daemon.json"
+    atomic_json(path, _daemon_metadata(os.getpid()), mode=0o600)
+    original_read_text = Path.read_text
+
+    def remove_before_read(candidate: Path, *args: Any, **kwargs: Any) -> str:
+        if candidate == path:
+            candidate.unlink()
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", remove_before_read)
+
+    assert client._metadata(optional=True) is None
+
+
+def test_optional_metadata_does_not_read_non_regular_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    path = client.root / "daemon.json"
+    path.mkdir(parents=True)
+    original_read_text = Path.read_text
+
+    def reject_non_regular_read(candidate: Path, *args: Any, **kwargs: Any) -> str:
+        if candidate == path:
+            pytest.fail("non-regular daemon metadata must not be read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_non_regular_read)
+
+    assert client._metadata(optional=True) is None
+
+
 def test_stale_start_lock_is_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = MeshProbeClient(tmp_path)
     client.root.mkdir(parents=True)

@@ -430,7 +430,13 @@ class MeshProbeClient:
             if optional:
                 return None
             raise ValueError("meshprobe daemon is not running")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            encoded = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if optional:
+                return None
+            raise ValueError("meshprobe daemon is not running") from None
+        payload = json.loads(encoded)
         if not isinstance(payload, dict):
             raise ValueError("invalid daemon metadata")
         return payload
