@@ -43,11 +43,11 @@ when the lighting should follow the active view while orbiting, such as when mat
 photograph. If the chosen rig still lands too dark or bright, `render-image --exposure 1.5` adjusts
 the output by photographic stops and records the adjustment in the render manifest.
 
-`view-frame` computes the camera that tightly fits a component's bounds and persists it like
-`view-orbit`, so a following `render-image` fills the frame with an isolated part instead of
-inheriting a camera framed for the whole assembly. The `--focus` option on the `view-*`
-commands is a projection diagnostic (it reports where components land in the image); it never
-moves the camera.
+`view-frame` computes the camera that tightly fits the selected components' individual world
+bounds and persists it like `view-orbit`. Pass component refs or globs. Its structured result
+reports the achieved width and height fill, so a caller can tune `--margin` without measuring a
+render. The `--focus` option on the `view-*` commands is a projection diagnostic (it reports where
+components land in the image); it never moves the camera.
 
 Normal output is a short receipt containing the result and state paths. Add `--json` or
 `--yaml` for a machine-readable receipt, or `--raw` when the full operation result is actually

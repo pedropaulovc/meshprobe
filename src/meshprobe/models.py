@@ -1362,6 +1362,25 @@ class CameraViewResult(ContractModel):
     )
 
 
+class CameraFramingReceipt(ContractModel):
+    """Measured image-space coverage after a view.frame operation."""
+
+    component_count: Annotated[int, Field(ge=1)]
+    requested_margin: PositiveFiniteFloat
+    width_fraction: NonNegativeFiniteFloat = Field(
+        description="Width of the selected component bounds in normalized frame coordinates."
+    )
+    height_fraction: NonNegativeFiniteFloat = Field(
+        description="Height of the selected component bounds in normalized frame coordinates."
+    )
+
+
+class ViewFrameResult(CameraViewResult):
+    """Result of view.frame, including its achieved image-space fill."""
+
+    framing: CameraFramingReceipt
+
+
 class CameraMotionResult(CameraViewResult):
     """Result of a relative view command (view.move / view.rotate)."""
 

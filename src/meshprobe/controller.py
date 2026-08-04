@@ -543,6 +543,13 @@ class BlenderController:
             raise BlenderWorkerError(f"unknown component ids: {sorted(unknown)}")
         bounds = self._focus_bounds(focus_ids)
         center, _ = self._bounds_center_span(bounds)
+        focus_id_set = set(focus_ids)
+        framing_points = tuple(
+            corner
+            for component in self._manifest.components
+            if component.id in focus_id_set
+            for corner in self._bounds_corners(component.world_bounds)
+        )
         projection, distance = self._frame_camera(
             command.projection,
             bounds,
@@ -552,8 +559,9 @@ class BlenderController:
             command.roll_degrees,
             command.aspect_ratio,
             command.margin,
+            framing_points=framing_points,
         )
-        return self.execute(
+        result = self.execute(
             ViewOrbitCommand(
                 request_id=command.request_id,
                 op="view.orbit",
@@ -567,6 +575,52 @@ class BlenderController:
                 aspect_ratio=command.aspect_ratio,
             )
         )
+        if not isinstance(result, dict):
+            raise BlenderWorkerError("view.frame received an invalid view.orbit result")
+        result["framing"] = self._framing_receipt(result, len(focus_ids), command.margin)
+        return result
+
+    @staticmethod
+    def _framing_receipt(
+        result: dict[str, object], component_count: int, margin: float
+    ) -> dict[str, object]:
+        raw_diagnostics = result.get("camera_diagnostics")
+        if not isinstance(raw_diagnostics, dict):
+            raise BlenderWorkerError("view.frame result omitted camera diagnostics")
+        raw_bounds = raw_diagnostics.get("projected_bounds")
+        if not isinstance(raw_bounds, dict) or len(raw_bounds) != component_count:
+            raise BlenderWorkerError("view.frame result omitted projected component bounds")
+        image_bounds: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for component_id, raw in raw_bounds.items():
+            if not isinstance(raw, dict) or raw.get("projection_status") != "in_front":
+                raise BlenderWorkerError(
+                    f"view.frame component {component_id!r} is not fully in front of the camera"
+                )
+            minimum = raw.get("minimum_image_xy")
+            maximum = raw.get("maximum_image_xy")
+            if (
+                not isinstance(minimum, (list, tuple))
+                or not isinstance(maximum, (list, tuple))
+                or len(minimum) != 2
+                or len(maximum) != 2
+            ):
+                raise BlenderWorkerError(
+                    f"view.frame component {component_id!r} omitted projected image bounds"
+                )
+            image_bounds.append(
+                (
+                    (float(minimum[0]), float(minimum[1])),
+                    (float(maximum[0]), float(maximum[1])),
+                )
+            )
+        return {
+            "component_count": component_count,
+            "requested_margin": margin,
+            "width_fraction": max(maximum[0] for _, maximum in image_bounds)
+            - min(minimum[0] for minimum, _ in image_bounds),
+            "height_fraction": max(maximum[1] for _, maximum in image_bounds)
+            - min(minimum[1] for minimum, _ in image_bounds),
+        }
 
     @staticmethod
     def _frame_camera(
@@ -578,48 +632,59 @@ class BlenderController:
         roll_degrees: float,
         aspect_ratio: float,
         margin: float,
+        *,
+        framing_points: tuple[tuple[float, float, float], ...] | None = None,
     ) -> tuple[Projection, float]:
-        _, span = BlenderController._bounds_center_span(bounds)
-        half_span = span / 2
+        points = framing_points or BlenderController._bounds_corners(bounds)
+        camera = orbit_camera(
+            target_mm=target_mm,
+            azimuth_degrees=azimuth_degrees,
+            elevation_degrees=elevation_degrees,
+            roll_degrees=roll_degrees,
+            distance_mm=1.0,
+            projection=projection,
+        )
+        diagnostics = camera_diagnostics(
+            camera,
+            target_mm=target_mm,
+            aspect_ratio=aspect_ratio,
+        )
+        offsets = [
+            cast(
+                tuple[float, float, float],
+                tuple(point[axis] - target_mm[axis] for axis in range(3)),
+            )
+            for point in points
+        ]
+        depths = [BlenderController._dot(offset, diagnostics.forward) for offset in offsets]
         if isinstance(projection, OrthographicProjection):
-            # Orthographic framing is set by scale_mm, not distance, so the distance only has
-            # to keep the camera outside the bounds and in front of its near plane (below).
-            framing_distance = span
-            # scale_mm is the vertical extent; for portrait aspect ratios the horizontal
-            # extent shrinks to scale_mm * aspect_ratio, so divide it back out to keep the
-            # bounds framed (matches the contact-sheet orthographic panels).
-            projection = projection.model_copy(
-                update={"scale_mm": span * margin / min(aspect_ratio, 1.0)}
+            half_width = max(
+                abs(BlenderController._dot(offset, diagnostics.right)) for offset in offsets
+            )
+            half_height = max(
+                abs(BlenderController._dot(offset, diagnostics.up)) for offset in offsets
+            )
+            required_half = (
+                max(half_width, half_height * aspect_ratio, 0.5)
+                if aspect_ratio >= 1
+                else max(half_height, half_width / aspect_ratio, 0.5)
+            )
+            projection = projection.model_copy(update={"scale_mm": 2 * required_half * margin})
+            bounding_radius = max(
+                math.sqrt(BlenderController._dot(offset, offset)) for offset in offsets
+            )
+            distance = max(
+                bounding_radius + 1.0,
+                projection.near_clip_mm - min(depths),
+                1.0,
             )
         else:
-            camera = orbit_camera(
-                target_mm=target_mm,
-                azimuth_degrees=azimuth_degrees,
-                elevation_degrees=elevation_degrees,
-                roll_degrees=roll_degrees,
-                distance_mm=1.0,
-                projection=projection,
-            )
-            diagnostics = camera_diagnostics(
-                camera,
-                target_mm=target_mm,
-                aspect_ratio=aspect_ratio,
-            )
             horizontal_fov = diagnostics.horizontal_fov_degrees
             vertical_fov = diagnostics.vertical_fov_degrees
             if horizontal_fov is None or vertical_fov is None:
                 raise BlenderWorkerError("perspective camera did not report a field of view")
             horizontal_half_tan = math.tan(math.radians(horizontal_fov / 2))
             vertical_half_tan = math.tan(math.radians(vertical_fov / 2))
-            corners = BlenderController._bounds_corners(bounds)
-            offsets = [
-                cast(
-                    tuple[float, float, float],
-                    tuple(corner[axis] - target_mm[axis] for axis in range(3)),
-                )
-                for corner in corners
-            ]
-            depths = [BlenderController._dot(offset, diagnostics.forward) for offset in offsets]
             framing_distance = max(
                 max(
                     abs(BlenderController._dot(offset, diagnostics.right))
@@ -635,10 +700,7 @@ class BlenderController:
             # clip. Unlike the old bounding-sphere floor, this only accounts for the actual
             # closest corner, so depth behind the target no longer adds needless padding.
             distance = max(framing_distance, projection.near_clip_mm - min(depths), 1.0)
-            required_far_clip_mm = distance + max(depths)
-        if isinstance(projection, OrthographicProjection):
-            distance = max(framing_distance, span, projection.near_clip_mm + half_span, 1.0)
-            required_far_clip_mm = distance + span
+        required_far_clip_mm = distance + max(depths)
         if projection.far_clip_mm <= required_far_clip_mm:
             projection = projection.model_copy(update={"far_clip_mm": required_far_clip_mm * 1.1})
         return projection, distance
