@@ -383,11 +383,45 @@ def test_posix_resource_limits_run_inside_the_sandbox_user_namespace(tmp_path: P
     )
 
     assert Path(command[0]).name == "bwrap"
+    assert "--unshare-user" in command
     agent_separator = command.index("--")
     limited_agent = command[agent_separator + 1 :]
     assert Path(limited_agent[0]).name == "prlimit"
     assert "--nproc=8:8" in limited_agent
     assert limited_agent[-2:] == ("--", "/usr/bin/true")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows process limits use a Job Object")
+def test_posix_sandbox_mounts_prlimit_resolved_outside_usr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    public, artifacts = roots(tmp_path)
+    custom_prlimit = tmp_path / "util-linux" / "bin" / "prlimit"
+    custom_prlimit.parent.mkdir(parents=True)
+    custom_prlimit.write_bytes(b"prlimit")
+    real_which = shutil.which
+
+    def resolve_tool(name: str) -> str | None:
+        if name == "prlimit":
+            return str(custom_prlimit)
+        return real_which(name)
+
+    monkeypatch.setattr(shutil, "which", resolve_tool)
+
+    command = isolated_process_command(
+        ("/usr/bin/true",),
+        input_root=public,
+        artifact_root=artifacts,
+    )
+
+    mount_index = command.index(str(custom_prlimit))
+    assert command[mount_index - 1 : mount_index + 2] == (
+        "--ro-bind",
+        str(custom_prlimit),
+        "/opt/meshprobe-prlimit",
+    )
+    agent_separator = command.index("--")
+    assert command[agent_separator + 1] == "/opt/meshprobe-prlimit"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows process limits use a Job Object")

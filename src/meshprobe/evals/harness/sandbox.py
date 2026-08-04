@@ -350,10 +350,20 @@ def _sandbox_command(
     path_entries: tuple[PurePosixPath, ...] = (),
 ) -> tuple[str, ...]:
     mounts, translated_command = _sandbox_agent_command(command)
-    limited_command = _limit_command(translated_command, limits)
+    limit_executable = _prlimit_path()
+    guest_limit_executable = PurePosixPath(str(limit_executable))
+    if not limit_executable.is_relative_to("/usr"):
+        guest_limit_executable = PurePosixPath("/opt/meshprobe-prlimit")
+        mounts = (*mounts, (limit_executable, guest_limit_executable))
+    limited_command = _limit_command(
+        translated_command,
+        limits,
+        executable=guest_limit_executable,
+    )
     args = [
         str(bubblewrap),
         "--unshare-all",
+        "--unshare-user",
         "--new-session",
         "--die-with-parent",
         "--cap-drop",
@@ -568,12 +578,11 @@ def _node_runtime_root(executable: Path) -> Path | None:
 def _limit_command(
     command: tuple[str, ...],
     limits: IsolationLimits,
+    *,
+    executable: PurePosixPath,
 ) -> tuple[str, ...]:
-    executable = shutil.which("prlimit")
-    if executable is None:
-        raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
     return (
-        str(Path(executable).resolve(strict=True)),
+        str(executable),
         f"--cpu={limits.cpu_seconds}:{limits.cpu_seconds}",
         f"--as={limits.memory_bytes}:{limits.memory_bytes}",
         f"--fsize={limits.output_bytes}:{limits.output_bytes}",
@@ -581,6 +590,13 @@ def _limit_command(
         "--",
         *command,
     )
+
+
+def _prlimit_path() -> Path:
+    executable = shutil.which("prlimit")
+    if executable is None:
+        raise SandboxUnavailable("util-linux prlimit is required for POSIX sandbox limits")
+    return Path(executable).resolve(strict=True)
 
 
 def _artifact_tree_bytes(root: Path) -> int:
