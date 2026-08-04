@@ -2059,9 +2059,7 @@ def runtime_diagnostics() -> dict[str, Any]:
         "lights": sorted(obj.name for obj in bpy.context.scene.objects if obj.type == "LIGHT"),
         "light_details": {
             obj.name: {
-                "position_mm": [
-                    float(value * MILLIMETERS_PER_METER) for value in obj.location
-                ],
+                "position_mm": [float(value * MILLIMETERS_PER_METER) for value in obj.location],
                 "orientation_xyzw": [
                     float(value)
                     for value in (
