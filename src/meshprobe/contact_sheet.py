@@ -186,9 +186,7 @@ def _wrap_text(
             lines.append("")
             continue
         while remaining:
-            end = len(remaining)
-            while end > 1 and draw.textlength(remaining[:end], font=font) > width:
-                end -= 1
+            end = _longest_fitting_prefix(draw, remaining, font, width)
             if end < len(remaining):
                 word_end = remaining.rfind(" ", 0, end + 1)
                 if word_end > 0:
@@ -196,6 +194,37 @@ def _wrap_text(
             lines.append(remaining[:end].rstrip())
             remaining = remaining[end:].lstrip()
     return tuple(lines)
+
+
+def _longest_fitting_prefix(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    width: int,
+) -> int:
+    """Return the longest fitting prefix, always keeping at least one character.
+
+    Pillow's text advance is monotonic as characters are appended for the fonts
+    used by contact sheets, including proportional fonts with kerning. Binary
+    search therefore preserves the previous longest-prefix result without
+    measuring every successively shorter prefix. The one-character lower bound
+    deliberately preserves the existing overflow behavior for cells narrower
+    than a single glyph.
+    """
+    if len(text) <= 1:
+        return len(text)
+    if draw.textlength(text, font=font) <= width:
+        return len(text)
+
+    low = 1
+    high = len(text) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if draw.textlength(text[:middle], font=font) <= width:
+            low = middle
+            continue
+        high = middle - 1
+    return low
 
 
 def _prepare_caption_lines(
