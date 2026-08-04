@@ -1344,6 +1344,8 @@ def _emit_receipt(
         envelope = client.read_result(receipt)
         result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
+        if result == [] and zero_match_warning is not None:
+            typer.echo(f"warning: {zero_match_warning}", err=True)
         # Warnings go to stderr, so they still surface without corrupting the raw JSON on
         # stdout — a raw render-image must not silently drop its aspect-ratio warning.
         _emit_warnings(receipt)
