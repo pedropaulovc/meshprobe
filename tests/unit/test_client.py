@@ -61,6 +61,28 @@ def test_list_sessions_reads_durable_metadata_without_daemon(tmp_path: Path) -> 
     assert client.list_sessions() == [metadata.model_dump(mode="json")]
 
 
+def test_implicit_session_resolution_prefers_exact_name_then_sole_durable_session(
+    tmp_path: Path,
+) -> None:
+    client = MeshProbeClient(tmp_path)
+    review = _session_metadata("review")
+    atomic_json(
+        client.root / "sessions" / review.name / "metadata.json",
+        review.model_dump(mode="json"),
+    )
+
+    assert client.resolve_implicit_session("default") == "review"
+    assert client.resolve_implicit_session("review") == "review"
+
+    secondary = _session_metadata("secondary")
+    atomic_json(
+        client.root / "sessions" / secondary.name / "metadata.json",
+        secondary.model_dump(mode="json"),
+    )
+
+    assert client.resolve_implicit_session("default") == "default"
+
+
 def test_list_sessions_falls_back_when_live_pid_has_no_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

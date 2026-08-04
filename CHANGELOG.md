@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A wildcard-looking `find --name` that returns no matches now explains that `--name` is exact and
+  points to the positional glob form.
+- Commands with no explicit `--session` now select the sole durable session when `default` does not
+  exist; `open` and explicit session names retain their exact behavior.
+
 ## [1.2.2] - 2026-07-21
 
 ### Fixed

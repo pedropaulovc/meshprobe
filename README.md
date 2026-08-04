@@ -74,7 +74,9 @@ uses the same command metadata and examples for programmatic dispatch; `llm` is 
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
 `--name NAME` for an exact display name and `--kind regex` only when regular-expression
-matching is intentional. The same auto-detection resolves the component arguments of
+matching is intentional. A wildcard-looking `--name` that finds nothing points back to the
+positional glob form without rejecting exact names that legitimately contain wildcard characters.
+The same auto-detection resolves the component arguments of
 `display`, `mark`, `render-sheet`, and `occlusion`, so a glob there fans out to every
 match just as `find` does (`occlusion '**/*'` measures the whole scene). Component paths remain
 authoritative when `scene.json` reports `hierarchy: flattened`; intermediate non-mesh source
@@ -114,7 +116,10 @@ uv run pytest
 ## Sessions and lifecycle commands
 
 MeshProbe stores session data in the current project's `.meshprobe` directory by default.
-Use `--workspace` to choose another project root and `-s/--session` to switch sessions.
+Use `--workspace` to choose another project root and `-s/--session` to switch sessions. When
+`--session` is omitted and the workspace contains exactly one durable session, commands select it
+automatically. `open` still uses the `default` session name, and an explicit session name is never
+rewritten.
 
 The lifecycle commands have deliberately different failure and persistence semantics:
 

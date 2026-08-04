@@ -953,6 +953,9 @@ class FakeClient:
     def list_sessions(self) -> list[dict[str, object]]:
         return [{"name": "review", "status": "active", "source_path": "assembly.glb"}]
 
+    def resolve_implicit_session(self, session: str) -> str:
+        return session
+
     def delete_data(self) -> Path:
         return Path(".meshprobe")
 
@@ -973,6 +976,32 @@ def test_flat_cli_uses_named_session_and_compact_receipts(
     assert snapshotted.exit_code == 0
     assert isinstance(client.commands[0], SceneOpenCommand)
     assert isinstance(client.commands[1], SessionSnapshotCommand)
+
+
+def test_implicit_default_uses_the_sole_session_without_changing_open_or_explicit_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "assembly.glb"
+    source.write_bytes(b"model")
+
+    class SoleSessionClient(FakeClient):
+        def resolve_implicit_session(self, session: str) -> str:
+            assert session == "default"
+            return "review"
+
+    client = SoleSessionClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    implicit = runner.invoke(app, ["snapshot"])
+    explicit = runner.invoke(app, ["--session", "default", "snapshot"])
+    opened = runner.invoke(app, ["open", str(source)])
+
+    assert implicit.exit_code == 0, implicit.output
+    assert "session=review" in implicit.stdout
+    assert explicit.exit_code == 0, explicit.output
+    assert "session=default" in explicit.stdout
+    assert opened.exit_code == 0, opened.output
+    assert "session=default" in opened.stdout
 
 
 def test_open_omits_aspect_ratio_unless_explicitly_provided(
@@ -2319,6 +2348,25 @@ def test_find_receipt_distinguishes_zero_matches_from_hits(
     assert "matches=0" in miss.stdout
     assert "warning: no components matched" in miss.stderr
     assert unstyle(miss.stdout) != unstyle(hit.stdout)
+
+
+def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_literal_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    client.match_count = 0
+    miss = runner.invoke(app, ["find", "--name", "*platen*"])
+    client.match_count = 1
+    literal_hit = runner.invoke(app, ["find", "--name", "gear?"])
+
+    assert miss.exit_code == 0, miss.output
+    assert "warning: no components matched" in miss.stderr
+    assert "--name matches exact display names only" in miss.stderr
+    assert "pass wildcard patterns positionally" in miss.stderr
+    assert literal_hit.exit_code == 0, literal_hit.output
+    assert "--name matches exact display names only" not in literal_hit.stderr
 
 
 def test_find_derives_match_count_from_result_when_daemon_omits_it(
