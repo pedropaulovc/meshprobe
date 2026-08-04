@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Named illumination presets accept `--frame camera`, keeping the light rig fixed to the active
   view through later camera changes, and `render-image --exposure` applies a recorded photographic
   stop adjustment when a preset is otherwise too dark or bright.
+- `view-frame --all` frames the complete scene without requiring a root component or a long list
+  of stable IDs, and view-frame results now report achieved width and height fill.
 
 ### Fixed
 
@@ -19,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   points to the positional glob form.
 - Commands with no explicit `--session` now select the sole durable session when `default` does not
   exist; `open` and explicit session names retain their exact behavior.
+- Multi-component camera framing now projects each selected component's world-bound corners
+  instead of the empty corners of their aggregate AABB, avoiding excessive padding on sparse,
+  high-aspect assemblies.
 
 ## [1.2.2] - 2026-07-21
 

@@ -75,6 +75,7 @@ from meshprobe.protocol import (
     SessionSnapshotCommand,
     SessionUndoCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewOrbitCommand,
     ViewRotateCommand,
@@ -386,7 +387,10 @@ _CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
             "Set an absolute camera orbit.",
         ),
     ),
-    "view-frame": (("meshprobe view-frame c7", "Frame a component tightly."),),
+    "view-frame": (
+        ("meshprobe view-frame c7", "Frame a component tightly."),
+        ("meshprobe view-frame --all", "Frame the whole scene without enumerating components."),
+    ),
     "view-move": (("meshprobe view-move --forward 25mm", "Move the current camera."),),
     "view-rotate": (
         (
@@ -1855,11 +1859,19 @@ def view_orbit(
 def view_frame(
     ctx: typer.Context,
     components: Annotated[
-        list[str],
+        list[str] | None,
         typer.Argument(
-            help="Component refs, stable IDs, exact names, or exact paths to frame tightly."
+            help="Component refs, stable IDs, exact names, paths, or globs to frame tightly."
         ),
-    ],
+    ] = None,
+    all_components: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Frame the complete scene without expanding its component IDs on the "
+            "command line.",
+        ),
+    ] = False,
     azimuth: Annotated[
         float,
         typer.Option("--azimuth", help="Absolute degrees from +X toward +Y about world +Z."),
@@ -1877,7 +1889,8 @@ def view_frame(
         typer.Option(
             "--margin",
             min=0.01,
-            help="Padding factor around the bounds; 1.0 is a tight fit, higher zooms out.",
+            help="Padding around selected component world bounds; 1.0 fits tightly, higher "
+            "zooms out.",
         ),
     ] = 1.25,
     projection_json: Annotated[
@@ -1898,6 +1911,11 @@ def view_frame(
     move so an isolated component actually fills a following render-image.
     """
 
+    if all_components and components:
+        raise typer.BadParameter("provide component arguments or --all, not both")
+    if not all_components and not components:
+        raise typer.BadParameter("provide at least one component or use --all")
+
     if projection_json is not None:
         from pydantic import TypeAdapter
 
@@ -1909,7 +1927,8 @@ def view_frame(
         ViewFrameCommand(
             request_id=_request_id("view-frame"),
             op="view.frame",
-            focus_component_ids=_component_ids(ctx, components),
+            target=ViewFrameTarget.SCENE if all_components else ViewFrameTarget.COMPONENTS,
+            focus_component_ids=() if all_components else _component_ids(ctx, components or []),
             azimuth_degrees=azimuth,
             elevation_degrees=elevation,
             roll_degrees=roll,

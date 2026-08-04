@@ -39,6 +39,7 @@ from meshprobe.models import (
     ShadedEdgesStyle,
     SrgbHexColor,
     Vec3,
+    ViewFrameResult,
 )
 from meshprobe.selectors import ComponentSelector
 
@@ -52,6 +53,11 @@ class CommandEffect(StrEnum):
     STATE_MUTATION = "state_mutation"
     RESET = "reset"
     HISTORY = "history"
+
+
+class ViewFrameTarget(StrEnum):
+    COMPONENTS = "components"
+    SCENE = "scene"
 
 
 class CommandModel(BaseModel):
@@ -123,13 +129,22 @@ class ViewOrbitCommand(CommandModel):
 class ViewFrameCommand(CommandModel):
     effect = CommandEffect.STATE_MUTATION
     op: Literal["view.frame"]
-    focus_component_ids: tuple[str, ...] = Field(min_length=1)
+    target: ViewFrameTarget = ViewFrameTarget.COMPONENTS
+    focus_component_ids: tuple[str, ...] = ()
     azimuth_degrees: FiniteFloat = 45.0
     elevation_degrees: FiniteFloat = 30.0
     roll_degrees: FiniteFloat = 0.0
     margin: Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)] = 1.25
     projection: Projection = PerspectiveProjection()
     aspect_ratio: Annotated[float, Field(ge=0.01, le=100, allow_inf_nan=False)] = 1.0
+
+    @model_validator(mode="after")
+    def require_target_components(self) -> Self:
+        if self.target is ViewFrameTarget.COMPONENTS and not self.focus_component_ids:
+            raise ValueError("component framing requires at least one focus component")
+        if self.target is ViewFrameTarget.SCENE and self.focus_component_ids:
+            raise ValueError("scene framing does not accept focus components")
+        return self
 
 
 class ViewMoveCommand(CommandModel):
@@ -406,7 +421,7 @@ _RESULT_MODELS: dict[str, object] = {
     "component.occlusion": OcclusionQueryResult,
     "view.set": CameraViewResult,
     "view.orbit": CameraViewResult,
-    "view.frame": CameraViewResult,
+    "view.frame": ViewFrameResult,
     "view.move": CameraMotionResult,
     "view.rotate": CameraMotionResult,
     "illumination.set": IlluminationResult,

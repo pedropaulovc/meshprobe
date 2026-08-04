@@ -18,6 +18,7 @@ from meshprobe.protocol import (
     RenderContactSheetCommand,
     RenderImageCommand,
     ViewFrameCommand,
+    ViewFrameTarget,
     ViewMoveCommand,
     ViewRotateCommand,
     command_json_schema,
@@ -173,6 +174,25 @@ def test_payload_preserves_legacy_nested_none_fields() -> None:
     depth_of_field = command_payload(command)["projection"]["depth_of_field"]
     assert depth_of_field["focus_distance_mm"] is None
     assert depth_of_field["focus"] is None
+
+
+def test_view_frame_target_requires_exactly_its_component_shape() -> None:
+    scene = ViewFrameCommand(
+        request_id="frame-scene",
+        op="view.frame",
+        target=ViewFrameTarget.SCENE,
+    )
+    assert scene.focus_component_ids == ()
+
+    with pytest.raises(ValidationError, match="at least one focus component"):
+        ViewFrameCommand(request_id="frame-empty", op="view.frame")
+    with pytest.raises(ValidationError, match="does not accept focus components"):
+        ViewFrameCommand(
+            request_id="frame-mixed",
+            op="view.frame",
+            target=ViewFrameTarget.SCENE,
+            focus_component_ids=("cmp-a",),
+        )
 
 
 def test_schema_contains_all_public_operations() -> None:
