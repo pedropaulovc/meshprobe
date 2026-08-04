@@ -2439,6 +2439,50 @@ def test_find_receipt_distinguishes_zero_matches_from_hits(
     assert unstyle(miss.stdout) != unstyle(hit.stdout)
 
 
+def test_find_name_wildcard_miss_explains_exact_matching_without_rejecting_literal_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    client.match_count = 0
+    miss = runner.invoke(app, ["find", "--name", "*platen*"])
+    client.match_count = 1
+    literal_hit = runner.invoke(app, ["find", "--name", "gear?"])
+    client.match_count = 0
+    positional_exact_miss = runner.invoke(
+        app,
+        ["find", "*literal*", "--kind", "exact_name"],
+    )
+    client.find_results = []
+    raw_miss = runner.invoke(app, ["--raw", "find", "--name", "*platen*"])
+    client.match_count = None
+    json_miss = runner.invoke(app, ["--json", "find", "--name", "*platen*"])
+    yaml_miss = runner.invoke(app, ["--yaml", "find", "--name", "*platen*"])
+
+    assert miss.exit_code == 0, miss.output
+    assert "warning: no components matched" in miss.stderr
+    assert "--name matches exact display names only" in miss.stderr
+    assert "pass wildcard patterns positionally" in miss.stderr
+    assert literal_hit.exit_code == 0, literal_hit.output
+    assert "--name matches exact display names only" not in literal_hit.stderr
+    assert positional_exact_miss.exit_code == 0, positional_exact_miss.output
+    assert "--name matches exact display names only" not in positional_exact_miss.stderr
+    assert raw_miss.exit_code == 0, raw_miss.output
+    assert json.loads(raw_miss.stdout) == []
+    assert "--name matches exact display names only" in raw_miss.stderr
+    assert any(
+        "--name matches exact display names only" in warning
+        for warning in json.loads(json_miss.stdout)["warnings"]
+    )
+    assert json.loads(json_miss.stdout)["match_count"] == 0
+    assert any(
+        "--name matches exact display names only" in warning
+        for warning in yaml.safe_load(yaml_miss.stdout)["warnings"]
+    )
+    assert yaml.safe_load(yaml_miss.stdout)["match_count"] == 0
+
+
 def test_find_derives_match_count_from_result_when_daemon_omits_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

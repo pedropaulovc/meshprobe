@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default CLI help now uses one unpadded line per option, argument, and command, with no blank
   section spacing or terminal-width wrapping. The explicit Markdown and JSON help formats remain
   available for callers that need structured documentation.
+- A wildcard-looking `find --name` that returns no matches now explains that `--name` is exact and
+  points to the positional glob form.
 
 ## [1.2.2] - 2026-07-21
 

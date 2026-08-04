@@ -1330,7 +1330,24 @@ def _emit_receipt(
     ctx: typer.Context,
     client: MeshProbeClient,
     receipt: OperationReceipt,
+    *,
+    zero_match_warning: str | None = None,
 ) -> None:
+    match_count = receipt.match_count
+    result: object = None
+    result_loaded = False
+    if match_count is None and receipt.op == "component.find" and receipt.result_path:
+        # A daemon still running the pre-upgrade protocol omits match_count entirely. Read
+        # the persisted result once before selecting an output format so structured receipts
+        # get the same derived count and contextual warnings as text and raw output.
+        envelope = client.read_result(receipt)
+        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        result_loaded = True
+        if isinstance(result, list):
+            match_count = len(result)
+            receipt = receipt.model_copy(update={"match_count": match_count})
+    if zero_match_warning is not None and match_count == 0:
+        receipt = receipt.model_copy(update={"warnings": (*receipt.warnings, zero_match_warning)})
     output = _options(ctx).output
     if output == "json":
         typer.echo(receipt.model_dump_json(indent=2))
@@ -1339,21 +1356,20 @@ def _emit_receipt(
         _emit_yaml(receipt)
         return
     if output == "raw":
-        envelope = client.read_result(receipt)
-        result = envelope.get("result") if isinstance(envelope, dict) else envelope
+        if not result_loaded:
+            envelope = client.read_result(receipt)
+            result = envelope.get("result") if isinstance(envelope, dict) else envelope
         _emit(result)
+        if (
+            result == []
+            and zero_match_warning is not None
+            and zero_match_warning not in receipt.warnings
+        ):
+            typer.echo(f"warning: {zero_match_warning}", err=True)
         # Warnings go to stderr, so they still surface without corrupting the raw JSON on
         # stdout — a raw render-image must not silently drop its aspect-ratio warning.
         _emit_warnings(receipt)
         return
-    match_count = receipt.match_count
-    if match_count is None and receipt.op == "component.find" and receipt.result_path:
-        # A daemon still running the pre-upgrade protocol omits match_count entirely; derive
-        # it from the persisted result so the zero-match warning survives without a restart.
-        envelope = client.read_result(receipt)
-        result = envelope.get("result") if isinstance(envelope, dict) else envelope
-        if isinstance(result, list):
-            match_count = len(result)
     fields = ["ok", f"session={receipt.session}", f"op={receipt.op}"]
     if receipt.op == "session.undo" and receipt.result_path:
         envelope = client.read_result(receipt)
@@ -1376,6 +1392,8 @@ def _emit_receipt(
     typer.echo(" ".join(fields))
     if match_count == 0:
         typer.echo("warning: no components matched", err=True)
+        if zero_match_warning is not None and zero_match_warning not in receipt.warnings:
+            typer.echo(f"warning: {zero_match_warning}", err=True)
     _emit_warnings(receipt)
     for component in receipt.components:
         typer.echo(
@@ -1408,13 +1426,19 @@ def _emit_receipts(
         _emit_receipt(ctx, client, receipt)
 
 
-def _execute(ctx: typer.Context, command: Command, *, blender: str | None = None) -> None:
+def _execute(
+    ctx: typer.Context,
+    command: Command,
+    *,
+    blender: str | None = None,
+    zero_match_warning: str | None = None,
+) -> None:
     client = _client(ctx, blender=blender)
     try:
         receipt = client.execute(_options(ctx).session, command)
     except (OSError, RuntimeError, ValueError, ValidationError) as error:
         raise typer.BadParameter(str(error)) from error
-    _emit_receipt(ctx, client, receipt)
+    _emit_receipt(ctx, client, receipt, zero_match_warning=zero_match_warning)
 
 
 DEFAULT_RENDER_MAX_DIMENSION = 2576
@@ -1615,6 +1639,12 @@ def find_components(
     """Find components in the selected session."""
 
     selector = _find_selector_options(pattern=pattern, name=name, kind=kind)
+    zero_match_warning = None
+    if name is not None and is_glob_pattern(name):
+        zero_match_warning = (
+            "--name matches exact display names only; pass wildcard patterns positionally "
+            "(or use PATTERN --kind glob)"
+        )
     _execute(
         ctx,
         ComponentFindCommand(
@@ -1622,6 +1652,7 @@ def find_components(
             op="component.find",
             selector=selector,
         ),
+        zero_match_warning=zero_match_warning,
     )
 
 
