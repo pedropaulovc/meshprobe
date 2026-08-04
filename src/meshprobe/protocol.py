@@ -28,6 +28,7 @@ from meshprobe.models import (
     OrthonormalBasis,
     PerspectiveProjection,
     PositiveFiniteFloat,
+    PresetIllumination,
     Projection,
     RenderEngine,
     RenderManifest,
@@ -346,6 +347,14 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
         payload.pop("isolation_operation")
     if isinstance(command, RenderImageCommand) and command.comparison is None:
         payload.pop("comparison")
+    if isinstance(command, RenderImageCommand) and command.exposure_stops == 0:
+        payload.pop("exposure_stops")
+    if (
+        isinstance(command, IlluminationSetCommand)
+        and isinstance(command.illumination, PresetIllumination)
+        and command.illumination.frame.value == "world"
+    ):
+        payload["illumination"].pop("frame")
     if isinstance(command, (RenderImageCommand, RenderContactSheetCommand)) and (
         "timeout_seconds" not in command.model_fields_set
     ):

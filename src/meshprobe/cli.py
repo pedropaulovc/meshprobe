@@ -2414,7 +2414,9 @@ def render_image(
     try:
         command = RenderImageCommand.model_validate(command_fields)
     except ValidationError as error:
-        raise typer.BadParameter(str(error), param_hint="--timeout") from error
+        fields = {item["loc"][0] for item in error.errors() if item["loc"]}
+        param_hint = "--exposure" if "exposure_stops" in fields else "--timeout"
+        raise typer.BadParameter(str(error), param_hint=param_hint) from error
     try:
         receipt = client.execute(options.session, command)
     except (OSError, RuntimeError, ValueError) as error:

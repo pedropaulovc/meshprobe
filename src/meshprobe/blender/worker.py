@@ -1684,6 +1684,8 @@ def apply_illumination(illumination: dict[str, Any]) -> dict[str, Any]:
     # hash to the same state_sha256 in session_snapshot.
     if resolved.get("background_srgb") is None:
         resolved.pop("background_srgb", None)
+    if resolved.get("frame", "world") == "world":
+        resolved.pop("frame", None)
     clear_lights()
     configure_world(
         runtime["background_rgb"],

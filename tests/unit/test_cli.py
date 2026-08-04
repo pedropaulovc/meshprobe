@@ -1110,6 +1110,19 @@ def test_render_image_cli_forwards_exposure_stops(monkeypatch: pytest.MonkeyPatc
     assert command.exposure_stops == 1.5
 
 
+def test_render_image_cli_attributes_non_finite_exposure_to_exposure_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+
+    result = runner.invoke(app, ["render-image", "--exposure", "nan"])
+
+    assert result.exit_code == 2
+    assert "Invalid value for --exposure" in result.output
+    assert client.commands == []
+
+
 @pytest.mark.parametrize("terminal_width", [80, 120])
 def test_render_help_explains_style_policy_at_common_widths(terminal_width: int) -> None:
     result = runner.invoke(
