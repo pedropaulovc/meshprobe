@@ -133,8 +133,44 @@ def test_standard_help_is_plain_and_grep_friendly() -> None:
     assert result.exit_code == 0
     assert "╭" not in result.stdout
     assert "│" not in result.stdout
-    assert "  --workspace DIRECTORY" in result.stdout
-    assert "  render-sheet" in result.stdout
+    assert "|" not in result.stdout
+    assert "\n\n" not in result.stdout
+    assert all(line == line.lstrip() for line in result.stdout.splitlines())
+    assert "--workspace DIRECTORY: [default:" in result.stdout
+    assert "render-sheet: Render a focused 3x3 sheet" in result.stdout
+
+
+def test_subcommand_help_uses_one_unpadded_line_per_option() -> None:
+    result = runner.invoke(app, ["render-image", "--help"], env={"COLUMNS": "40"})
+
+    assert result.exit_code == 0
+    lines = result.stdout.splitlines()
+    assert "\n\n" not in result.stdout
+    assert all(line == line.lstrip() for line in lines)
+    assert (
+        "--graphics-policy [hardware_required|software_allowed]: [default: software_allowed]"
+        in lines
+    )
+    edge_types_line = next(line for line in lines if line.startswith("--edge-types"))
+    assert (
+        "Comma-separated silhouette, border, crease, and material boundary types."
+        in edge_types_line
+    )
+    assert len(edge_types_line) > 80
+
+
+def test_cmdhelp_keeps_explicit_markdown_and_json_formats() -> None:
+    markdown_result = runner.invoke(
+        app,
+        ["help", "view-orbit", "--format", "markdown"],
+    )
+    json_result = runner.invoke(app, ["help", "view-orbit", "--format", "json"])
+
+    assert markdown_result.exit_code == 0, markdown_result.output
+    assert "# meshprobe" in markdown_result.stdout
+    assert "| flag | type | default | description |" in markdown_result.stdout
+    assert json_result.exit_code == 0, json_result.output
+    assert "view-orbit" in json.loads(json_result.stdout)["commands"]
 
 
 def test_schema_command_emits_discriminated_union() -> None:

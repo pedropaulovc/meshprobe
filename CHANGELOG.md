@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Default CLI help now uses one unpadded line per option, argument, and command, with no blank
+  section spacing or terminal-width wrapping. The explicit Markdown and JSON help formats remain
+  available for callers that need structured documentation.
+
 ## [1.2.2] - 2026-07-21
 
 ### Fixed

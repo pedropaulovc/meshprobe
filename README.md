@@ -60,16 +60,17 @@ MeshProbe supports cmdhelp v0.1. Use it when an agent needs the full command tre
 schema:
 
 ```bash
-meshprobe help --format md --depth 99
+meshprobe help --format markdown --depth 99
 meshprobe help --format json --depth 99
-meshprobe help view-orbit --format md
+meshprobe help view-orbit --format markdown
 meshprobe help --capabilities
 ```
 
-`text` is the default and preserves the ordinary concise Click help. `md` includes command
-synopses, arguments, flags, examples, stream behavior, exit codes, and session context. `json`
-uses the same command metadata and examples for programmatic dispatch; `llm` is an alias for
-`md`. `--depth 0` emits a summary tree, while each additional depth expands one more level.
+Ordinary `--help` and the default `text` format use compact, unpadded lines for agent parsing.
+`markdown` includes command synopses, arguments, flags, examples, stream behavior, exit codes,
+and session context. `json` uses the same command metadata and examples for programmatic dispatch;
+`md` and `llm` are aliases for `markdown`. `--depth 0` emits a summary tree, while each additional
+depth expands one more level.
 
 `find` auto-detects plain component names, exact hierarchy paths, and wildcard globs. A
 slash-free glob searches component names at any hierarchy depth; use
