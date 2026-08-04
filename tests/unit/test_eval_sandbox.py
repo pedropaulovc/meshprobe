@@ -399,6 +399,9 @@ def test_posix_sandbox_mounts_prlimit_resolved_outside_usr(
     custom_prlimit = tmp_path / "util-linux" / "bin" / "prlimit"
     custom_prlimit.parent.mkdir(parents=True)
     custom_prlimit.write_bytes(b"prlimit")
+    custom_library = custom_prlimit.parents[1] / "lib" / "libutil.so"
+    custom_library.parent.mkdir()
+    custom_library.write_bytes(b"library")
     real_which = shutil.which
 
     def resolve_tool(name: str) -> str | None:
@@ -414,14 +417,15 @@ def test_posix_sandbox_mounts_prlimit_resolved_outside_usr(
         artifact_root=artifacts,
     )
 
-    mount_index = command.index(str(custom_prlimit))
+    custom_runtime = custom_prlimit.parents[1]
+    mount_index = command.index(str(custom_runtime))
     assert command[mount_index - 1 : mount_index + 2] == (
         "--ro-bind",
-        str(custom_prlimit),
+        str(custom_runtime),
         "/opt/meshprobe-prlimit",
     )
     agent_separator = command.index("--")
-    assert command[agent_separator + 1] == "/opt/meshprobe-prlimit"
+    assert command[agent_separator + 1] == "/opt/meshprobe-prlimit/bin/prlimit"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows process limits use a Job Object")

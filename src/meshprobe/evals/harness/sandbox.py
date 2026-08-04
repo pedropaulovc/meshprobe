@@ -353,8 +353,16 @@ def _sandbox_command(
     limit_executable = _prlimit_path()
     guest_limit_executable = PurePosixPath(str(limit_executable))
     if not limit_executable.is_relative_to("/usr"):
-        guest_limit_executable = PurePosixPath("/opt/meshprobe-prlimit")
-        mounts = (*mounts, (limit_executable, guest_limit_executable))
+        limit_runtime = (
+            limit_executable.parent.parent
+            if limit_executable.parent.name == "bin"
+            else limit_executable.parent
+        )
+        guest_limit_runtime = PurePosixPath("/opt/meshprobe-prlimit")
+        guest_limit_executable = guest_limit_runtime / PurePosixPath(
+            limit_executable.relative_to(limit_runtime).as_posix()
+        )
+        mounts = (*mounts, (limit_runtime, guest_limit_runtime))
     limited_command = _limit_command(
         translated_command,
         limits,
