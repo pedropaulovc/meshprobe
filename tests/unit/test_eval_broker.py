@@ -322,8 +322,12 @@ def test_broker_classifies_controller_wall_deadline_as_budget_rejection(
             evaluator_output_dir: str,
             wall_timeout_seconds: float | None = None,
         ) -> CommandResponse:
-            del command, evaluator_output_dir, wall_timeout_seconds
-            raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
+            del command, wall_timeout_seconds
+            raise EvaluationWallTimeout(
+                "render exceeded the evaluation wall deadline. Recent output: "
+                f"{evaluator_output_dir} {tmp_path / 'input' / 'model.glb'} "
+                f"{tmp_path / 'agent' / 'artifacts'} {tmp_path / 'evaluator' / 'trace.jsonl'}"
+            )
 
     active = broker(tmp_path, service=WallTimeoutService())
 
@@ -339,6 +343,14 @@ def test_broker_classifies_controller_wall_deadline_as_budget_rejection(
 
     assert rendered.error is not None
     assert rendered.error.code == "budget.wall_seconds"
+    assert "<private evaluator path>" in rendered.error.message
+    assert "<input model path>" in rendered.error.message
+    assert "<artifact root>" in rendered.error.message
+    assert "<trace path>" in rendered.error.message
+    assert str(active._evaluator_root) not in rendered.error.message
+    assert str(active._model_path) not in rendered.error.message
+    assert str(active._artifact_root) not in rendered.error.message
+    assert str(active._trace_path) not in rendered.error.message
     assert active.events[-1].status is TraceStatus.REJECTED
     assert active.events[-1].error_code == "budget.wall_seconds"
 

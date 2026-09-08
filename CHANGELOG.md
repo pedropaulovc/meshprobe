@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Runtime source identities normalize CRLF and LF line endings before hashing, so package,
+  importer, generator, builder, and worker-normalizer pins remain portable across checkouts.
+- Rebuilt the lost public corpus as `qualification-v12` from `procedural-v11` and
+  `curated-tasks-v11`, plus the held-out private corpus as `private-v19`, recording new
+  generator and corpus identities instead of reusing v8 labels.
+
+### Fixed
+
+- Evaluation broker errors redact private model, artifact, evaluator, and trace paths before
+  returning or recording public error messages.
+- `open` now surfaces a Blender importer error immediately when an unterminated diagnostic would
+  otherwise make the worker reply look like a timeout.
+
 ## [1.3.1] - 2026-08-04
 
 ### Changed

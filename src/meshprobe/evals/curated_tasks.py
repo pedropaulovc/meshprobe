@@ -36,7 +36,7 @@ from meshprobe.evals.schemas import (
     TaskFamily,
 )
 from meshprobe.models import SceneManifest
-from meshprobe.sources import sha256_file
+from meshprobe.sources import sha256_file, sha256_source
 
 
 @dataclass(frozen=True)
@@ -198,7 +198,8 @@ def curated_task_generator_sha256(build: CuratedBuild) -> str:
     for logical_name, path in inputs:
         digest.update(logical_name.encode())
         digest.update(b"\0")
-        digest.update(bytes.fromhex(sha256_file(path)))
+        hash_path = sha256_source(path) if path.suffix == ".py" else sha256_file(path)
+        digest.update(bytes.fromhex(hash_path))
     return digest.hexdigest()
 
 

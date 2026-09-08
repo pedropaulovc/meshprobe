@@ -30,7 +30,7 @@ from meshprobe.evals.schemas import (
     Operation,
     TaskFamily,
 )
-from meshprobe.sources import sha256_file
+from meshprobe.sources import sha256_file, sha256_source
 
 
 @dataclass(frozen=True)
@@ -362,7 +362,7 @@ def generator_source_sha256() -> str:
     for path in sources:
         digest.update(path.relative_to(directory.parent).as_posix().encode())
         digest.update(b"\0")
-        digest.update(bytes.fromhex(sha256_file(path)))
+        digest.update(bytes.fromhex(sha256_source(path)))
     return digest.hexdigest()
 
 

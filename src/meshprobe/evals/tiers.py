@@ -21,7 +21,7 @@ from meshprobe.evals.schemas import (
     TaskFamily,
     TierManifest,
 )
-from meshprobe.sources import sha256_file
+from meshprobe.sources import sha256_file, sha256_source
 
 STANDARD_TIER_SIZES: Mapping[CorpusTier, int] = {
     CorpusTier.SMOKE: 40,
@@ -55,7 +55,7 @@ def current_runtime_pin(blender: str = "blender") -> RuntimePin:
         meshprobe_version=importlib.metadata.version("meshprobe"),
         meshprobe_sha256=_package_sha256(package_root),
         blender_version=first_line.removeprefix("Blender "),
-        importer_sha256=sha256_file(worker),
+        importer_sha256=sha256_source(worker),
         render_engines=("eevee", "cycles"),
     )
 
@@ -64,7 +64,7 @@ def _package_sha256(package_root: Path) -> str:
     """Hash every shipped Python module with checkout-independent path tags."""
 
     entries = [
-        (path.relative_to(package_root).as_posix(), sha256_file(path))
+        (path.relative_to(package_root).as_posix(), sha256_source(path))
         for path in sorted(package_root.rglob("*.py"))
         if "__pycache__" not in path.parts
     ]

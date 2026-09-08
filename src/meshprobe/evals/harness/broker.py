@@ -221,10 +221,7 @@ class EvaluationBroker:
             self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.REJECTED
             error_code = f"tool.{type(error).__name__}"
-            reply = self._error_reply(
-                error_code,
-                str(error).replace(str(self._evaluator_root), "<private evaluator path>"),
-            )
+            reply = self._error_reply(error_code, str(error))
         except Exception as error:
             self._discard_request_outputs(staging_root, private_dir, published_paths)
             status = TraceStatus.CRASHED
@@ -599,8 +596,21 @@ class EvaluationBroker:
         shutil.rmtree(private_dir, ignore_errors=True)
 
     def _error_reply(self, code: str, message: str) -> BrokerReply:
-        self._public_errors.append(message)
-        return BrokerReply(ok=False, error=BrokerError(code=code, message=message))
+        redactions = {
+            str(self._model_path): "<input model path>",
+            str(self._artifact_root): "<artifact root>",
+            str(self._evaluator_root): "<private evaluator path>",
+            str(self._trace_path): "<trace path>",
+            str(self._model_path.parent): "<input directory>",
+            str(self._trace_path.parent): "<trace directory>",
+        }
+        public_message = message
+        for source, replacement in sorted(
+            redactions.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            public_message = public_message.replace(source, replacement)
+        self._public_errors.append(public_message)
+        return BrokerReply(ok=False, error=BrokerError(code=code, message=public_message))
 
     def _checkpoint_trace(
         self,

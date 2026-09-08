@@ -12,7 +12,7 @@ from pathlib import Path
 
 from meshprobe.evals.curated import CuratedCatalog, topology_sha256
 from meshprobe.evals.generators import MetamorphicVariant
-from meshprobe.sources import sha256_file, snapshot_source
+from meshprobe.sources import sha256_file, sha256_source, snapshot_source
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ def build_curated_variants(
     destination = output_root.expanduser().resolve() / version
     builder = Path(__file__).parents[1] / "blender" / "curated_builder.py"
     catalog_hash = _catalog_hash(catalog)
-    builder_hash = sha256_file(builder)
+    builder_hash = sha256_source(builder)
     if destination.exists():
         return validate_curated_build(destination, catalog_hash, builder_hash)
     resolved_blender = shutil.which(blender)

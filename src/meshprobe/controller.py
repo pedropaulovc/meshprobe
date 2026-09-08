@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import math
 import os
@@ -78,7 +79,7 @@ from meshprobe.protocol import (
     command_payload,
 )
 from meshprobe.selectors import ComponentIndex
-from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
+from meshprobe.sources import SourceSnapshot, sha256_file, sha256_source, snapshot_source
 
 __all__ = [
     "DEFAULT_WORKER_TIMEOUT_SECONDS",
@@ -172,6 +173,7 @@ class BlenderController:
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader_thread: threading.Thread | None = None
+        self._error_reader_thread: threading.Thread | None = None
         self._logs: list[str] = []
         self._worker_path = Path(__file__).with_name("blender") / "worker.py"
         self.ready_event: dict[str, Any] | None = None
@@ -207,7 +209,9 @@ class BlenderController:
             )
         self.executable = Path(resolved)
         output_queue: queue.Queue[str | None] = queue.Queue()
+        error_logs: list[str] = []
         self._lines = output_queue
+        self._logs = error_logs
         self._process = subprocess.Popen(
             [
                 str(self.executable),
@@ -220,7 +224,7 @@ class BlenderController:
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=self._worker_environment(),
@@ -232,8 +236,16 @@ class BlenderController:
             name="meshprobe-blender-output",
             daemon=True,
         )
+        error_thread = threading.Thread(
+            target=self._read_errors,
+            args=(process, error_logs),
+            name="meshprobe-blender-errors",
+            daemon=True,
+        )
         self._reader_thread = thread
+        self._error_reader_thread = error_thread
         thread.start()
+        error_thread.start()
         try:
             event = self._wait_for(lambda payload: payload.get("event") == "ready")
         except (BlenderWorkerCrashed, BlenderWorkerTimeout):
@@ -404,7 +416,8 @@ class BlenderController:
         if not isinstance(blender_version, str) or not blender_version:
             raise BlenderWorkerError("worker did not report its Blender version")
         worker_path = Path(__file__).with_name("blender") / "worker.py"
-        return f"blender-{blender_version}+meshprobe-normalizer-v1-{sha256_file(worker_path)[:16]}"
+        normalizer_hash = sha256_source(worker_path)[:16]
+        return f"blender-{blender_version}+meshprobe-normalizer-v1-{normalizer_hash}"
 
     def execute(self, command: Command) -> object:
         if command.effect is CommandEffect.UNDECLARED:
@@ -868,10 +881,15 @@ class BlenderController:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=2)
-        reader_thread = self._reader_thread
+        self._join_reader_threads()
+
+    def _join_reader_threads(self) -> None:
+        reader_threads = (self._reader_thread, self._error_reader_thread)
         self._reader_thread = None
-        if reader_thread is not None and reader_thread is not threading.current_thread():
-            reader_thread.join(timeout=2)
+        self._error_reader_thread = None
+        for reader_thread in reader_threads:
+            if reader_thread is not None and reader_thread is not threading.current_thread():
+                reader_thread.join(timeout=2)
 
     def _cache_environment_map(
         self,
@@ -1070,7 +1088,7 @@ class BlenderController:
     def _ensure_request_deadline(self) -> None:
         deadline = self._request_deadline_monotonic
         if deadline is not None and time.monotonic() >= deadline:
-            raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
+            raise EvaluationWallTimeout(self._evaluation_timeout_message())
 
     def _verify_render_artifacts(self, manifest: RenderManifest) -> None:
         artifacts = [manifest.color]
@@ -2000,10 +2018,7 @@ class BlenderController:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
-        reader_thread = self._reader_thread
-        self._reader_thread = None
-        if reader_thread is not None and reader_thread is not threading.current_thread():
-            reader_thread.join(timeout=2)
+        self._join_reader_threads()
 
     def __enter__(self) -> Self:
         self.start()
@@ -2021,8 +2036,52 @@ class BlenderController:
             output_queue.put(None)
             return
         for line in process.stdout:
-            output_queue.put(line.rstrip("\n"))
+            output = line.rstrip("\n")
+            if output:
+                output_queue.put(output)
         output_queue.put(None)
+
+    def _read_errors(self, process: subprocess.Popen[str], logs: list[str]) -> None:
+        if process.stderr is None:
+            return
+        encoding = getattr(process.stderr, "encoding", None) or "utf-8"
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        pending = ""
+        partial_index: int | None = None
+
+        def publish_pending() -> None:
+            nonlocal partial_index, pending
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                line = line.rstrip("\r")
+                if partial_index is not None:
+                    if line:
+                        logs[partial_index] = line
+                    else:
+                        logs.pop(partial_index)
+                    partial_index = None
+                elif line:
+                    logs.append(line)
+            if pending:
+                if partial_index is None:
+                    logs.append(pending)
+                    partial_index = len(logs) - 1
+                else:
+                    logs[partial_index] = pending
+
+        while True:
+            try:
+                chunk = os.read(process.stderr.fileno(), 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            pending += decoder.decode(chunk)
+            publish_pending()
+        pending += decoder.decode(b"", final=True)
+        publish_pending()
+        if partial_index is not None:
+            logs[partial_index] = logs[partial_index].rstrip("\r")
 
     def _wait_for(self, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         started = time.monotonic()
@@ -2038,20 +2097,14 @@ class BlenderController:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 if request_deadline_is_active:
-                    raise EvaluationWallTimeout("render exceeded the evaluation wall deadline")
-                raise BlenderWorkerTimeout(
-                    f"Blender worker did not respond within {effective_timeout:g} seconds"
-                )
+                    raise EvaluationWallTimeout(self._evaluation_timeout_message())
+                raise BlenderWorkerTimeout(self._timeout_message(effective_timeout))
             try:
                 line = self._lines.get(timeout=remaining)
             except queue.Empty as error:
                 if request_deadline_is_active:
-                    raise EvaluationWallTimeout(
-                        "render exceeded the evaluation wall deadline"
-                    ) from error
-                raise BlenderWorkerTimeout(
-                    f"Blender worker did not respond within {effective_timeout:g} seconds"
-                ) from error
+                    raise EvaluationWallTimeout(self._evaluation_timeout_message()) from error
+                raise BlenderWorkerTimeout(self._timeout_message(effective_timeout)) from error
             if line is None:
                 raise BlenderWorkerCrashed(self._crash_message())
             try:
@@ -2062,6 +2115,20 @@ class BlenderController:
             if isinstance(payload, dict) and predicate(payload):
                 return payload
             self._logs.append(line)
+
+    def _recent_logs(self) -> str:
+        return "\n".join(self._logs[-20:])
+
+    def _timeout_message(self, timeout_seconds: float) -> str:
+        return (
+            f"Blender worker did not respond within {timeout_seconds:g} seconds. "
+            f"Recent output:\n{self._recent_logs()}"
+        )
+
+    def _evaluation_timeout_message(self) -> str:
+        return (
+            f"render exceeded the evaluation wall deadline. Recent output:\n{self._recent_logs()}"
+        )
 
     def _require_process(self) -> subprocess.Popen[str]:
         if self._process is None:
@@ -2078,7 +2145,13 @@ class BlenderController:
             if return_code is None:
                 with suppress(subprocess.TimeoutExpired):
                     return_code = process.wait(timeout=1)
-        recent_logs = "\n".join(self._logs[-20:])
+        error_reader_thread = self._error_reader_thread
+        if (
+            error_reader_thread is not None
+            and error_reader_thread is not threading.current_thread()
+        ):
+            error_reader_thread.join(timeout=1)
+        recent_logs = self._recent_logs()
         rendered_code = str(return_code)
         hint = ""
         if return_code is not None and return_code & 0xFFFFFFFF == 0xC0000409:

@@ -140,3 +140,31 @@ def test_software_compatibility_rejects_evaluator_passes_before_rendering(
                 "evaluator_output_dir": "/tmp/evaluator",
             }
         )
+
+
+def test_emit_separates_json_reply_from_unterminated_blender_diagnostic(
+    worker_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Output:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            self.flush_count = 0
+
+        def write(self, value: str) -> int:
+            self.writes.append(value)
+            return len(value)
+
+        def flush(self) -> None:
+            self.flush_count += 1
+
+    output = Output()
+    monkeypatch.setattr(worker_module.sys, "stdout", output)
+    output.write("Blender importer diagnostic")
+
+    worker_module.emit({"request_id": "request-206", "ok": False})
+
+    assert output.writes == [
+        "Blender importer diagnostic",
+        '\n{"ok":false,"request_id":"request-206"}\n',
+    ]
+    assert output.flush_count == 1
