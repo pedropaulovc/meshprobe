@@ -16,7 +16,11 @@ from meshprobe.contact_sheet import (
     compose_contact_sheet,
     compose_side_by_side_comparison,
 )
-from meshprobe.models import ContactSheetCallout
+from meshprobe.models import (
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
+    ContactSheetCallout,
+)
 from meshprobe.protocol import RenderContactSheetCommand
 
 
@@ -144,6 +148,69 @@ def test_side_by_side_comparison_preserves_aspect_ratios_and_reference_hash(
     assert reference_placement.output_dimensions.width == 50
     assert reference_placement.padding_left == 175
     assert reference_placement.padding_right == 175
+
+
+def test_side_by_side_comparison_defaults_render_first_and_can_caption_reference_first(
+    tmp_path: Path,
+) -> None:
+    render = tmp_path / "render.png"
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (20, 20), "red").save(render)
+    Image.new("RGB", (20, 20), "blue").save(reference)
+
+    default, _, default_render_placement, default_reference_placement = (
+        compose_side_by_side_comparison(render, reference, tmp_path / "default.png")
+    )
+    captioned, _, captioned_render_placement, captioned_reference_placement = (
+        compose_side_by_side_comparison(
+            render,
+            reference,
+            tmp_path / "captioned.png",
+            caption_style=ComparisonCaptionStyle.BEFORE_AFTER,
+            panel_order=ComparisonPanelOrder.REFERENCE_FIRST,
+        )
+    )
+
+    assert captioned_render_placement == default_render_placement
+    assert captioned_reference_placement == default_reference_placement
+
+    with Image.open(default.path) as image:
+        assert image.size == (40, 20)
+        assert image.getpixel((10, 10)) == (255, 0, 0)
+        assert image.getpixel((30, 10)) == (0, 0, 255)
+    with Image.open(captioned.path) as image:
+        assert image.size == (40, 68)
+        assert image.getpixel((10, 10)) == (0, 0, 255)
+        assert image.getpixel((30, 10)) == (255, 0, 0)
+        caption_pixels = image.crop((0, 20, 40, 68)).get_flattened_data()
+        assert any(pixel != (23, 25, 29) for pixel in caption_pixels)
+
+
+def test_side_by_side_comparison_keeps_narrow_caption_panels_separate(tmp_path: Path) -> None:
+    render = tmp_path / "render.png"
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (64, 4096), "red").save(render)
+    Image.new("RGB", (64, 4096), "blue").save(reference)
+
+    artifact, _, _, _ = compose_side_by_side_comparison(
+        render,
+        reference,
+        tmp_path / "comparison.png",
+        caption_style=ComparisonCaptionStyle.BEFORE_AFTER,
+    )
+
+    background = (23, 25, 29)
+    with Image.open(artifact.path) as image:
+        assert image.size == (80, 2833)
+        assert any(
+            pixel != background for pixel in image.crop((0, 2576, 40, 2833)).get_flattened_data()
+        )
+        assert any(
+            pixel != background for pixel in image.crop((40, 2576, 80, 2833)).get_flattened_data()
+        )
+        assert all(
+            pixel == background for pixel in image.crop((36, 2576, 44, 2833)).get_flattened_data()
+        )
 
 
 def test_side_by_side_comparison_bounds_opposite_extreme_aspect_ratios(tmp_path: Path) -> None:

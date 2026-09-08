@@ -32,6 +32,8 @@ from meshprobe.models import (
     CameraRotationReceipt,
     CameraTranslationReceipt,
     CameraViewResult,
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     ComponentVisualStateResult,
     ContactSheetPanel,
     CoordinateFrame,
@@ -1898,6 +1900,50 @@ def test_render_comparison_rejects_undecodable_reference_before_rendering(
         controller.render_image(command)
 
     assert requested_operations == []
+
+
+def test_render_comparison_composes_captioned_reference_first_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "fixture.glb"
+    source.write_bytes(b"model")
+    render = tmp_path / "render.png"
+    reference = tmp_path / "historical.png"
+    comparison_output = tmp_path / "comparison.png"
+    Image.new("RGB", (20, 20), "red").save(render)
+    Image.new("RGB", (20, 20), "blue").save(reference)
+    controller = BlenderController()
+    controller._source_snapshot = snapshot_source(source)
+    controller._source_sha256 = controller._source_snapshot.sha256
+    worker_manifest = render_manifest_for(render, controller._source_sha256)
+    monkeypatch.setattr(
+        controller,
+        "_request_with_timeout",
+        lambda *_args, **_kwargs: worker_manifest.model_dump(mode="json"),
+    )
+    monkeypatch.setattr(controller, "request", lambda *_args, **_kwargs: {})
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path=str(render),
+        comparison=RenderComparisonRequest(
+            reference_image_path=str(reference),
+            mode="side_by_side",
+            output_path=str(comparison_output),
+            caption_style=ComparisonCaptionStyle.BEFORE_AFTER,
+            panel_order=ComparisonPanelOrder.REFERENCE_FIRST,
+        ),
+    )
+
+    manifest = controller.render_image(command)
+
+    assert manifest.comparison is not None
+    assert manifest.comparison.caption_style is ComparisonCaptionStyle.BEFORE_AFTER
+    assert manifest.comparison.panel_order is ComparisonPanelOrder.REFERENCE_FIRST
+    with Image.open(comparison_output) as image:
+        assert image.size == (40, 68)
+        assert image.getpixel((10, 10)) == (0, 0, 255)
+        assert image.getpixel((30, 10)) == (255, 0, 0)
 
 
 def test_render_rejects_evaluator_output_that_overwrites_source_dependency(

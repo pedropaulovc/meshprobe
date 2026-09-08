@@ -8,6 +8,8 @@ from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from meshprobe.models import (
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     CoordinateFrame,
     DisplayMode,
     IlluminationFrame,
@@ -138,6 +140,29 @@ def test_render_image_accepts_bounded_exposure_adjustments() -> None:
         "reference_image_path": "historical.png",
         "mode": "side_by_side",
         "output_path": "comparison.png",
+    }
+
+
+def test_render_comparison_payload_carries_opt_in_presentation() -> None:
+    command = RenderImageCommand(
+        request_id="render",
+        op="render.image",
+        output_path="evidence.png",
+        comparison=RenderComparisonRequest(
+            reference_image_path="historical.png",
+            mode="side_by_side",
+            output_path="comparison.png",
+            caption_style=ComparisonCaptionStyle.BEFORE_AFTER,
+            panel_order=ComparisonPanelOrder.REFERENCE_FIRST,
+        ),
+    )
+
+    assert command_payload(command)["comparison"] == {
+        "reference_image_path": "historical.png",
+        "mode": "side_by_side",
+        "output_path": "comparison.png",
+        "caption_style": "before_after",
+        "panel_order": "reference_first",
     }
 
 

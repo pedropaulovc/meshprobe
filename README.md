@@ -43,6 +43,12 @@ when the lighting should follow the active view while orbiting, such as when mat
 photograph. If the chosen rig still lands too dark or bright, `render-image --exposure 1.5` adjusts
 the output by photographic stops and records the adjustment in the render manifest.
 
+For an annotated before-and-after render, pass `--reference-image before.png --comparison
+side-by-side --comparison-output before-after.png --comparison-captions
+--comparison-reference-first` to `render-image`. The presentation options label the reference
+`BEFORE` and the current render `AFTER`, then place the reference on the left. Without them,
+the comparison remains uncaptioned with the current render on the left.
+
 `view-frame` computes the camera that tightly fits the selected components' individual world
 bounds and persists it like `view-orbit`. Pass component refs or globs, or use `view-frame --all`
 to frame the complete scene without enumerating IDs. Its structured result reports the achieved

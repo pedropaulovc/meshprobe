@@ -42,6 +42,8 @@ from meshprobe.evals.migration import audit_migration, migrate_corpus_v3
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import (
     Camera,
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     ComponentFocus,
     DepthOfField,
     DepthOfFieldMode,
@@ -2434,6 +2436,20 @@ def render_image(
     comparison_output: Annotated[
         Path | None, typer.Option("--comparison-output", dir_okay=False)
     ] = None,
+    comparison_captions: Annotated[
+        bool,
+        typer.Option(
+            "--comparison-captions",
+            help="Caption comparison panels as BEFORE (reference) and AFTER (render).",
+        ),
+    ] = False,
+    comparison_reference_first: Annotated[
+        bool,
+        typer.Option(
+            "--comparison-reference-first",
+            help="Place the reference BEFORE panel before the rendered AFTER panel.",
+        ),
+    ] = False,
 ) -> None:
     """Render the selected session to an image artifact.
 
@@ -2475,14 +2491,34 @@ def render_image(
         raise typer.BadParameter(
             "--reference-image, --comparison, and --comparison-output must be supplied together"
         )
+    if (comparison_captions or comparison_reference_first) and not all(
+        field is not None for field in comparison_fields
+    ):
+        raise typer.BadParameter(
+            "--comparison-captions and --comparison-reference-first require "
+            "--reference-image, --comparison, and --comparison-output"
+        )
     if comparison not in {None, "side-by-side"}:
         raise typer.BadParameter("--comparison must be side-by-side")
+    caption_style = (
+        ComparisonCaptionStyle.BEFORE_AFTER
+        if comparison_captions
+        else ComparisonCaptionStyle.HIDDEN
+    )
+    panel_order = (
+        ComparisonPanelOrder.REFERENCE_FIRST
+        if comparison_reference_first
+        else ComparisonPanelOrder.RENDER_FIRST
+    )
+
     comparison_request = None
     if reference_image is not None and comparison_output is not None:
         comparison_request = RenderComparisonRequest(
             reference_image_path=str(reference_image.expanduser().resolve()),
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
+            caption_style=caption_style,
+            panel_order=panel_order,
         )
     if width is None or height is None:
         try:

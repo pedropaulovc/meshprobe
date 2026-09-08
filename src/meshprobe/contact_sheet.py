@@ -9,6 +9,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from meshprobe.models import (
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     ContactSheetCallout,
     ImageArtifact,
     ImagePlacement,
@@ -18,10 +20,33 @@ from meshprobe.models import (
 from meshprobe.sources import sha256_file
 
 _MAX_COMPARISON_CELL_DIMENSION = 2576
+_COMPARISON_CAPTION_HORIZONTAL_PADDING = 4
+_COMPARISON_CAPTION_MAX_FONT_SIZE = 48
+_COMPARISON_CAPTIONS = ("BEFORE", "AFTER")
 
 
 def contact_sheet_staging_path(output_path: Path) -> Path:
     return output_path.with_name(f".{output_path.name}.part")
+
+
+def _comparison_caption_font(cell_width: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    available_width = max(1, cell_width - 2 * _COMPARISON_CAPTION_HORIZONTAL_PADDING)
+    low = 1
+    high = min(_COMPARISON_CAPTION_MAX_FONT_SIZE, available_width)
+    while low < high:
+        size = (low + high + 1) // 2
+        font = ImageFont.load_default(size=size)
+        if (
+            max(
+                font.getbbox(caption)[2] - font.getbbox(caption)[0]
+                for caption in _COMPARISON_CAPTIONS
+            )
+            <= available_width
+        ):
+            low = size
+            continue
+        high = size - 1
+    return ImageFont.load_default(size=low)
 
 
 def compose_side_by_side_comparison(
@@ -29,6 +54,8 @@ def compose_side_by_side_comparison(
     reference_path: Path,
     output_path: Path,
     *,
+    caption_style: ComparisonCaptionStyle = ComparisonCaptionStyle.HIDDEN,
+    panel_order: ComparisonPanelOrder = ComparisonPanelOrder.RENDER_FIRST,
     check_deadline: Callable[[], object] | None = None,
 ) -> tuple[ImageArtifact, ReferenceImage, ImagePlacement, ImagePlacement]:
     """Compose two complete images in bounded cells without cropping or distortion."""
@@ -71,6 +98,22 @@ def compose_side_by_side_comparison(
 
         fitted_render, render_scale = resize(render)
         fitted_reference, reference_scale = resize(reference_image)
+        caption_font = (
+            _comparison_caption_font(cell_width)
+            if caption_style is ComparisonCaptionStyle.BEFORE_AFTER
+            else None
+        )
+        if caption_font is not None:
+            caption_width = math.ceil(
+                max(
+                    caption_font.getbbox(caption)[2] - caption_font.getbbox(caption)[0]
+                    for caption in _COMPARISON_CAPTIONS
+                )
+            )
+            cell_width = max(
+                cell_width,
+                caption_width + 2 * _COMPARISON_CAPTION_HORIZONTAL_PADDING,
+            )
 
         def placement(
             source: Image.Image, dimensions: RasterDimensions, scale: float
@@ -91,18 +134,42 @@ def compose_side_by_side_comparison(
 
         render_placement = placement(fitted_render, render_dimensions, render_scale)
         reference_placement = placement(fitted_reference, reference_dimensions, reference_scale)
-        comparison = Image.new("RGB", (cell_width * 2, target_height), "#17191d")
+        caption_height = (
+            max(48, target_height // 10)
+            if caption_style is ComparisonCaptionStyle.BEFORE_AFTER
+            else 0
+        )
+        comparison = Image.new("RGB", (cell_width * 2, target_height + caption_height), "#17191d")
+        render_left = cell_width if panel_order is ComparisonPanelOrder.REFERENCE_FIRST else 0
+        reference_left = 0 if panel_order is ComparisonPanelOrder.REFERENCE_FIRST else cell_width
         comparison.paste(
             fitted_render,
-            (render_placement.padding_left, render_placement.padding_top),
+            (render_left + render_placement.padding_left, render_placement.padding_top),
         )
         comparison.paste(
             fitted_reference,
             (
-                cell_width + reference_placement.padding_left,
+                reference_left + reference_placement.padding_left,
                 reference_placement.padding_top,
             ),
         )
+        if caption_font is not None:
+            caption_draw = ImageDraw.Draw(comparison)
+            caption_top = target_height + caption_height // 2
+            caption_draw.text(
+                (reference_left + cell_width // 2, caption_top),
+                _COMPARISON_CAPTIONS[0],
+                fill="#f2f4f8",
+                font=caption_font,
+                anchor="mm",
+            )
+            caption_draw.text(
+                (render_left + cell_width // 2, caption_top),
+                _COMPARISON_CAPTIONS[1],
+                fill="#f2f4f8",
+                font=caption_font,
+                anchor="mm",
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         staging = contact_sheet_staging_path(output_path)
         comparison.save(staging, format="PNG", optimize=True)
