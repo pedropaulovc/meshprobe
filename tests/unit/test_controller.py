@@ -95,6 +95,7 @@ def make_fake_blender(tmp_path: Path, protocol_version: int = 2) -> Path:
 import json
 import os
 import sys
+import time
 
 def emit(payload):
     print("\\n" + json.dumps(payload), flush=True)
@@ -147,6 +148,11 @@ for line in sys.stdin:
         sys.stderr.write("Blender importer diagnostic")
         sys.stderr.flush()
         os._exit(24)
+    if command["op"] == "protocol.stderr-timeout":
+        sys.stderr.write("Blender importer diagnostic from /host/model.blend")
+        sys.stderr.flush()
+        time.sleep(0.5)
+        continue
     result = {"operation": command["op"]}
     emit({
         "request_id": command["request_id"],
@@ -276,6 +282,20 @@ def test_unterminated_stderr_is_preserved_when_worker_crashes(tmp_path: Path) ->
         controller.request("protocol.stderr-truncated")
 
     assert controller.logs == ("Blender importer diagnostic",)
+
+
+def test_unterminated_stderr_is_available_before_worker_exit(tmp_path: Path) -> None:
+    controller = BlenderController(
+        executable=make_fake_blender(tmp_path),
+        timeout_seconds=0.5,
+    )
+    try:
+        controller.start()
+        with pytest.raises(BlenderWorkerTimeout, match="Blender importer diagnostic"):
+            controller.request("protocol.stderr-timeout")
+        assert controller.logs == ("Blender importer diagnostic from /host/model.blend",)
+    finally:
+        controller.close()
 
 
 def test_open_scene_validates_hash_and_manifest(
@@ -473,9 +493,15 @@ def test_error_reader_is_bound_to_its_worker_generation() -> None:
     old_logs: list[str] = []
     current_logs: list[str] = []
     controller._logs = current_logs
-    old_process = SimpleNamespace(stderr=iter(["old worker diagnostic"]))
-
-    controller._read_errors(cast(Any, old_process), old_logs)
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, encoding="utf-8")
+    os.write(write_fd, b"old worker diagnostic")
+    os.close(write_fd)
+    try:
+        old_process = SimpleNamespace(stderr=stderr)
+        controller._read_errors(cast(Any, old_process), old_logs)
+    finally:
+        stderr.close()
 
     assert old_logs == ["old worker diagnostic"]
     assert controller.logs == ()
@@ -484,9 +510,15 @@ def test_error_reader_is_bound_to_its_worker_generation() -> None:
 def test_error_reader_preserves_unterminated_diagnostic() -> None:
     controller = BlenderController()
     logs: list[str] = []
-    process = SimpleNamespace(stderr=iter(["Blender importer diagnostic"]))
-
-    controller._read_errors(cast(Any, process), logs)
+    read_fd, write_fd = os.pipe()
+    stderr = os.fdopen(read_fd, encoding="utf-8")
+    os.write(write_fd, b"Blender importer diagnostic")
+    os.close(write_fd)
+    try:
+        process = SimpleNamespace(stderr=stderr)
+        controller._read_errors(cast(Any, process), logs)
+    finally:
+        stderr.close()
 
     assert logs == ["Blender importer diagnostic"]
 

@@ -19,13 +19,13 @@ from meshprobe.evals.schemas import (
 )
 from meshprobe.evals.tiers import (
     _package_sha256,
-    _source_sha256,
     current_runtime_pin,
     pin_private_tier,
     pin_standard_tiers,
     validate_runtime_pin,
     validate_tier_manifest,
 )
+from meshprobe.sources import sha256_source
 
 
 def runtime_pin() -> RuntimePin:
@@ -78,7 +78,7 @@ def test_shipped_tier_manifests_pin_current_package_source() -> None:
     project_root = Path(__file__).parents[2]
     package_root = project_root / "src" / "meshprobe"
     expected_package_sha256 = _package_sha256(package_root)
-    expected_importer_sha256 = _source_sha256(package_root / "blender" / "worker.py")
+    expected_importer_sha256 = sha256_source(package_root / "blender" / "worker.py")
     expected_version = importlib.metadata.version("meshprobe")
     manifest_paths = tuple(sorted((project_root / "evals" / "manifests").rglob("*.json")))
 
@@ -272,7 +272,7 @@ def test_package_hash_is_path_and_checkout_line_ending_independent(
 
     original = _package_sha256(first)
     assert _package_sha256(second) == original
-    assert _source_sha256(first / "nested" / "module.py") == _source_sha256(
+    assert sha256_source(first / "nested" / "module.py") == sha256_source(
         second / "nested" / "module.py"
     )
 

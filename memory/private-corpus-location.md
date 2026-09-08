@@ -19,7 +19,7 @@ uv run meshprobe eval migrate .corpora/private-v7 .corpora \
   --version private-v8 --opaque-family opaque_family_v8
 ```
 
-This preserves the historical `private-v8` identity, not the committed `private-v15`
+This preserves the historical `private-v8` identity, not the committed `private-v19`
 replacement manifest. Use it only when retained v7 source material has actually been recovered;
 then regenerate a matching private-v8 pin deliberately. Historical `private-v6` / `private-v7`
 payloads are not present on this machine after the 2026-09 data loss; never claim they are without
@@ -29,7 +29,7 @@ checking the base checkout's `.corpora/`.
 
 The original private-v8 payload was lost in 2026-09. The retained
 `/home/pedro/src/meshprobe-private/generate.py` generator rebuilt a valid replacement at
-`.corpora/private-v15`. This replacement is **not** the historical corpus: its
+`.corpora/private-v19`. This replacement is **not** the historical corpus: its
 `corpus_manifest_sha256` and `generator_sha256` in `evals/manifests/private/private.json`
 identify new data. Never hand-edit those fields or reuse the v8 label for a replacement.
 
@@ -43,7 +43,7 @@ from pathlib import Path
 
 source = Path("/home/pedro/src/meshprobe-private/generate.py")
 output_root = Path(".corpora").resolve()
-version = "private-v15"
+version = "private-v19"
 if (output_root / version).exists() or (output_root / f".{version}.building").exists():
     raise RuntimeError("refusing to replace existing corpus material")
 
@@ -59,11 +59,11 @@ print(module.build(output_root))
 Then regenerate, never patch, the private tier manifest:
 
 ```sh
-uv run meshprobe eval pin .corpora/private-v15 evals/manifests/private \
+uv run meshprobe eval pin .corpora/private-v19 evals/manifests/private \
   --private --blender /path/to/blender
 ```
 
-`build()` and `pin` both validate the schema-3 corpus. The 2026-09 private-v15 replacement
+`build()` and `pin` both validate the schema-3 corpus. The 2026-09 private-v19 replacement
 validated 640 models and 2,560 episodes; `validate_tier_manifest` plus
 `validate_runtime_pin` confirmed all new pins before commit.
 

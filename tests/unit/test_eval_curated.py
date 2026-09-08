@@ -568,6 +568,7 @@ def test_curated_task_hash_includes_blender_importer(
         return "a" * 64
 
     monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_file", record)
+    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_source", record)
 
     curated_task_generator_sha256(build)
 

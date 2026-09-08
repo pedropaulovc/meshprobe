@@ -78,6 +78,16 @@ def sha256_file(
     return digest.hexdigest()
 
 
+def sha256_source(path: Path) -> str:
+    """Hash Python source independently of Git's CRLF checkout conversion."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for line in source:
+            digest.update(line.replace(b"\r\n", b"\n"))
+    return digest.hexdigest()
+
+
 def _snapshot_asset(
     logical_path: str,
     path: Path,

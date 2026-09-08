@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import math
 import os
@@ -78,7 +79,7 @@ from meshprobe.protocol import (
     command_payload,
 )
 from meshprobe.selectors import ComponentIndex
-from meshprobe.sources import SourceSnapshot, sha256_file, snapshot_source
+from meshprobe.sources import SourceSnapshot, sha256_file, sha256_source, snapshot_source
 
 __all__ = [
     "DEFAULT_WORKER_TIMEOUT_SECONDS",
@@ -415,7 +416,8 @@ class BlenderController:
         if not isinstance(blender_version, str) or not blender_version:
             raise BlenderWorkerError("worker did not report its Blender version")
         worker_path = Path(__file__).with_name("blender") / "worker.py"
-        return f"blender-{blender_version}+meshprobe-normalizer-v1-{sha256_file(worker_path)[:16]}"
+        normalizer_hash = sha256_source(worker_path)[:16]
+        return f"blender-{blender_version}+meshprobe-normalizer-v1-{normalizer_hash}"
 
     def execute(self, command: Command) -> object:
         if command.effect is CommandEffect.UNDECLARED:
@@ -2042,10 +2044,44 @@ class BlenderController:
     def _read_errors(self, process: subprocess.Popen[str], logs: list[str]) -> None:
         if process.stderr is None:
             return
-        for line in process.stderr:
-            output = line.rstrip("\n")
-            if output:
-                logs.append(output)
+        encoding = getattr(process.stderr, "encoding", None) or "utf-8"
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        pending = ""
+        partial_index: int | None = None
+
+        def publish_pending() -> None:
+            nonlocal partial_index, pending
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                line = line.rstrip("\r")
+                if partial_index is not None:
+                    if line:
+                        logs[partial_index] = line
+                    else:
+                        logs.pop(partial_index)
+                    partial_index = None
+                elif line:
+                    logs.append(line)
+            if pending:
+                if partial_index is None:
+                    logs.append(pending)
+                    partial_index = len(logs) - 1
+                else:
+                    logs[partial_index] = pending
+
+        while True:
+            try:
+                chunk = os.read(process.stderr.fileno(), 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            pending += decoder.decode(chunk)
+            publish_pending()
+        pending += decoder.decode(b"", final=True)
+        publish_pending()
+        if partial_index is not None:
+            logs[partial_index] = logs[partial_index].rstrip("\r")
 
     def _wait_for(self, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
         started = time.monotonic()
