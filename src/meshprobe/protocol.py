@@ -11,6 +11,8 @@ from meshprobe.models import (
     Camera,
     CameraMotionResult,
     CameraViewResult,
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     Component,
     ComponentVisualStateResult,
     ContactSheetManifest,
@@ -239,6 +241,8 @@ class RenderComparisonRequest(BaseModel):
     reference_image_path: str
     mode: Literal["side_by_side"]
     output_path: str
+    caption_style: ComparisonCaptionStyle = ComparisonCaptionStyle.HIDDEN
+    panel_order: ComparisonPanelOrder = ComparisonPanelOrder.RENDER_FIRST
 
 
 class RenderImageCommand(CommandModel):
@@ -381,7 +385,17 @@ def command_payload(command: Command, *, exclude: set[str] | None = None) -> dic
     if isinstance(command, ComponentDisplayCommand) and command.isolation_operation is None:
         payload.pop("isolation_operation")
     if isinstance(command, RenderImageCommand) and command.comparison is None:
-        payload.pop("comparison")
+        payload.pop("comparison", None)
+    elif (
+        isinstance(command, RenderImageCommand)
+        and command.comparison is not None
+        and "comparison" in payload
+    ):
+        comparison = payload["comparison"]
+        if command.comparison.caption_style is ComparisonCaptionStyle.HIDDEN:
+            comparison.pop("caption_style")
+        if command.comparison.panel_order is ComparisonPanelOrder.RENDER_FIRST:
+            comparison.pop("panel_order")
     if isinstance(command, RenderImageCommand) and command.exposure_stops == 0:
         payload.pop("exposure_stops")
     if (

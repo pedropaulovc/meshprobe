@@ -17,6 +17,8 @@ from meshprobe.cli import app
 from meshprobe.evals.factory import build_corpus
 from meshprobe.evals.generators import GeneratorFamily
 from meshprobe.models import (
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     CoordinateFrame,
     IlluminationFrame,
     OrthographicProjection,
@@ -239,6 +241,57 @@ def test_render_commands_accept_orbit_sweep_and_reference_comparison(
     assert isinstance(image_command, RenderImageCommand)
     assert image_command.comparison is not None
     assert image_command.comparison.mode == "side_by_side"
+    assert image_command.comparison.caption_style is ComparisonCaptionStyle.HIDDEN
+    assert image_command.comparison.panel_order is ComparisonPanelOrder.RENDER_FIRST
+
+
+@pytest.mark.parametrize(
+    "presentation_flag",
+    ("--comparison-captions", "--comparison-reference-first"),
+)
+def test_render_image_comparison_presentation_controls_require_and_reach_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    presentation_flag: str,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("meshprobe.cli._client", lambda *args, **kwargs: client)
+    reference = tmp_path / "historical.png"
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), "black").save(reference)
+    missing_comparison = runner.invoke(
+        app,
+        ["--session", "review", "render-image", presentation_flag],
+    )
+    presentation = runner.invoke(
+        app,
+        [
+            "--session",
+            "review",
+            "render-image",
+            "--reference-image",
+            str(reference),
+            "--comparison",
+            "side-by-side",
+            "--comparison-output",
+            str(tmp_path / "comparison.png"),
+            "--comparison-captions",
+            "--comparison-reference-first",
+        ],
+    )
+
+    assert missing_comparison.exit_code == 2
+    assert (
+        "--comparison-captions and --comparison-reference-first require"
+        in missing_comparison.output
+    )
+    assert presentation.exit_code == 0, presentation.output
+    command = client.commands[-1]
+    assert isinstance(command, RenderImageCommand)
+    assert command.comparison is not None
+    assert command.comparison.caption_style is ComparisonCaptionStyle.BEFORE_AFTER
+    assert command.comparison.panel_order is ComparisonPanelOrder.REFERENCE_FIRST
 
 
 def test_schema_per_command_lookup_returns_only_that_command() -> None:

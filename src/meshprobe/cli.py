@@ -42,6 +42,8 @@ from meshprobe.evals.migration import audit_migration, migrate_corpus_v3
 from meshprobe.evals.tiers import current_runtime_pin, pin_private_tier, pin_standard_tiers
 from meshprobe.models import (
     Camera,
+    ComparisonCaptionStyle,
+    ComparisonPanelOrder,
     ComponentFocus,
     DepthOfField,
     DepthOfFieldMode,
@@ -477,11 +479,11 @@ _CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
     "schema": (("meshprobe schema --kind results", "Inspect command result schemas."),),
     "eval generate": (
         (
-            "meshprobe eval generate .corpora --version procedural-v11",
+            "meshprobe eval generate .corpora --version procedural-v12",
             "Build the procedural evaluation corpus.",
         ),
     ),
-    "eval validate": (("meshprobe eval validate .corpora/procedural-v11", "Validate a corpus."),),
+    "eval validate": (("meshprobe eval validate .corpora/procedural-v12", "Validate a corpus."),),
     "eval migrate": (
         (
             "meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v7",
@@ -490,8 +492,8 @@ _CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "eval merge": (
         (
-            "meshprobe eval merge .corpora .corpora/procedural-v11 "
-            ".corpora/curated-tasks-v11 --version qualification-v12",
+            "meshprobe eval merge .corpora .corpora/procedural-v12 "
+            ".corpora/curated-tasks-v11 --version qualification-v13",
             "Combine validated corpora.",
         ),
     ),
@@ -1032,7 +1034,7 @@ def schema(
 @eval_app.command("generate")
 def generate_eval_corpus(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v11",
+    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v12",
     families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
     seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
     seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
@@ -1137,7 +1139,7 @@ def generate_curated_eval_corpus(
 def merge_eval_corpora(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v12",
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v13",
 ) -> None:
     """Combine validated procedural and curated corpora without rewriting artifacts."""
 
@@ -2434,6 +2436,20 @@ def render_image(
     comparison_output: Annotated[
         Path | None, typer.Option("--comparison-output", dir_okay=False)
     ] = None,
+    comparison_captions: Annotated[
+        bool,
+        typer.Option(
+            "--comparison-captions",
+            help="Caption comparison panels as BEFORE (reference) and AFTER (render).",
+        ),
+    ] = False,
+    comparison_reference_first: Annotated[
+        bool,
+        typer.Option(
+            "--comparison-reference-first",
+            help="Place the reference BEFORE panel before the rendered AFTER panel.",
+        ),
+    ] = False,
 ) -> None:
     """Render the selected session to an image artifact.
 
@@ -2475,14 +2491,34 @@ def render_image(
         raise typer.BadParameter(
             "--reference-image, --comparison, and --comparison-output must be supplied together"
         )
+    if (comparison_captions or comparison_reference_first) and not all(
+        field is not None for field in comparison_fields
+    ):
+        raise typer.BadParameter(
+            "--comparison-captions and --comparison-reference-first require "
+            "--reference-image, --comparison, and --comparison-output"
+        )
     if comparison not in {None, "side-by-side"}:
         raise typer.BadParameter("--comparison must be side-by-side")
+    caption_style = (
+        ComparisonCaptionStyle.BEFORE_AFTER
+        if comparison_captions
+        else ComparisonCaptionStyle.HIDDEN
+    )
+    panel_order = (
+        ComparisonPanelOrder.REFERENCE_FIRST
+        if comparison_reference_first
+        else ComparisonPanelOrder.RENDER_FIRST
+    )
+
     comparison_request = None
     if reference_image is not None and comparison_output is not None:
         comparison_request = RenderComparisonRequest(
             reference_image_path=str(reference_image.expanduser().resolve()),
             mode="side_by_side",
             output_path=str(comparison_output.expanduser().resolve()),
+            caption_style=caption_style,
+            panel_order=panel_order,
         )
     if width is None or height is None:
         try:

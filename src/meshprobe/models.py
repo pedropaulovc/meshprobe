@@ -861,12 +861,24 @@ class ImagePlacement(ContractModel):
     padding_bottom: Annotated[int, Field(ge=0)]
 
 
+class ComparisonCaptionStyle(StrEnum):
+    HIDDEN = "hidden"
+    BEFORE_AFTER = "before_after"
+
+
+class ComparisonPanelOrder(StrEnum):
+    RENDER_FIRST = "render_first"
+    REFERENCE_FIRST = "reference_first"
+
+
 class RenderComparisonManifest(ContractModel):
     mode: Literal["side_by_side"]
     artifact: ImageArtifact
     reference: ReferenceImage
     render_placement: ImagePlacement
     reference_placement: ImagePlacement
+    caption_style: ComparisonCaptionStyle = ComparisonCaptionStyle.HIDDEN
+    panel_order: ComparisonPanelOrder = ComparisonPanelOrder.RENDER_FIRST
 
 
 class LuminanceSummary(ContractModel):

@@ -123,12 +123,17 @@ def _normalize_optional_render_fields(manifest: dict[str, JsonValue]) -> None:
     if comparison is None:
         manifest.pop("comparison", None)
         return
-    if isinstance(comparison, dict):
-        comparison.pop("artifact", None)
-        reference = comparison.get("reference")
-        if isinstance(reference, dict) and _is_generated_artifact_reference(reference.get("path")):
-            reference.pop("path", None)
-            reference.pop("sha256", None)
+    if not isinstance(comparison, dict):
+        return
+    # Comparison presentation defaults were added after comparison traces already existed.
+    # Populate omitted legacy fields so replay compares semantics, not schema evolution.
+    comparison.setdefault("caption_style", "hidden")
+    comparison.setdefault("panel_order", "render_first")
+    comparison.pop("artifact", None)
+    reference = comparison.get("reference")
+    if isinstance(reference, dict) and _is_generated_artifact_reference(reference.get("path")):
+        reference.pop("path", None)
+        reference.pop("sha256", None)
 
 
 def _is_generated_artifact_reference(path: JsonValue | None) -> bool:

@@ -981,11 +981,12 @@ class BlenderController:
         if self._source_snapshot is None:
             raise BlenderWorkerError("cannot render before a scene is open")
         output = Path(command.output_path).expanduser().resolve()
+        comparison_request = command.comparison
         comparison_output: Path | None = None
         reference_image: Path | None = None
-        if command.comparison is not None:
-            comparison_output = Path(command.comparison.output_path).expanduser().resolve()
-            reference_image = Path(command.comparison.reference_image_path).expanduser().resolve()
+        if comparison_request is not None:
+            comparison_output = Path(comparison_request.output_path).expanduser().resolve()
+            reference_image = Path(comparison_request.reference_image_path).expanduser().resolve()
             if comparison_output.suffix.lower() != ".png":
                 raise BlenderWorkerError("comparison output_path must end in .png")
             if not reference_image.is_file():
@@ -1043,13 +1044,19 @@ class BlenderController:
         if manifest.source_sha256 != self._source_sha256:
             raise BlenderWorkerError("render manifest source hash does not match the open scene")
         self._verify_render_artifacts(manifest)
-        if comparison_output is not None and reference_image is not None:
+        if (
+            comparison_request is not None
+            and comparison_output is not None
+            and reference_image is not None
+        ):
             try:
                 artifact, reference, render_placement, reference_placement = (
                     compose_side_by_side_comparison(
                         Path(manifest.color.path),
                         reference_image,
                         comparison_output,
+                        caption_style=comparison_request.caption_style,
+                        panel_order=comparison_request.panel_order,
                         check_deadline=self._ensure_request_deadline,
                     )
                 )
@@ -1060,15 +1067,13 @@ class BlenderController:
             manifest = manifest.model_copy(
                 update={
                     "comparison": RenderComparisonManifest(
-                        mode=(
-                            command.comparison.mode
-                            if command.comparison is not None
-                            else "side_by_side"
-                        ),
+                        mode=comparison_request.mode,
                         artifact=artifact,
                         reference=reference,
                         render_placement=render_placement,
                         reference_placement=reference_placement,
+                        caption_style=comparison_request.caption_style,
+                        panel_order=comparison_request.panel_order,
                     )
                 }
             )
