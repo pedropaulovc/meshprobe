@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from meshprobe.evals.schemas import (
 )
 from meshprobe.evals.tiers import (
     _package_sha256,
+    _source_sha256,
     current_runtime_pin,
     pin_private_tier,
     pin_standard_tiers,
@@ -69,6 +71,23 @@ def test_shipped_tier_manifests_use_current_schema() -> None:
         TierManifest.model_validate_json(path.read_text(encoding="utf-8")).schema_version == 3
         for path in manifest_paths
     )
+
+
+def test_shipped_tier_manifests_pin_current_package_source() -> None:
+    """Reject source changes that would silently invalidate shipped runtime pins."""
+    project_root = Path(__file__).parents[2]
+    package_root = project_root / "src" / "meshprobe"
+    expected_package_sha256 = _package_sha256(package_root)
+    expected_importer_sha256 = _source_sha256(package_root / "blender" / "worker.py")
+    expected_version = importlib.metadata.version("meshprobe")
+    manifest_paths = tuple(sorted((project_root / "evals" / "manifests").rglob("*.json")))
+
+    assert manifest_paths
+    for path in manifest_paths:
+        runtime = TierManifest.model_validate_json(path.read_text(encoding="utf-8")).runtime
+        assert runtime.meshprobe_version == expected_version
+        assert runtime.meshprobe_sha256 == expected_package_sha256
+        assert runtime.importer_sha256 == expected_importer_sha256
 
 
 def test_private_family_claim_must_be_backed_by_episode_truth(tmp_path: Path) -> None:
@@ -240,19 +259,24 @@ def test_current_runtime_pin_reads_exact_package_blender_and_importer(
     assert len(pin.importer_sha256) == 64
 
 
-def test_package_hash_is_path_independent_and_changes_with_python_source(tmp_path: Path) -> None:
+def test_package_hash_is_path_and_checkout_line_ending_independent(
+    tmp_path: Path,
+) -> None:
     first = tmp_path / "first" / "meshprobe"
     second = tmp_path / "second" / "meshprobe"
-    for root in (first, second):
+    for root, newline in ((first, "\n"), (second, "\r\n")):
         (root / "nested").mkdir(parents=True)
-        (root / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
-        (root / "nested" / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
-        (root / "ignored.txt").write_text("not executable source\n", encoding="utf-8")
+        (root / "__init__.py").write_bytes(f"VERSION = 1{newline}".encode())
+        (root / "nested" / "module.py").write_bytes(f"VALUE = 2{newline}".encode())
+        (root / "ignored.txt").write_bytes(b"not executable source\r\n")
 
     original = _package_sha256(first)
     assert _package_sha256(second) == original
+    assert _source_sha256(first / "nested" / "module.py") == _source_sha256(
+        second / "nested" / "module.py"
+    )
 
-    (second / "nested" / "module.py").write_text("VALUE = 3\n", encoding="utf-8")
+    (second / "nested" / "module.py").write_bytes(b"VALUE = 3\r\n")
     assert _package_sha256(second) != original
 
 

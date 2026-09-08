@@ -1,34 +1,76 @@
 ---
 name: private-corpus-location
-description: the held-out private-vN eval corpus lives only in the base (non-worktree) checkout's .corpora/, not in any feature worktree or the public generate/curated-generate pipeline
+description: held-out private evaluation data lives only in the base checkout's .corpora/, with separate identity-preserving migration and identity-changing replacement paths
 metadata:
   type: reference
 ---
 
-The qualification harness's "private" tier (`evals/manifests/private/private.json`)
-is NOT reproducible via the documented public `eval generate` /
-`eval curated-generate` / `eval merge` / `eval pin` pipeline in README.md — that
-pipeline only builds the public procedural + curated corpora. The private tier
-is instead produced via `eval migrate`:
+The documented public `eval generate` / `eval curated-generate` / `eval merge`
+pipeline builds only the public corpus. It cannot recover the held-out private tier in
+`evals/manifests/private/private.json`.
 
-```
+## Preserve historical identity when source data exists
+
+If a valid retained `private-v7` corpus exists, migrate it to `private-v8` without changing model
+or episode identities:
+
+```sh
 uv run meshprobe eval migrate .corpora/private-v7 .corpora \
   --version private-v8 --opaque-family opaque_family_v8
 ```
 
-which requires an existing `private-v7` corpus directory as input — it migrates
-forward, it doesn't generate from scratch. That source corpus is genuinely
-held-out/private data (README: "private evaluator data stay outside the
-sandbox"), so it won't exist in a fresh feature-branch worktree
-(`meshprobe-wt-*`). It DOES exist locally on this machine in the base repo
-checkout's `.corpora/` (the non-worktree checkout, e.g. `.corpora/private-v7`)
-— locate it via `locate`/`find` across the filesystem when a Codex
-review finding claimed the private manifest's runtime pin was stale. Also
-present there: `private-v6`, `private-v8`. Transient temp directories from
-past test/PR runs have also held copies — not durable, don't rely on those.
+This preserves the historical `private-v8` identity, not the committed `private-v15`
+replacement manifest. Use it only when retained v7 source material has actually been recovered;
+then regenerate a matching private-v8 pin deliberately. Historical `private-v6` / `private-v7`
+payloads are not present on this machine after the 2026-09 data loss; never claim they are without
+checking the base checkout's `.corpora/`.
 
-**How to apply:** before concluding "I can't reproduce/fix the private tier,
-the data isn't available," check the base (non-worktree) checkout's
-`.corpora/` first — don't assume private/held-out data means literally
-inaccessible on this machine. See also [[mypy-debt-parallel-burndown]] for the
-broader mypy-debt campaign this was discovered during.
+## Replace lost private material
+
+The original private-v8 payload was lost in 2026-09. The retained
+`/home/pedro/src/meshprobe-private/generate.py` generator rebuilt a valid replacement at
+`.corpora/private-v15`. This replacement is **not** the historical corpus: its
+`corpus_manifest_sha256` and `generator_sha256` in `evals/manifests/private/private.json`
+identify new data. Never hand-edit those fields or reuse the v8 label for a replacement.
+
+Run from the base checkout, after confirming neither the destination nor its staging directory
+contains material worth preserving. The module-global override changes only the new corpus's
+versioned output path and manifest; it does not modify the retained private generator source.
+
+```python
+import importlib.util
+from pathlib import Path
+
+source = Path("/home/pedro/src/meshprobe-private/generate.py")
+output_root = Path(".corpora").resolve()
+version = "private-v15"
+if (output_root / version).exists() or (output_root / f".{version}.building").exists():
+    raise RuntimeError("refusing to replace existing corpus material")
+
+spec = importlib.util.spec_from_file_location("meshprobe_private_rebuild", source)
+if spec is None or spec.loader is None:
+    raise RuntimeError(f"could not load {source}")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.CORPUS_VERSION = version
+print(module.build(output_root))
+```
+
+Then regenerate, never patch, the private tier manifest:
+
+```sh
+uv run meshprobe eval pin .corpora/private-v15 evals/manifests/private \
+  --private --blender /path/to/blender
+```
+
+`build()` and `pin` both validate the schema-3 corpus. The 2026-09 private-v15 replacement
+validated 640 models and 2,560 episodes; `validate_tier_manifest` plus
+`validate_runtime_pin` confirmed all new pins before commit.
+
+## How to apply
+
+Before treating a private pin as irreproducible, check the base (non-worktree) checkout's
+`.corpora/`. Feature worktrees intentionally do not contain this ignored data. If retained v7 data
+is available, migrate it. If it is absent, use the replacement path only with explicit
+authorization, record the changed identity in the changelog, and repin every private manifest
+from the validated replacement.

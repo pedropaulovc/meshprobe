@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rebuilt the lost public corpus as `qualification-v11` from `procedural-v10` and
+  `curated-tasks-v10`, plus the held-out private corpus as `private-v15`, recording new
+  generator and corpus identities instead of reusing v8 labels.
+
+### Fixed
+
+- `open` now surfaces a Blender importer error immediately when an unterminated diagnostic would
+  otherwise make the worker reply look like a timeout.
+
 ## [1.3.1] - 2026-08-04
 
 ### Changed

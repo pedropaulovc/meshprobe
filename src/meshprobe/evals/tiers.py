@@ -55,16 +55,26 @@ def current_runtime_pin(blender: str = "blender") -> RuntimePin:
         meshprobe_version=importlib.metadata.version("meshprobe"),
         meshprobe_sha256=_package_sha256(package_root),
         blender_version=first_line.removeprefix("Blender "),
-        importer_sha256=sha256_file(worker),
+        importer_sha256=_source_sha256(worker),
         render_engines=("eevee", "cycles"),
     )
+
+
+def _source_sha256(path: Path) -> str:
+    """Hash Python source independently of Git's CRLF checkout conversion."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for line in source:
+            digest.update(line.replace(b"\r\n", b"\n"))
+    return digest.hexdigest()
 
 
 def _package_sha256(package_root: Path) -> str:
     """Hash every shipped Python module with checkout-independent path tags."""
 
     entries = [
-        (path.relative_to(package_root).as_posix(), sha256_file(path))
+        (path.relative_to(package_root).as_posix(), _source_sha256(path))
         for path in sorted(package_root.rglob("*.py"))
         if "__pycache__" not in path.parts
     ]

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import queue
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -75,6 +76,18 @@ from meshprobe.session import InspectionSession
 from meshprobe.sources import snapshot_source
 
 
+class ImmediateLineQueue:
+    def __init__(self, lines: tuple[str | None, ...]) -> None:
+        self._lines = list(lines)
+        self.timeouts: list[float | None] = []
+
+    def get(self, timeout: float | None = None) -> str | None:
+        self.timeouts.append(timeout)
+        if not self._lines:
+            raise queue.Empty
+        return self._lines.pop(0)
+
+
 def make_fake_blender(tmp_path: Path, protocol_version: int = 2) -> Path:
     script = tmp_path / "fake_blender_worker.py"
     script.write_text(
@@ -83,7 +96,10 @@ import json
 import os
 import sys
 
-print(json.dumps({
+def emit(payload):
+    print("\\n" + json.dumps(payload), flush=True)
+
+emit({
     "event": "ready",
     "protocol_version": __PROTOCOL_VERSION__,
     "blender_version": "test",
@@ -97,33 +113,46 @@ print(json.dumps({
         "device_class": "hardware",
         "warnings": [],
     },
-}), flush=True)
+})
 for line in sys.stdin:
     command = json.loads(line)
     if command["op"] == "protocol.error":
-        print(json.dumps({
+        emit({
             "request_id": command["request_id"],
             "ok": False,
             "error": {"code": "worker.test", "message": "requested failure"},
-        }), flush=True)
+        })
+        continue
+    if command["op"] == "protocol.importer-error":
+        sys.stderr.write("Blender importer diagnostic")
+        sys.stderr.flush()
+        emit({
+            "request_id": command["request_id"],
+            "ok": False,
+            "error": {"code": "worker.importer", "message": "importer rejected model"},
+        })
         continue
     if command["op"] == "protocol.scalar":
-        print(json.dumps({
+        emit({
             "request_id": command["request_id"],
             "ok": True,
             "result": 1,
-        }), flush=True)
+        })
         continue
     if command["op"] == "protocol.truncated":
         sys.stdout.write('{"request_id":"' + command["request_id"])
         sys.stdout.flush()
         os._exit(23)
+    if command["op"] == "protocol.stderr-truncated":
+        sys.stderr.write("Blender importer diagnostic")
+        sys.stderr.flush()
+        os._exit(24)
     result = {"operation": command["op"]}
-    print(json.dumps({
+    emit({
         "request_id": command["request_id"],
         "ok": True,
         "result": result,
-    }), flush=True)
+    })
     if command["op"] == "session.shutdown":
         break
 """.replace("__PROTOCOL_VERSION__", str(protocol_version)),
@@ -193,6 +222,7 @@ def test_start_failure_closes_half_started_process(tmp_path: Path) -> None:
         controller.start()
     assert controller._process is None
     assert controller._reader_thread is None
+    assert controller._error_reader_thread is None
 
 
 def test_fake_worker_request_round_trip(tmp_path: Path) -> None:
@@ -207,6 +237,18 @@ def test_worker_error_envelope_is_raised(tmp_path: Path) -> None:
         pytest.raises(BlenderWorkerError, match=r"worker\.test: requested failure"),
     ):
         controller.request("protocol.error")
+
+
+def test_stderr_importer_diagnostic_does_not_corrupt_worker_reply(
+    tmp_path: Path,
+) -> None:
+    with (
+        BlenderController(executable=make_fake_blender(tmp_path), timeout_seconds=10) as controller,
+        pytest.raises(BlenderWorkerError, match=r"worker\.importer: importer rejected model"),
+    ):
+        controller.request("protocol.importer-error")
+
+    assert controller.logs == ("Blender importer diagnostic",)
 
 
 def test_worker_nonobject_result_is_rejected(tmp_path: Path) -> None:
@@ -224,6 +266,16 @@ def test_truncated_worker_response_fails_as_a_crash(tmp_path: Path) -> None:
     ):
         controller.request("protocol.truncated")
     assert any(line.startswith('{"request_id":') for line in controller.logs)
+
+
+def test_unterminated_stderr_is_preserved_when_worker_crashes(tmp_path: Path) -> None:
+    with (
+        BlenderController(executable=make_fake_blender(tmp_path)) as controller,
+        pytest.raises(BlenderWorkerCrashed, match="Blender importer diagnostic"),
+    ):
+        controller.request("protocol.stderr-truncated")
+
+    assert controller.logs == ("Blender importer diagnostic",)
 
 
 def test_open_scene_validates_hash_and_manifest(
@@ -334,21 +386,37 @@ def test_wait_for_reports_process_end() -> None:
         controller._wait_for(lambda payload: False)
 
 
-def test_wait_for_times_out() -> None:
-    controller = BlenderController(timeout_seconds=0.001)
-    with pytest.raises(BlenderWorkerTimeout, match="did not respond"):
-        controller._wait_for(lambda payload: False)
-
-
-def test_wait_for_honors_an_absolute_request_deadline() -> None:
+def test_wait_for_times_out_with_recent_worker_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     controller = BlenderController(timeout_seconds=10)
-    controller._request_deadline_monotonic = time.monotonic() + 0.001
-    started = time.monotonic()
+    lines = ImmediateLineQueue(("Blender importer diagnostic",))
+    controller._lines = cast(queue.Queue[str | None], lines)
+    monkeypatch.setattr("meshprobe.controller.time.monotonic", iter((0.0, 0.0, 10.0)).__next__)
 
-    with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
+    with pytest.raises(BlenderWorkerTimeout) as excinfo:
         controller._wait_for(lambda payload: False)
 
-    assert time.monotonic() - started < 0.1
+    assert lines.timeouts == [10]
+    assert "did not respond" in str(excinfo.value)
+    assert "Blender importer diagnostic" in str(excinfo.value)
+
+
+def test_wait_for_honors_an_absolute_request_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = BlenderController(timeout_seconds=10)
+    controller._request_deadline_monotonic = 1
+    lines = ImmediateLineQueue(("Blender importer diagnostic",))
+    controller._lines = cast(queue.Queue[str | None], lines)
+    monkeypatch.setattr("meshprobe.controller.time.monotonic", iter((0.0, 0.0, 1.0)).__next__)
+
+    with pytest.raises(EvaluationWallTimeout) as excinfo:
+        controller._wait_for(lambda payload: False)
+
+    assert lines.timeouts == [1]
+    assert "evaluation wall deadline" in str(excinfo.value)
+    assert "Blender importer diagnostic" in str(excinfo.value)
 
 
 def test_expired_request_deadline_rejects_host_side_render_work() -> None:
@@ -357,6 +425,22 @@ def test_expired_request_deadline_rejects_host_side_render_work() -> None:
 
     with pytest.raises(EvaluationWallTimeout, match="evaluation wall deadline"):
         controller._ensure_request_deadline()
+
+
+def test_crash_message_joins_stderr_before_a_process_is_reaped() -> None:
+    class DeferredErrorReader:
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout == 1
+            controller._logs.append("Blender importer diagnostic")
+
+    def wait(timeout: float) -> int:
+        raise subprocess.TimeoutExpired("blender", timeout)
+
+    controller = BlenderController()
+    controller._process = cast(Any, SimpleNamespace(poll=lambda: None, wait=wait))
+    controller._error_reader_thread = cast(Any, DeferredErrorReader())
+
+    assert "Blender importer diagnostic" in controller._crash_message()
 
 
 def test_crash_message_identifies_possible_windows_driver_reset() -> None:
@@ -382,6 +466,29 @@ def test_output_reader_is_bound_to_its_worker_generation() -> None:
     assert old_queue.get_nowait() == "old worker"
     assert old_queue.get_nowait() is None
     assert current_queue.empty()
+
+
+def test_error_reader_is_bound_to_its_worker_generation() -> None:
+    controller = BlenderController()
+    old_logs: list[str] = []
+    current_logs: list[str] = []
+    controller._logs = current_logs
+    old_process = SimpleNamespace(stderr=iter(["old worker diagnostic"]))
+
+    controller._read_errors(cast(Any, old_process), old_logs)
+
+    assert old_logs == ["old worker diagnostic"]
+    assert controller.logs == ()
+
+
+def test_error_reader_preserves_unterminated_diagnostic() -> None:
+    controller = BlenderController()
+    logs: list[str] = []
+    process = SimpleNamespace(stderr=iter(["Blender importer diagnostic"]))
+
+    controller._read_errors(cast(Any, process), logs)
+
+    assert logs == ["Blender importer diagnostic"]
 
 
 def test_execute_records_state_and_compacts_reset(scene_manifest, monkeypatch) -> None:  # type: ignore[no-untyped-def]

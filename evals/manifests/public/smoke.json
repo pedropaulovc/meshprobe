@@ -1,15 +1,15 @@
 {
   "schema_version": 3,
   "tier": "smoke",
-  "corpus_version": "qualification-v8",
-  "corpus_manifest_sha256": "5b2d70a93e4ab21b6a0819626a668463214a04a56b41289adad8814a0faf54b2",
-  "generator_sha256": "96a5723bbaa7d98f64a1ec2d72a7d679a58cc898a9d70246c402c42dab7db99d",
+  "corpus_version": "qualification-v11",
+  "corpus_manifest_sha256": "a30d3688a5f7ff65271ee596761b82dc017ce63b8f561375701429046ea0e883",
+  "generator_sha256": "7e21b873a0b33926bf031963943f71b40945e2a5a28f465bf5b35321453e8364",
   "runtime": {
     "meshprobe_version": "1.3.1",
-    "meshprobe_sha256": "12daeca2bc0c788e6e3408876ffeac525bf622b0a9bbf1040ef0dae758e547d6",
+    "meshprobe_sha256": "c038e47cf73fbeae6ab67d28958a1591767c8b140439e5a05ba49b2e40ab9e77",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
-    "importer_sha256": "56c5ab4784699f2aa25e0e6f8d6e382bac815c7eea3436679f621459329fe5a4",
+    "importer_sha256": "c85f64cd9074bc29b552cdcccaf5c9a6935f4b919e2cf4741cc7843169f4bc7b",
     "render_engines": [
       "eevee",
       "cycles"

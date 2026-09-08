@@ -121,7 +121,10 @@ GPU_PLATFORM: dict[str, Any] | None = None
 
 
 def emit(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
+    # The controller routes Blender stderr away from this protocol stream. Prefix
+    # the record to close any earlier unterminated stdout diagnostic.
+    sys.stdout.write("\n" + json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 def stable_component_id(source_sha256: str, instance_path: str) -> str:
