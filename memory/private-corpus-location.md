@@ -28,20 +28,21 @@ checking the base checkout's `.corpora/`.
 ## Replace lost private material
 
 The original private-v8 payload was lost in 2026-09. The retained
-`/home/pedro/src/meshprobe-private/generate.py` generator rebuilt a valid replacement at
+retained `meshprobe-private/generate.py` generator rebuilt a valid replacement at
 `.corpora/private-v19`. This replacement is **not** the historical corpus: its
 `corpus_manifest_sha256` and `generator_sha256` in `evals/manifests/private/private.json`
 identify new data. Never hand-edit those fields or reuse the v8 label for a replacement.
 
 Run from the base checkout, after confirming neither the destination nor its staging directory
-contains material worth preserving. The module-global override changes only the new corpus's
+contains material worth preserving. Replace the `source` placeholder with the retained generator
+path before running the snippet. The module-global override changes only the new corpus's
 versioned output path and manifest; it does not modify the retained private generator source.
 
 ```python
 import importlib.util
 from pathlib import Path
 
-source = Path("/home/pedro/src/meshprobe-private/generate.py")
+source = Path("/path/to/meshprobe-private/generate.py")  # replace with the retained generator path
 output_root = Path(".corpora").resolve()
 version = "private-v19"
 if (output_root / version).exists() or (output_root / f".{version}.building").exists():

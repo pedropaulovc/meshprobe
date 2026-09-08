@@ -561,18 +561,24 @@ def test_curated_task_hash_includes_blender_importer(
     (build_root / "public").mkdir(parents=True)
     (build_root / "public" / "manifest.json").write_text("{}\n", encoding="utf-8")
     build = CuratedBuild(root=build_root, model_sha256={}, model_count=0)
-    hashed: list[Path] = []
+    file_hashed: list[Path] = []
+    source_hashed: list[Path] = []
 
-    def record(path: Path) -> str:
-        hashed.append(path)
+    def record_file(path: Path) -> str:
+        file_hashed.append(path)
         return "a" * 64
 
-    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_file", record)
-    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_source", record)
+    def record_source(path: Path) -> str:
+        source_hashed.append(path)
+        return "b" * 64
+
+    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_file", record_file)
+    monkeypatch.setattr("meshprobe.evals.curated_tasks.sha256_source", record_source)
 
     curated_task_generator_sha256(build)
 
-    assert any(path.name == "worker.py" for path in hashed)
+    assert any(path.name == "worker.py" for path in source_hashed)
+    assert all(path.name != "worker.py" for path in file_hashed)
 
 
 def test_curated_task_hash_is_path_independent_and_includes_private_roles(
