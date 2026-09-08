@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rebuilt the lost public corpus as `qualification-v12` from `procedural-v11` and
   `curated-tasks-v11`, plus the held-out private corpus as `private-v19`, recording new
   generator and corpus identities instead of reusing v8 labels.
+- Repinned all qualification manifests for the comparison runtime and regenerated the held-out
+  private corpus as `private-v20` after the package source changes.
 
 ### Fixed
 

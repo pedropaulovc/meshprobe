@@ -1,12 +1,12 @@
 {
   "schema_version": 3,
   "tier": "private",
-  "corpus_version": "private-v19",
-  "corpus_manifest_sha256": "4a16672eb54d793e564862a991ab97bdfea54cabda14ce87aa6ca0ae635c11de",
-  "generator_sha256": "ff151f354135a0afc3e5a897cbbf06857fc1affbd297f61f386df35f41b955ae",
+  "corpus_version": "private-v20",
+  "corpus_manifest_sha256": "eb0eb4ee9673544e14f2ea3bd8735c48f1cdee866f36e2d8b8bc75340a6c10e6",
+  "generator_sha256": "8ddaa2b74ee2b087337dd91dd4105d9a53429ae9bd0bf3e50becbb0c66a1c495",
   "runtime": {
     "meshprobe_version": "1.3.1",
-    "meshprobe_sha256": "1ea9935fe521640dc6f90468924684f36caae0746ad8a09413a4ecd830fd082b",
+    "meshprobe_sha256": "4e5076ff90bface42b9c0b4b0ff60b7d977a8aa55de643e3ec06ba78fe27f0f3",
     "protocol_version": 2,
     "blender_version": "5.2.0 LTS",
     "importer_sha256": "c85f64cd9074bc29b552cdcccaf5c9a6935f4b919e2cf4741cc7843169f4bc7b",

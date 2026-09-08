@@ -253,7 +253,7 @@ uv run meshprobe eval migrate .corpora/private-v7 .corpora \
 `eval migrate` only accepts a schema-1 or schema-2 source (it upgrades the manifest
 shape itself); `qualification-v7` and its inputs are already schema-3, so it cannot
 advance their version labels. The `private-v7` → `private-v8` example preserves a
-historical private identity and does not match the committed `private-v19` replacement
+historical private identity and does not match the committed `private-v20` replacement
 manifest. To land on `procedural-v11`, `curated-tasks-v11`, or `qualification-v12` instead,
 regenerate a fresh corpus with `eval generate`/`eval curated-generate`/`eval merge`/`eval
 pin` (the release-corpus commands earlier in this section) rather than `eval migrate`.
