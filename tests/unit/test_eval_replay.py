@@ -215,6 +215,14 @@ def test_render_replay_normalizes_legacy_comparison_presentation_defaults() -> N
         "comparison": {
             "mode": "side_by_side",
             "caption_style": "before_after",
+            "panel_order": "render_first",
+        },
+    }
+    fresh_reference_first: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "caption_style": "hidden",
             "panel_order": "reference_first",
         },
     }
@@ -224,6 +232,9 @@ def test_render_replay_normalizes_legacy_comparison_presentation_defaults() -> N
     )
     assert _semantic_result(Operation.RENDER_IMAGE, legacy) != _semantic_result(
         Operation.RENDER_IMAGE, fresh_captioned
+    )
+    assert _semantic_result(Operation.RENDER_IMAGE, legacy) != _semantic_result(
+        Operation.RENDER_IMAGE, fresh_reference_first
     )
 
 
