@@ -151,7 +151,7 @@ for line in sys.stdin:
     if command["op"] == "protocol.stderr-timeout":
         sys.stderr.write("Blender importer diagnostic from /host/model.blend")
         sys.stderr.flush()
-        time.sleep(0.5)
+        time.sleep(5.0)
         continue
     result = {"operation": command["op"]}
     emit({
@@ -287,7 +287,7 @@ def test_unterminated_stderr_is_preserved_when_worker_crashes(tmp_path: Path) ->
 def test_unterminated_stderr_is_available_before_worker_exit(tmp_path: Path) -> None:
     controller = BlenderController(
         executable=make_fake_blender(tmp_path),
-        timeout_seconds=0.5,
+        timeout_seconds=2.0,
     )
     try:
         controller.start()
