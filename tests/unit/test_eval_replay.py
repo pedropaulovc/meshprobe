@@ -197,6 +197,36 @@ def test_render_replay_normalizes_absent_and_derived_comparison_artifacts() -> N
     )
 
 
+def test_render_replay_normalizes_legacy_comparison_presentation_defaults() -> None:
+    legacy: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {"mode": "side_by_side"},
+    }
+    fresh_default: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "caption_style": "hidden",
+            "panel_order": "render_first",
+        },
+    }
+    fresh_captioned: JsonValue = {
+        "state_sha256": "a" * 64,
+        "comparison": {
+            "mode": "side_by_side",
+            "caption_style": "before_after",
+            "panel_order": "reference_first",
+        },
+    }
+
+    assert _semantic_result(Operation.RENDER_IMAGE, legacy) == _semantic_result(
+        Operation.RENDER_IMAGE, fresh_default
+    )
+    assert _semantic_result(Operation.RENDER_IMAGE, legacy) != _semantic_result(
+        Operation.RENDER_IMAGE, fresh_captioned
+    )
+
+
 def test_render_replay_normalizes_private_host_artifact_references() -> None:
     recorded: JsonValue = {
         "state_sha256": "a" * 64,

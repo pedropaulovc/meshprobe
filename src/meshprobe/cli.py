@@ -479,11 +479,11 @@ _CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
     "schema": (("meshprobe schema --kind results", "Inspect command result schemas."),),
     "eval generate": (
         (
-            "meshprobe eval generate .corpora --version procedural-v11",
+            "meshprobe eval generate .corpora --version procedural-v12",
             "Build the procedural evaluation corpus.",
         ),
     ),
-    "eval validate": (("meshprobe eval validate .corpora/procedural-v11", "Validate a corpus."),),
+    "eval validate": (("meshprobe eval validate .corpora/procedural-v12", "Validate a corpus."),),
     "eval migrate": (
         (
             "meshprobe eval migrate .corpora/procedural-v5 .corpora --version procedural-v7",
@@ -492,8 +492,8 @@ _CMDHELP_EXAMPLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "eval merge": (
         (
-            "meshprobe eval merge .corpora .corpora/procedural-v11 "
-            ".corpora/curated-tasks-v11 --version qualification-v12",
+            "meshprobe eval merge .corpora .corpora/procedural-v12 "
+            ".corpora/curated-tasks-v11 --version qualification-v13",
             "Combine validated corpora.",
         ),
     ),
@@ -1034,7 +1034,7 @@ def schema(
 @eval_app.command("generate")
 def generate_eval_corpus(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v11",
+    corpus_version: Annotated[str, typer.Option("--version")] = "procedural-v12",
     families: Annotated[list[GeneratorFamily] | None, typer.Option("--family")] = None,
     seed_start: Annotated[int, typer.Option("--seed-start", min=0)] = 0,
     seed_count: Annotated[int, typer.Option("--seed-count", min=1)] = 32,
@@ -1139,7 +1139,7 @@ def generate_curated_eval_corpus(
 def merge_eval_corpora(
     output_root: Annotated[Path, typer.Argument(file_okay=False)],
     corpus_roots: Annotated[list[Path], typer.Argument(exists=True, file_okay=False)],
-    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v12",
+    corpus_version: Annotated[str, typer.Option("--version")] = "qualification-v13",
 ) -> None:
     """Combine validated procedural and curated corpora without rewriting artifacts."""
 

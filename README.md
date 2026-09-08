@@ -185,15 +185,15 @@ Build the released 512-model procedural corpus and the 160-model curated track, 
 combine and pin them:
 
 ```bash
-uv run meshprobe eval generate .corpora --version procedural-v11
+uv run meshprobe eval generate .corpora --version procedural-v12
 uv run meshprobe eval curated-generate \
   evals/curated/catalog.json .cache/meshprobe-curated .corpora \
   --build-version curated-v2 --corpus-version curated-tasks-v11
 uv run meshprobe eval merge .corpora \
-  .corpora/procedural-v11 .corpora/curated-tasks-v11 \
-  --version qualification-v12
+  .corpora/procedural-v12 .corpora/curated-tasks-v11 \
+  --version qualification-v13
 uv run meshprobe eval pin \
-  .corpora/qualification-v12 .corpora/manifests-v12
+  .corpora/qualification-v13 .corpora/manifests-v13
 ```
 
 The resulting release corpus has 672 models, 2,528 episodes, and 672 full-stack
@@ -203,8 +203,8 @@ Blender version, importer, and render engine. The curated catalog pins the sourc
 download hash, topology hash, license, and attribution for 20 CC0 assets; the build
 creates eight controlled variants of each three-source inspection assembly.
 
-The manifests committed under `evals/manifests/public/` pin `qualification-v12`, built from
-`procedural-v11` and `curated-tasks-v11` under the current 2576²/1200² render-resolution defaults;
+The manifests committed under `evals/manifests/public/` pin `qualification-v13`, built from
+`procedural-v12` and `curated-tasks-v11` under the current 2576²/1200² render-resolution defaults;
 running the commands above reproduces it exactly. Corpus names change with generator identity;
 rebuild a changed generator under a new version before repinning its manifests.
 
@@ -212,7 +212,7 @@ Run a pinned tier with either agent transport:
 
 ```bash
 uv run meshprobe eval run-tier \
-  .corpora/qualification-v12 evals/manifests/public/smoke.json .runs \
+  .corpora/qualification-v13 evals/manifests/public/smoke.json .runs \
   --adapter cli \
   --blender /path/to/blender \
   --agent-command-json '["/path/to/agent"]'
@@ -231,7 +231,7 @@ clean uv environment:
 
 ```bash
 uv run python tools/clean_install_smoke.py \
-  .corpora/qualification-v12 evals/manifests/public/smoke.json \
+  .corpora/qualification-v13 evals/manifests/public/smoke.json \
   .runs/clean-install-smoke
 ```
 
@@ -253,8 +253,8 @@ uv run meshprobe eval migrate .corpora/private-v7 .corpora \
 `eval migrate` only accepts a schema-1 or schema-2 source (it upgrades the manifest
 shape itself); `qualification-v7` and its inputs are already schema-3, so it cannot
 advance their version labels. The `private-v7` → `private-v8` example preserves a
-historical private identity and does not match the committed `private-v20` replacement
-manifest. To land on `procedural-v11`, `curated-tasks-v11`, or `qualification-v12` instead,
+historical private identity and does not match the committed `private-v22` replacement
+manifest. To land on `procedural-v12`, `curated-tasks-v11`, or `qualification-v13` instead,
 regenerate a fresh corpus with `eval generate`/`eval curated-generate`/`eval merge`/`eval
 pin` (the release-corpus commands earlier in this section) rather than `eval migrate`.
 
