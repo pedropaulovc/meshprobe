@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returning or recording public error messages.
 - `open` now surfaces a Blender importer error immediately when an unterminated diagnostic would
   otherwise make the worker reply look like a timeout.
+- Render timeouts and crashes now retain recent Blender diagnostics, including terminal
+  unterminated output, without contaminating the machine-readable worker protocol.
 
 ## [1.3.1] - 2026-08-04
 
