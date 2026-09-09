@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-08
+
 ### Added
 
 - `render-image` comparisons can optionally label the reference `BEFORE` and the current render
@@ -22,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rebuilt the qualification corpus as `qualification-v13` from `procedural-v12` and
   `curated-tasks-v11`, and regenerated the held-out private corpus as `private-v22` after the
   comparison runtime and replay compatibility changes.
+- Replay comparisons now fill omitted caption and panel-order options with hidden captions and
+  render-first ordering while preserving explicit `before_after` and `reference_first` choices.
+- Evaluation corpus commands now default to the procedural-v12, curated-tasks-v11, and
+  qualification-v13 corpus identities.
 
 ### Fixed
 
@@ -29,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returning or recording public error messages.
 - `open` now surfaces a Blender importer error immediately when an unterminated diagnostic would
   otherwise make the worker reply look like a timeout.
+- Render timeouts and crashes now retain recent Blender diagnostics, including terminal
+  unterminated output, without contaminating the machine-readable worker protocol.
 
 ## [1.3.1] - 2026-08-04
 
@@ -300,7 +308,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and Windows support with Bubblewrap and AppContainer sandboxing.
 - PyPI releases through GitHub Actions and OIDC trusted publishing.
 
-[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/pedropaulovc/meshprobe/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/pedropaulovc/meshprobe/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/pedropaulovc/meshprobe/compare/v1.2.1...v1.2.2
