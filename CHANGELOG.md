@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rebuilt the qualification corpus as `qualification-v13` from `procedural-v12` and
   `curated-tasks-v11`, and regenerated the held-out private corpus as `private-v22` after the
   comparison runtime and replay compatibility changes.
+- Replay comparisons now fill omitted caption and panel-order options with hidden captions and
+  render-first ordering while preserving explicit `before_after` and `reference_first` choices.
+- Evaluation corpus commands now default to the procedural-v12, curated-tasks-v11, and
+  qualification-v13 corpus identities.
 
 ### Fixed
 
